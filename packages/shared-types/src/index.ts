@@ -25,7 +25,9 @@ export interface GraphNode {
   meta?: {
     isAsync?: boolean;
     isExported?: boolean;
+    isDefaultExport?: boolean;
     apiEndpoint?: string;
+    apiMethod?: string;
     reactiveType?: 'ref' | 'reactive' | 'data';
     autoImported?: boolean;
   };

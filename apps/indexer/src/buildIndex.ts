@@ -1,23 +1,21 @@
-import fs from 'fs';
 import path from 'path';
-import { collectFiles } from '@aiops/parser';
-import { GraphStore } from '@aiops/graph-core';
 import type { RepoConfig } from '@aiops/shared-types';
+import { runPipeline } from './pipeline.js';
 
 interface BuildOptions {
   repoPath: string;
   repoName: string;
   outputDir: string;
+  scanPaths?: string[];
 }
 
 export async function buildIndex(options: BuildOptions): Promise<void> {
-  const { repoPath, repoName, outputDir } = options;
+  const { repoPath, repoName, outputDir, scanPaths } = options;
 
-  // 默认仓库配置
   const config: RepoConfig = {
     repoName,
     repoPath,
-    scanPaths: ['src/views', 'src/components', 'src/store', 'src/router'],
+    scanPaths: scanPaths ?? ['src'],
     excludePaths: ['node_modules', 'dist', '*.spec.*', '*.test.*'],
     aliases: { '@': 'src' },
     autoImportDirs: ['src/hooks', 'src/assets/utils'],
@@ -26,46 +24,46 @@ export async function buildIndex(options: BuildOptions): Promise<void> {
     scriptStyle: 'mixed',
   };
 
-  // Step 1: 收集文件
-  console.log('Step 1: 收集文件...');
-  const files = await collectFiles(config);
-  console.log(`  找到 ${files.length} 个文件`);
+  const absoluteOutputDir = path.isAbsolute(outputDir)
+    ? outputDir
+    : path.resolve(process.cwd(), outputDir);
 
-  // Step 2: 构建图谱
-  console.log('Step 2: 构建图谱...');
-  const graph = new GraphStore();
+  const stats = await runPipeline(config, absoluteOutputDir, (progress) => {
+    switch (progress.phase) {
+      case 'collect':
+        if (progress.total > 0) {
+          console.log(`[收集] 找到 ${progress.total} 个文件`);
+        }
+        break;
+      case 'parse':
+        if (progress.current % 50 === 0 || progress.current === progress.total) {
+          console.log(`[解析] ${progress.current}/${progress.total} ${progress.file ?? ''}`);
+        }
+        break;
+      case 'output':
+        if (progress.current === progress.total) {
+          console.log(`[输出] ${progress.total} 个产物文件已写入`);
+        }
+        break;
+    }
+  });
 
-  // TODO: 遍历文件，AST 解析，提取节点和边
-  for (const file of files) {
-    graph.addNode({
-      id: `file:${file}:${path.basename(file)}`,
-      type: 'file',
-      name: path.basename(file),
-      filePath: file,
-      loc: '1:1',
-    });
+  console.log('\n===== 构建统计 =====');
+  console.log(`文件总数: ${stats.totalFiles}`);
+  console.log(`解析成功: ${stats.parsedFiles}`);
+  console.log(`解析失败: ${stats.failedFiles.length}`);
+  console.log(`节点总数: ${stats.totalNodes}`);
+  console.log(`边总数:   ${stats.totalEdges}`);
+  console.log(`引用总数: ${stats.totalRefs}`);
+  console.log(`已解析:   ${stats.resolvedRefs}`);
+  console.log(`未解析:   ${stats.unresolvedRefs}`);
+  console.log(`解析率:   ${stats.resolveRate}`);
+  console.log(`耗时:     ${stats.duration}ms`);
+
+  if (stats.failedFiles.length > 0) {
+    console.log(`\n失败文件:`);
+    for (const f of stats.failedFiles) {
+      console.log(`  - ${f}`);
+    }
   }
-
-  console.log(`  节点数: ${graph.nodeCount}`);
-  console.log(`  边数: ${graph.edgeCount}`);
-
-  // Step 3: 输出索引
-  console.log('Step 3: 输出索引...');
-  const repoOutputDir = path.join(outputDir, repoName);
-  fs.mkdirSync(repoOutputDir, { recursive: true });
-
-  const graphData = graph.toJSON();
-  graphData.meta.repoName = repoName;
-
-  fs.writeFileSync(
-    path.join(repoOutputDir, 'graph.json'),
-    JSON.stringify(graphData, null, 2)
-  );
-
-  fs.writeFileSync(
-    path.join(repoOutputDir, 'meta.json'),
-    JSON.stringify(graphData.meta, null, 2)
-  );
-
-  console.log(`  索引已写入: ${repoOutputDir}`);
 }

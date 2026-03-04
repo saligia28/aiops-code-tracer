@@ -10,6 +10,10 @@ export class GraphStore {
   private inEdges: Map<string, GraphEdge[]> = new Map();
 
   addNode(node: GraphNode): void {
+    // @ts-ignore — dev-only 冲突检测，无 @types/node 时忽略
+    if (typeof globalThis.process !== 'undefined' && globalThis.process.env?.NODE_ENV !== 'production' && this.nodes.has(node.id)) {
+      console.warn(`[GraphStore] 节点 ID 冲突: ${node.id}`);
+    }
     this.nodes.set(node.id, node);
   }
 

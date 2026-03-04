@@ -66,3 +66,6 @@ temp/
 
 # pnpm
 .pnpm-store/
+
+# 文档信息
+docs/

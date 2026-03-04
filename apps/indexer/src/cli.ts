@@ -2,10 +2,14 @@
 
 import { Command } from 'commander';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { buildIndex } from './buildIndex.js';
 import dotenv from 'dotenv';
 
-dotenv.config({ path: '../../.env' });
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MONOREPO_ROOT = path.resolve(__dirname, '../../..');
+
+dotenv.config({ path: path.join(MONOREPO_ROOT, '.env') });
 
 const program = new Command();
 
@@ -19,19 +23,22 @@ program
   .description('对目标仓库执行全量索引构建')
   .requiredOption('--repo <path>', '目标仓库路径')
   .option('--name <name>', '仓库名称（默认取目录名）')
-  .option('--output <path>', '索引输出目录', './data/.aiops')
+  .option('--output <path>', '索引输出目录', path.join(MONOREPO_ROOT, 'data/.aiops'))
+  .option('--scan-paths <paths>', '扫描目录（逗号分隔）', 'src')
   .action(async (options) => {
     const repoPath = options.repo;
     const repoName = options.name || path.basename(repoPath);
     const outputDir = options.output;
+    const scanPaths = (options.scanPaths as string).split(',').map(s => s.trim());
 
     console.log(`开始索引构建...`);
     console.log(`  仓库路径: ${repoPath}`);
     console.log(`  仓库名称: ${repoName}`);
     console.log(`  输出目录: ${outputDir}`);
+    console.log(`  扫描目录: ${scanPaths.join(', ')}`);
 
     try {
-      await buildIndex({ repoPath, repoName, outputDir });
+      await buildIndex({ repoPath, repoName, outputDir, scanPaths });
       console.log('索引构建完成!');
     } catch (err) {
       console.error('索引构建失败:', err);

@@ -129,6 +129,9 @@ importers:
 
   packages/parser:
     dependencies:
+      '@aiops/graph-core':
+        specifier: workspace:*
+        version: link:../graph-core
       '@aiops/shared-types':
         specifier: workspace:*
         version: link:../shared-types
