@@ -1,0 +1,24 @@
+{
+  "name": "aiops-code-tracer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "代码智能分析平台 — 结构态分析为核心，自然语言问答为入口",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:web": "pnpm --filter @aiops/web dev",
+    "dev:api": "pnpm --filter @aiops/api dev",
+    "build": "pnpm -r run build",
+    "build:web": "pnpm --filter @aiops/web build",
+    "build:api": "pnpm --filter @aiops/api build",
+    "build:packages": "pnpm --filter './packages/*' run build",
+    "index": "pnpm --filter @aiops/indexer start",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "clean": "pnpm -r run clean && rm -rf node_modules"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@9.15.4"
+}

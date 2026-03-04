@@ -1,0 +1,27 @@
+{
+  "name": "@aiops/indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "aiops-indexer": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/cli.ts",
+    "build": "tsc -b",
+    "start": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@aiops/shared-types": "workspace:*",
+    "@aiops/graph-core": "workspace:*",
+    "@aiops/parser": "workspace:*",
+    "commander": "^13.0.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

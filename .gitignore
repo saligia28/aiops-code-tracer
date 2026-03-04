@@ -1,0 +1,68 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 索引产物
+data/.aiops/
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# AI 工具配置
+.claude/
+.cursor/
+.cursorignore
+.cursorindexingignore
+.copilot/
+.github/copilot/
+.aider*
+.codeium/
+.continue/
+.tabby/
+.sourcegraph/
+.cody/
+.windsurf/
+.augment/
+.devai/
+.bolt/
+CLAUDE.md
+AGENTS.md
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 测试覆盖率
+coverage/
+.nyc_output/
+
+# Docker
+docker/*.env
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.bak
+
+# pnpm
+.pnpm-store/

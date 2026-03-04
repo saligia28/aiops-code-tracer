@@ -1,0 +1,1 @@
+export { classifyIntent } from './intentClassifier';

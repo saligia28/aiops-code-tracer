@@ -1,0 +1,18 @@
+FROM node:20-alpine AS builder
+WORKDIR /app
+RUN corepack enable
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY packages/ packages/
+COPY apps/indexer/ apps/indexer/
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @aiops/shared-types build
+RUN pnpm --filter @aiops/graph-core build
+RUN pnpm --filter @aiops/parser build
+RUN pnpm --filter @aiops/indexer build
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/apps/indexer/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/apps/indexer/package.json ./
+CMD ["node", "dist/cli.js", "index", "--repo", "/repos"]

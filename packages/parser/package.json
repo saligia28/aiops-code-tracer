@@ -1,0 +1,30 @@
+{
+  "name": "@aiops/parser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@aiops/shared-types": "workspace:*",
+    "@vue/compiler-sfc": "^3.5.0",
+    "fast-glob": "^3.3.0",
+    "typescript": "^5.7.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}
