@@ -441,10 +441,16 @@ export function buildGraph(
   const allNodes: GraphNode[] = [];
   const allEdges: GraphEdge[] = [];
   for (const fr of fileResults) {
-    allNodes.push(...fr.nodes);
-    allEdges.push(...fr.edges);
+    for (const node of fr.nodes) {
+      allNodes.push(node);
+    }
+    for (const edge of fr.edges) {
+      allEdges.push(edge);
+    }
   }
-  allEdges.push(...resolveResult.resolvedEdges);
+  for (const edge of resolveResult.resolvedEdges) {
+    allEdges.push(edge);
+  }
 
   // 构建索引
   const symbolIndex = buildSymbolIndex(allNodes);

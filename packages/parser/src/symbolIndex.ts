@@ -19,17 +19,15 @@ export interface SymbolIndex {
 }
 
 export function buildSymbolIndex(nodes: GraphNode[]): SymbolIndex {
-  const symbols: Record<string, SymbolLocation[]> = {};
-  const exports: Record<string, string[]> = {};
+  const symbols = Object.create(null) as Record<string, SymbolLocation[]>;
+  const exports = Object.create(null) as Record<string, string[]>;
 
   for (const node of nodes) {
     if (node.type === 'file') continue;
 
     const key = node.name;
-    if (!symbols[key]) {
-      symbols[key] = [];
-    }
-    symbols[key].push({
+    const symbolLocations = symbols[key] ?? (symbols[key] = []);
+    symbolLocations.push({
       nodeId: node.id,
       filePath: node.filePath,
       loc: node.loc,
@@ -37,10 +35,8 @@ export function buildSymbolIndex(nodes: GraphNode[]): SymbolIndex {
     });
 
     if (node.meta?.isExported) {
-      if (!exports[node.filePath]) {
-        exports[node.filePath] = [];
-      }
-      exports[node.filePath].push(node.name);
+      const exportedSymbols = exports[node.filePath] ?? (exports[node.filePath] = []);
+      exportedSymbols.push(node.name);
     }
   }
 
@@ -56,13 +52,11 @@ export interface FileIndex {
 }
 
 export function buildFileIndex(nodes: GraphNode[]): FileIndex {
-  const files: Record<string, string[]> = {};
+  const files = Object.create(null) as Record<string, string[]>;
 
   for (const node of nodes) {
-    if (!files[node.filePath]) {
-      files[node.filePath] = [];
-    }
-    files[node.filePath].push(node.id);
+    const fileNodes = files[node.filePath] ?? (files[node.filePath] = []);
+    fileNodes.push(node.id);
   }
 
   return { files };
@@ -85,7 +79,7 @@ export interface ApiIndex {
 }
 
 export function buildApiIndex(nodes: GraphNode[], edges: GraphEdge[]): ApiIndex {
-  const endpoints: Record<string, ApiCallLocation[]> = {};
+  const endpoints = Object.create(null) as Record<string, ApiCallLocation[]>;
 
   // 找到调用 apiCall 节点的边
   const callerMap = new Map<string, string>();
@@ -98,10 +92,8 @@ export function buildApiIndex(nodes: GraphNode[], edges: GraphEdge[]): ApiIndex 
   for (const node of nodes) {
     if (node.type === 'apiCall' && node.meta?.apiEndpoint) {
       const endpoint = node.meta.apiEndpoint;
-      if (!endpoints[endpoint]) {
-        endpoints[endpoint] = [];
-      }
-      endpoints[endpoint].push({
+      const endpointCalls = endpoints[endpoint] ?? (endpoints[endpoint] = []);
+      endpointCalls.push({
         nodeId: node.id,
         filePath: node.filePath,
         loc: node.loc,
