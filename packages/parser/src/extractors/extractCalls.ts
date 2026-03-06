@@ -57,6 +57,49 @@ export function extractCalls(
     return null;
   }
 
+  function findEnclosingFunctionNode(node: ts.Node): ts.Node | null {
+    let current = node.parent;
+    while (current && current !== sourceFile) {
+      if (
+        ts.isFunctionDeclaration(current)
+        || ts.isFunctionExpression(current)
+        || ts.isArrowFunction(current)
+        || ts.isMethodDeclaration(current)
+      ) {
+        return current;
+      }
+      current = current.parent;
+    }
+    return null;
+  }
+
+  function resolveIdentifierAliasTargets(node: ts.Node, calledName: string): string[] {
+    const fnNode = findEnclosingFunctionNode(node);
+    if (!fnNode) return [];
+    const bodyNode = (fnNode as { body?: ts.Node }).body;
+    if (!bodyNode) return [];
+
+    const targets = new Set<string>();
+    const collect = (curr: ts.Node): void => {
+      if (curr.pos >= node.pos) return;
+      if (ts.isVariableDeclaration(curr) && ts.isIdentifier(curr.name) && curr.name.text === calledName && curr.initializer) {
+        const init = curr.initializer;
+        if (ts.isIdentifier(init)) {
+          targets.add(init.text);
+        } else if (ts.isConditionalExpression(init)) {
+          if (ts.isIdentifier(init.whenTrue)) targets.add(init.whenTrue.text);
+          if (ts.isIdentifier(init.whenFalse)) targets.add(init.whenFalse.text);
+        } else if (ts.isParenthesizedExpression(init) && ts.isIdentifier(init.expression)) {
+          targets.add(init.expression.text);
+        }
+      }
+      ts.forEachChild(curr, collect);
+    };
+
+    ts.forEachChild(bodyNode, collect);
+    return Array.from(targets);
+  }
+
   /**
    * 从 CallExpression 的第一个参数提取字符串字面量（用于 API endpoint）
    */
@@ -118,6 +161,63 @@ export function extractCalls(
         }
       }
 
+      // Vuex store.dispatch('actionName') / store.commit('mutationName')
+      if (ts.isIdentifier(obj) && (obj.text === 'store' || obj.text === '$store')) {
+        if (method === 'dispatch' || method === 'commit') {
+          const actionName = extractFirstStringArg(node);
+          if (actionName) {
+            // 去掉 module 前缀 'module/action' → 'action'
+            const shortName = actionName.includes('/') ? actionName.split('/').pop()! : actionName;
+            unresolvedRefs.push({
+              fromNodeId,
+              refName: `store.${method}('${shortName}')`,
+              refType: 'call',
+              loc,
+            });
+            ts.forEachChild(node, visit);
+            return;
+          }
+        }
+      }
+      // this.$store.dispatch / this.$store.commit
+      if (ts.isPropertyAccessExpression(obj) && obj.expression.kind === ts.SyntaxKind.ThisKeyword) {
+        const propName = obj.name.text;
+        if (propName === '$store' && (method === 'dispatch' || method === 'commit')) {
+          const actionName = extractFirstStringArg(node);
+          if (actionName) {
+            const shortName = actionName.includes('/') ? actionName.split('/').pop()! : actionName;
+            unresolvedRefs.push({
+              fromNodeId,
+              refName: `store.${method}('${shortName}')`,
+              refType: 'call',
+              loc,
+            });
+            ts.forEachChild(node, visit);
+            return;
+          }
+        }
+      }
+
+      // this.$refs.ComponentRef.openDialog() 这类跨组件方法调用
+      if (
+        ts.isPropertyAccessExpression(obj)
+        && ts.isPropertyAccessExpression(obj.expression)
+        && obj.expression.expression.kind === ts.SyntaxKind.ThisKeyword
+        && obj.expression.name.text === '$refs'
+      ) {
+        const refAlias = obj.name.text;
+        if (refAlias) {
+          unresolvedRefs.push({
+            fromNodeId,
+            refName: `$refs.${refAlias}.${method}`,
+            refType: 'call',
+            loc,
+          });
+          ts.forEachChild(node, visit);
+          return;
+        }
+      }
+
       // 普通方法调用 obj.method() → 创建 unresolved ref
       if (ts.isIdentifier(obj)) {
         unresolvedRefs.push({
@@ -158,12 +258,25 @@ export function extractCalls(
       if (targetId) {
         edges.push({ from: fromNodeId, to: targetId, type: 'calls', loc });
       } else {
-        unresolvedRefs.push({
-          fromNodeId,
-          refName: calledName,
-          refType: 'call',
-          loc,
-        });
+        // 函数别名调用还原：const fn = cond ? a : b; fn()
+        const aliasTargets = resolveIdentifierAliasTargets(node, calledName);
+        if (aliasTargets.length > 0) {
+          for (const target of aliasTargets) {
+            unresolvedRefs.push({
+              fromNodeId,
+              refName: target,
+              refType: 'call',
+              loc,
+            });
+          }
+        } else {
+          unresolvedRefs.push({
+            fromNodeId,
+            refName: calledName,
+            refType: 'call',
+            loc,
+          });
+        }
       }
     }
 

@@ -126,6 +126,19 @@ export interface IntentResult {
   confidence: number;
 }
 
+export interface QuestionAnalysis {
+  intent: IntentType;
+  confidence: number;
+  entities: {
+    pageName?: string;
+    buttonName?: string;
+    functionName?: string;
+    componentName?: string;
+    apiEndpoint?: string;
+  };
+  searchKeywords: string[];
+}
+
 export interface Evidence {
   file: string;
   line: number;

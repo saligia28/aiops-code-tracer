@@ -133,4 +133,34 @@ function refreshB() {
     // 第二个应带 #2 后缀
     expect(result.nodes[1].id).toContain('#2');
   });
+
+  it('应识别 this.$refs 组件方法调用', () => {
+    const code = `
+function inventoryCheck() {
+  this.$refs.InventoryCheckDialog.openDialog({ record: {} });
+}`;
+    const { sourceFile, ctx } = createContext(code);
+    const funcResult = extractFunctions(sourceFile, ctx);
+    const result = extractCalls(sourceFile, ctx, funcResult.functionNodes);
+
+    expect(result.unresolvedRefs.length).toBe(1);
+    expect(result.unresolvedRefs[0].refName).toBe('$refs.InventoryCheckDialog.openDialog');
+    expect(result.unresolvedRefs[0].refType).toBe('call');
+  });
+
+  it('应还原函数别名调用到真实目标函数', () => {
+    const code = `
+function submit(payload) {
+  const requestMethod = this.isBatch ? batchVerify : verify;
+  requestMethod(payload);
+}`;
+    const { sourceFile, ctx } = createContext(code);
+    const funcResult = extractFunctions(sourceFile, ctx);
+    const result = extractCalls(sourceFile, ctx, funcResult.functionNodes);
+
+    const callRefs = result.unresolvedRefs.filter((item) => item.refType === 'call').map((item) => item.refName);
+    expect(callRefs).toContain('batchVerify');
+    expect(callRefs).toContain('verify');
+    expect(callRefs).not.toContain('requestMethod');
+  });
 });

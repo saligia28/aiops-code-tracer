@@ -8,6 +8,7 @@ export class GraphStore {
   private edges: GraphEdge[] = [];
   private outEdges: Map<string, GraphEdge[]> = new Map();
   private inEdges: Map<string, GraphEdge[]> = new Map();
+  private nameIndex: Map<string, GraphNode[]> = new Map();
 
   addNode(node: GraphNode): void {
     // @ts-ignore — dev-only 冲突检测，无 @types/node 时忽略
@@ -15,6 +16,13 @@ export class GraphStore {
       console.warn(`[GraphStore] 节点 ID 冲突: ${node.id}`);
     }
     this.nodes.set(node.id, node);
+    // 建立名称倒排索引
+    const tokens = this.tokenize(node.name);
+    for (const token of tokens) {
+      const list = this.nameIndex.get(token) ?? [];
+      list.push(node);
+      this.nameIndex.set(token, list);
+    }
   }
 
   addEdge(edge: GraphEdge): void {
@@ -41,6 +49,27 @@ export class GraphStore {
 
   getInEdges(nodeId: string): GraphEdge[] {
     return this.inEdges.get(nodeId) ?? [];
+  }
+
+  /**
+   * 获取所有节点
+   */
+  getAllNodes(): GraphNode[] {
+    return [...this.nodes.values()];
+  }
+
+  /**
+   * 获取指定文件的所有节点
+   */
+  getNodesByFile(filePath: string): GraphNode[] {
+    return [...this.nodes.values()].filter((node) => node.filePath === filePath);
+  }
+
+  /**
+   * 获取所有边
+   */
+  getAllEdges(): GraphEdge[] {
+    return this.edges;
   }
 
   /**
@@ -96,13 +125,70 @@ export class GraphStore {
   }
 
   /**
-   * 按符号名模糊搜索
+   * 双向合并追踪：同时正向和反向追踪，合并结果
+   */
+  traceBidirectional(
+    startId: string,
+    forwardDepth: number = 3,
+    backwardDepth: number = 2
+  ): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    const forward = this.traceForward(startId, forwardDepth);
+    const backward = this.traceBackward(startId, backwardDepth);
+
+    const nodeMap = new Map<string, GraphNode>();
+    for (const node of forward.nodes) nodeMap.set(node.id, node);
+    for (const node of backward.nodes) nodeMap.set(node.id, node);
+
+    const edgeSet = new Set<string>();
+    const mergedEdges: GraphEdge[] = [];
+    for (const edge of [...forward.edges, ...backward.edges]) {
+      const key = `${edge.from}|${edge.to}|${edge.type}`;
+      if (!edgeSet.has(key)) {
+        edgeSet.add(key);
+        mergedEdges.push(edge);
+      }
+    }
+
+    return {
+      nodes: [...nodeMap.values()],
+      edges: mergedEdges,
+    };
+  }
+
+  /**
+   * 按符号名模糊搜索（使用倒排索引加速）
    */
   searchByName(query: string): GraphNode[] {
+    const tokens = this.tokenize(query);
+    if (tokens.length === 0) {
+      // 回退到全量扫描
+      const lowerQuery = query.toLowerCase();
+      return [...this.nodes.values()].filter(
+        (node) => node.name.toLowerCase().includes(lowerQuery)
+      );
+    }
+
+    const candidates = new Map<string, { node: GraphNode; hits: number }>();
+    for (const token of tokens) {
+      for (const node of this.nameIndex.get(token) ?? []) {
+        const entry = candidates.get(node.id) ?? { node, hits: 0 };
+        entry.hits++;
+        candidates.set(node.id, entry);
+      }
+    }
+
+    // 补充：对未通过 token 索引命中但名称包含查询的节点，做线性扫描兜底
     const lowerQuery = query.toLowerCase();
-    return [...this.nodes.values()].filter(
-      (node) => node.name.toLowerCase().includes(lowerQuery)
-    );
+    for (const node of this.nodes.values()) {
+      if (candidates.has(node.id)) continue;
+      if (node.name.toLowerCase().includes(lowerQuery)) {
+        candidates.set(node.id, { node, hits: 1 });
+      }
+    }
+
+    return [...candidates.values()]
+      .sort((a, b) => b.hits - a.hits)
+      .map((e) => e.node);
   }
 
   /**
@@ -143,5 +229,42 @@ export class GraphStore {
 
   get edgeCount(): number {
     return this.edges.length;
+  }
+
+  /**
+   * 将名称分词为索引 token
+   */
+  private tokenize(name: string): string[] {
+    const lower = name.toLowerCase();
+    const tokens: string[] = [];
+
+    // 按非字母数字字符分割
+    const parts = lower.split(/[^a-z0-9\u4e00-\u9fa5]+/).filter(Boolean);
+    tokens.push(...parts);
+
+    // camelCase 分割: handleSubmitClick → [handle, submit, click]
+    const rawParts = name.split(/[^A-Za-z0-9\u4e00-\u9fa5]+/).filter(Boolean);
+    for (const part of rawParts) {
+      const camelParts = part
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
+      if (camelParts.length > 1) {
+        tokens.push(...camelParts);
+      }
+    }
+
+    // 中文按字符拆分为 2-gram
+    for (const part of parts) {
+      if (/[\u4e00-\u9fa5]/.test(part)) {
+        const chars = Array.from(part.match(/[\u4e00-\u9fa5]+/g) ?? []).join('');
+        for (let i = 0; i < chars.length - 1; i++) {
+          tokens.push(chars.slice(i, i + 2));
+        }
+      }
+    }
+
+    return [...new Set(tokens)].filter((t) => t.length >= 2);
   }
 }

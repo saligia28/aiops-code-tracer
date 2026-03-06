@@ -221,7 +221,7 @@ export function resolvePhase(
     const imports = importMapByFile.get(filePath) ?? [];
     const matchedImport = imports.find(i => i.localName === ref.refName);
     if (matchedImport) {
-      const sourceExports = findExportMap(exportMap, matchedImport.sourcePath);
+      const sourceExports = findExportMap(exportMap, matchedImport.sourcePath, config.aliases);
       if (sourceExports) {
         const targetId = sourceExports.get(matchedImport.originalName) ?? sourceExports.get(matchedImport.localName);
         if (targetId) {
@@ -260,7 +260,7 @@ export function resolvePhase(
       // 先查 importMap
       const matchedBaseImport = imports.find(i => i.localName === baseName);
       if (matchedBaseImport) {
-        const sourceExports = findExportMap(exportMap, matchedBaseImport.sourcePath);
+        const sourceExports = findExportMap(exportMap, matchedBaseImport.sourcePath, config.aliases);
         if (sourceExports) {
           const targetId = sourceExports.get(matchedBaseImport.originalName) ?? sourceExports.get(matchedBaseImport.localName);
           if (targetId) {
@@ -307,9 +307,75 @@ export function resolvePhase(
       }
     }
 
+    // 策略2.6: this.$refs.ComponentRef.method() -> 组件文件中的 method
+    if (!resolved && ref.refName.startsWith('$refs.')) {
+      const refMatch = ref.refName.match(/^\$refs\.([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/);
+      if (refMatch) {
+        const refAlias = refMatch[1];
+        const methodName = refMatch[2];
+        const matchedRefImport = imports.find((item) => item.localName === refAlias);
+        if (matchedRefImport) {
+          const sourceExports = findExportMap(exportMap, matchedRefImport.sourcePath, config.aliases);
+          if (sourceExports) {
+            const targetId = sourceExports.get(methodName);
+            if (targetId) {
+              resolvedEdges.push({
+                from: ref.fromNodeId,
+                to: targetId,
+                type: 'calls',
+                loc: ref.loc,
+              });
+              resolved = true;
+            }
+          }
+        }
+      }
+    }
+
     // 策略3: Vuex 全局节点
     if (!resolved && (ref.refName.startsWith('store.dispatch') || ref.refName.startsWith('store.commit'))) {
-      // Vuex 调用暂不解析
+      // 提取 action/mutation 名称
+      const dispatchMatch = ref.refName.match(/store\.dispatch\(['"`]([^'"`]+)['"`]\)/);
+      const commitMatch = ref.refName.match(/store\.commit\(['"`]([^'"`]+)['"`]\)/);
+      const actionName = dispatchMatch?.[1] ?? commitMatch?.[1];
+      if (actionName) {
+        // 在所有文件中查找对应的 vuexAction/vuexMutation 节点
+        for (const [, fileMap] of nodesByFile) {
+          const targetId = fileMap.get(actionName);
+          if (targetId) {
+            const targetNode = allNodeMap.get(targetId);
+            const expectedType = dispatchMatch ? 'vuexAction' : 'vuexMutation';
+            if (!targetNode || targetNode.type !== expectedType) {
+              continue;
+            }
+            const edgeType = dispatchMatch ? 'dispatches' : 'commits';
+            resolvedEdges.push({
+              from: ref.fromNodeId,
+              to: targetId,
+              type: edgeType as import('@aiops/shared-types').EdgeType,
+              loc: ref.loc,
+            });
+            resolved = true;
+            break;
+          }
+        }
+        // 兜底：在 allNodeMap 中查找名称匹配的 vuex 节点
+        if (!resolved) {
+          for (const [nodeId, node] of allNodeMap) {
+            if ((node.type === 'vuexAction' || node.type === 'vuexMutation') && node.name === actionName) {
+              const edgeType = dispatchMatch ? 'dispatches' : 'commits';
+              resolvedEdges.push({
+                from: ref.fromNodeId,
+                to: nodeId,
+                type: edgeType as import('@aiops/shared-types').EdgeType,
+                loc: ref.loc,
+              });
+              resolved = true;
+              break;
+            }
+          }
+        }
+      }
     }
 
     // 策略4: autoImport 兜底
@@ -340,25 +406,53 @@ export function resolvePhase(
 
 /**
  * 在 exportMap 中查找（尝试带扩展名和不带扩展名）
+ * 支持 @ 别名归一化
  */
 function findExportMap(
   exportMap: Map<string, Map<string, string>>,
-  sourcePath: string
+  sourcePath: string,
+  aliases?: Record<string, string>
 ): Map<string, string> | undefined {
+  // 先处理别名归一化
+  let normalized = sourcePath;
+  if (aliases) {
+    for (const [alias, target] of Object.entries(aliases)) {
+      const prefix = alias.endsWith('/') ? alias : `${alias}/`;
+      if (normalized.startsWith(prefix)) {
+        normalized = normalized.replace(prefix, target.endsWith('/') ? target : `${target}/`);
+        break;
+      }
+      if (normalized === alias) {
+        normalized = target;
+        break;
+      }
+    }
+  }
+
   // 精确匹配
-  let result = exportMap.get(sourcePath);
+  let result = exportMap.get(normalized);
   if (result) return result;
 
   // 尝试添加常见扩展名
   for (const ext of ['.ts', '.js', '.vue', '.tsx', '.jsx']) {
-    result = exportMap.get(sourcePath + ext);
+    result = exportMap.get(normalized + ext);
     if (result) return result;
   }
 
   // 尝试 index 文件
   for (const ext of ['.ts', '.js']) {
-    result = exportMap.get(sourcePath + '/index' + ext);
+    result = exportMap.get(normalized + '/index' + ext);
     if (result) return result;
+  }
+
+  // 如果归一化后的路径和原路径不同，也尝试原路径
+  if (normalized !== sourcePath) {
+    result = exportMap.get(sourcePath);
+    if (result) return result;
+    for (const ext of ['.ts', '.js', '.vue', '.tsx', '.jsx']) {
+      result = exportMap.get(sourcePath + ext);
+      if (result) return result;
+    }
   }
 
   return undefined;

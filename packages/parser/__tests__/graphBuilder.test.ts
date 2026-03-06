@@ -188,4 +188,67 @@ function handleSubmit() {
       cleanup();
     }
   });
+
+  it('$refs 组件方法调用应解析到被引用组件方法', () => {
+    const { repoPath, cleanup } = createTempRepo({
+      'src/components/InventoryCheckDialog.ts': `
+export function openDialog(payload: any) {
+  return payload;
+}
+export default {};
+`,
+      'src/views/page.ts': `
+import InventoryCheckDialog from '../components/InventoryCheckDialog';
+
+function inventoryCheck() {
+  this.$refs.InventoryCheckDialog.openDialog({ id: 1 });
+}
+`,
+    });
+
+    try {
+      const config = createConfig(repoPath);
+      const componentResult = parseFile('src/components/InventoryCheckDialog.ts', config);
+      const pageResult = parseFile('src/views/page.ts', config);
+
+      const resolveResult = resolvePhase([componentResult, pageResult], config);
+
+      const callEdge = resolveResult.resolvedEdges.find((edge) =>
+        edge.type === 'calls' && edge.to.includes('openDialog')
+      );
+      expect(callEdge).toBeDefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('函数别名调用应解析到导入函数目标', () => {
+    const { repoPath, cleanup } = createTempRepo({
+      'src/api/index.ts': `
+export function verify() { return true; }
+export function batchVerify() { return true; }
+`,
+      'src/views/dialog.ts': `
+import { verify, batchVerify } from '../api/index';
+function confirmData(payload: any) {
+  const requestMethod = this.isBatch ? batchVerify : verify;
+  requestMethod(payload);
+}
+`,
+    });
+
+    try {
+      const config = createConfig(repoPath);
+      const apiResult = parseFile('src/api/index.ts', config);
+      const dialogResult = parseFile('src/views/dialog.ts', config);
+      const resolveResult = resolvePhase([apiResult, dialogResult], config);
+
+      const toVerify = resolveResult.resolvedEdges.find((edge) => edge.type === 'calls' && edge.to.includes(':verify'));
+      const toBatchVerify = resolveResult.resolvedEdges.find((edge) => edge.type === 'calls' && edge.to.includes(':batchVerify'));
+      expect(toVerify).toBeDefined();
+      expect(toBatchVerify).toBeDefined();
+    } finally {
+      cleanup();
+    }
+  });
 });

@@ -124,6 +124,10 @@ export function extractFunctions(
           isDefaultExport: true,
         });
       }
+      // Vue 2 Options API: export default { methods: {...}, computed: {...} }
+      if (node.expression && ts.isObjectLiteralExpression(node.expression)) {
+        extractOptionsApiMethods(node.expression);
+      }
     }
     // export default function name() {}
     else if (ts.isFunctionDeclaration(node) && !node.name && hasDefaultModifier(node)) {
@@ -141,6 +145,104 @@ export function extractFunctions(
     }
 
     ts.forEachChild(node, visit);
+  }
+
+  /**
+   * Vue 2 Options API: 提取 methods/computed/watch/data 中的函数
+   */
+  function extractOptionsApiMethods(objLiteral: ts.ObjectLiteralExpression) {
+    for (const prop of objLiteral.properties) {
+      if (!ts.isPropertyAssignment(prop) && !ts.isMethodDeclaration(prop)) continue;
+      const propName = ts.isIdentifier(prop.name ?? ({} as ts.Node))
+        ? (prop.name as ts.Identifier).text
+        : undefined;
+      if (!propName) continue;
+
+      // methods: { foo() {}, bar() {} }
+      if (propName === 'methods' && ts.isPropertyAssignment(prop) && ts.isObjectLiteralExpression(prop.initializer)) {
+        for (const method of prop.initializer.properties) {
+          if (ts.isMethodDeclaration(method) && ts.isIdentifier(method.name)) {
+            addFunctionNode(method.name.text, method, {
+              isAsync: hasAsyncModifier(method),
+              isExported: true,
+            });
+          }
+          if (ts.isPropertyAssignment(method) && ts.isIdentifier(method.name) && isFunctionLike(method.initializer)) {
+            addFunctionNode(method.name.text, method, {
+              isAsync: hasAsyncModifier(method.initializer),
+              isExported: true,
+            });
+          }
+        }
+      }
+
+      // computed: { bar() {}, baz: { get() {}, set() {} } }
+      if (propName === 'computed' && ts.isPropertyAssignment(prop) && ts.isObjectLiteralExpression(prop.initializer)) {
+        for (const comp of prop.initializer.properties) {
+          if (ts.isMethodDeclaration(comp) && ts.isIdentifier(comp.name)) {
+            const compNodeId = `computed:${ctx.filePath}:${comp.name.text}`;
+            const loc = getLoc(sourceFile, comp.getStart());
+            nodes.push({
+              id: compNodeId,
+              type: 'computed' as import('@aiops/shared-types').NodeType,
+              name: comp.name.text,
+              filePath: ctx.filePath,
+              loc,
+              meta: { isExported: true },
+            });
+            edges.push({ from: fileNodeId, to: compNodeId, type: 'defines', loc });
+            functionNodes.set(comp.name.text, compNodeId);
+          }
+          if (ts.isPropertyAssignment(comp) && ts.isIdentifier(comp.name)) {
+            const compNodeId = `computed:${ctx.filePath}:${comp.name.text}`;
+            const loc = getLoc(sourceFile, comp.getStart());
+            nodes.push({
+              id: compNodeId,
+              type: 'computed' as import('@aiops/shared-types').NodeType,
+              name: comp.name.text,
+              filePath: ctx.filePath,
+              loc,
+              meta: { isExported: true },
+            });
+            edges.push({ from: fileNodeId, to: compNodeId, type: 'defines', loc });
+            functionNodes.set(comp.name.text, compNodeId);
+          }
+        }
+      }
+
+      // watch: { 'x.y': handler, z(newVal) {} }
+      if (propName === 'watch' && ts.isPropertyAssignment(prop) && ts.isObjectLiteralExpression(prop.initializer)) {
+        for (const watcher of prop.initializer.properties) {
+          let watcherName: string | undefined;
+          if (ts.isMethodDeclaration(watcher) && ts.isIdentifier(watcher.name)) {
+            watcherName = watcher.name.text;
+          } else if (ts.isPropertyAssignment(watcher)) {
+            if (ts.isIdentifier(watcher.name)) {
+              watcherName = watcher.name.text;
+            } else if (ts.isStringLiteral(watcher.name)) {
+              watcherName = watcher.name.text;
+            }
+          }
+          if (watcherName) {
+            const watcherNodeId = `watcher:${ctx.filePath}:watch_${watcherName}`;
+            const loc = getLoc(sourceFile, watcher.getStart());
+            nodes.push({
+              id: watcherNodeId,
+              type: 'watcher' as import('@aiops/shared-types').NodeType,
+              name: `watch_${watcherName}`,
+              filePath: ctx.filePath,
+              loc,
+            });
+            edges.push({ from: fileNodeId, to: watcherNodeId, type: 'defines', loc });
+          }
+        }
+      }
+
+      // data() { return {...} } — extract top-level data keys as variable nodes
+      if (propName === 'data' && ts.isMethodDeclaration(prop)) {
+        // data 方法本身作为 function 节点已经在上面被提取，这里不再重复
+      }
+    }
   }
 
   visit(sourceFile);

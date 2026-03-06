@@ -17,7 +17,8 @@ import type {
 } from '@aiops/shared-types';
 import { collectFiles, buildGraph } from '@aiops/parser';
 import type { SymbolIndex, BuildResult } from '@aiops/parser';
-import { classifyIntent } from '@aiops/nlp';
+import { classifyIntent, analyzeQuestion } from '@aiops/nlp';
+import type { QuestionAnalysis } from '@aiops/shared-types';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MONOREPO_ROOT = path.resolve(__dirname, '../../..');
@@ -265,7 +266,31 @@ function normalizeScanPaths(scanPaths?: string[]): string[] {
   return ['src'];
 }
 
-function buildRepoConfig(repoPath: string, repoName: string, scanPaths?: string[]): RepoConfig {
+function parseJsonRecordEnv(envName: string): Record<string, string> | undefined {
+  const raw = process.env[envName];
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+  } catch (err) {
+    app.log.warn(`${envName} 解析失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return undefined;
+}
+
+function buildRepoConfig(repoPath: string, repoName: string, scanPaths?: string[], overrides?: {
+  aliases?: Record<string, string>;
+  autoImportDirs?: string[];
+  framework?: string;
+  stateManagement?: string;
+}): RepoConfig {
+  const envAliases = parseJsonRecordEnv('REPO_ALIASES');
+  const envAutoImportDirs = process.env.REPO_AUTO_IMPORT_DIRS ? process.env.REPO_AUTO_IMPORT_DIRS.split(',').map((d) => d.trim()).filter(Boolean) : undefined;
+  const envFramework = process.env.REPO_FRAMEWORK;
+  const envStateManagement = process.env.REPO_STATE_MANAGEMENT;
+
   return {
     repoName,
     repoPath: path.resolve(repoPath),
@@ -281,10 +306,10 @@ function buildRepoConfig(repoPath: string, repoName: string, scanPaths?: string[
       '*.spec.*',
       '*.test.*',
     ],
-    aliases: { '@': 'src' },
-    autoImportDirs: ['src/hooks', 'src/assets/utils', 'src/static', 'src/store/browser'],
-    framework: 'vue3',
-    stateManagement: 'vuex',
+    aliases: overrides?.aliases ?? envAliases ?? { '@': 'src' },
+    autoImportDirs: overrides?.autoImportDirs ?? envAutoImportDirs ?? ['src/hooks', 'src/assets/utils', 'src/static', 'src/store/browser'],
+    framework: (overrides?.framework ?? envFramework ?? 'vue3') as RepoConfig['framework'],
+    stateManagement: (overrides?.stateManagement ?? envStateManagement ?? 'vuex') as RepoConfig['stateManagement'],
     scriptStyle: 'mixed',
   };
 }
@@ -960,7 +985,7 @@ function heuristicQuestionPlan(question: string): QuestionPlan {
       concern: 'ui_condition',
       scope: extractLikelyScope(q) ?? undefined,
       keywords,
-      mustEvidence: ['condition', 'function', 'api'],
+      mustEvidence: ['condition', 'function'],
       intentHint: 'UI_CONDITION',
     };
   }
@@ -1047,11 +1072,30 @@ async function generateQuestionPlan(question: string): Promise<QuestionPlan> {
 }
 
 function tokenizeForRecall(input: string): string[] {
-  return input
+  const rawTokens = input
     .toLowerCase()
     .split(/[^a-z0-9\u4e00-\u9fa5_]+/)
     .map((token) => token.trim())
-    .filter((token) => token.length >= 2);
+    .filter(Boolean);
+
+  const expanded: string[] = [];
+  const chineseOnly = /^[\u4e00-\u9fa5]+$/;
+  for (const token of rawTokens) {
+    if (token.length < 2) continue;
+    expanded.push(token);
+
+    if (!chineseOnly.test(token)) continue;
+    const maxLen = Math.min(token.length, 18);
+    const limited = token.slice(0, maxLen);
+    for (let n = 2; n <= 4; n++) {
+      if (limited.length < n) break;
+      for (let i = 0; i <= limited.length - n; i++) {
+        expanded.push(limited.slice(i, i + n));
+      }
+    }
+  }
+
+  return Array.from(new Set(expanded)).filter((token) => token.length >= 2).slice(0, 200);
 }
 
 function buildRecallIndex(nodes: GraphNode[], repoName: string): void {
@@ -1155,6 +1199,13 @@ function extractActionLabelFromLine(line: string): string | null {
   return label || null;
 }
 
+const API_CALL_PATTERN = /(request\.(get|post|put|delete|patch)\s*(?:<[^>]*>)?\(\s*['"`][^'"`]+['"`]|axios\.(get|post|put|delete|patch)\s*\(|axios\(|fetch\(\s*['"`][^'"`]+['"`])/i;
+const API_ENDPOINT_LITERAL_PATTERN = /['"`](\/[a-z0-9_-]+(?:\/[a-z0-9._-]+){1,})['"`]/i;
+
+function hasApiSignal(text: string): boolean {
+  return API_CALL_PATTERN.test(text) || API_ENDPOINT_LITERAL_PATTERN.test(text);
+}
+
 function classifyFactKinds(line: string): FactKind[] {
   const text = line.trim();
   if (!text) return [];
@@ -1168,7 +1219,7 @@ function classifyFactKinds(line: string): FactKind[] {
   if (/(this\.\w+\s*=|reactive\(|ref\(|computed\(|watch\(|data\s*\(\)|set\w+\()/i.test(text)) {
     kinds.push('state');
   }
-  if (/(request\.(get|post|put|delete|patch)|axios\(|fetch\(|\/[a-z0-9/_-]+)/i.test(text)) {
+  if (hasApiSignal(text)) {
     kinds.push('api');
   }
   if (/^(async\s+)?[A-Za-z_$][\w$]*\s*\(|^\s*const\s+[A-Za-z_$][\w$]*\s*=/.test(text)) {
@@ -1475,7 +1526,20 @@ function buildFollowUps(question: string, topNodes: GraphNode[], plan?: Question
     ];
   }
 
-  const first = topNodes[0];
+  const coreTerms = extractQuestionCoreTerms(question);
+  const rankedTop = topNodes
+    .map((node) => {
+      const text = `${node.name} ${node.filePath}`.toLowerCase();
+      let score = NODE_TYPE_SCORE[node.type] ?? 0;
+      for (const term of coreTerms) {
+        if (term.length >= 2 && text.includes(term)) score += 3;
+      }
+      if (/^(data|get|set|created|mounted|setup|init|userInfo)$/i.test(node.name)) score -= 5;
+      if (/(inventoryCheck|batchInventoryCheck|verify|check|confirm|audit|page|pagination)/i.test(node.name)) score += 3;
+      return { node, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const first = rankedTop[0]?.node ?? topNodes[0];
   const concern = plan?.concern ?? 'general';
   const focusPrompt = concern === 'pagination'
     ? `“${first.filePath}”里分页参数（page/pageSize）如何传递？`
@@ -1648,7 +1712,7 @@ function scoreGenericEvidenceLine(line: string, coreTerms: string[]): { score: n
     kindScore.state += 3;
     score += 3;
   }
-  if (/(request\.(get|post|put|delete|patch)|axios\(|fetch\(|\/[a-z0-9/_-]+)/i.test(text)) {
+  if (hasApiSignal(text)) {
     kindScore.api += 4;
     score += 4;
   }
@@ -1776,6 +1840,851 @@ function buildGenericEvidence(
     .sort((a, b) => b.score - a.score)
     .slice(0, maxEvidence)
     .map(({ score, ...item }) => item);
+}
+
+function recallFacts(
+  question: string,
+  plan: QuestionPlan,
+  scopeFiles: string[] = [],
+  maxFacts: number = 40
+): Array<CodeFact & { score: number }> {
+  if (!factIndex?.facts?.length) return [];
+  const coreTerms = Array.from(new Set([
+    ...extractQuestionCoreTerms(question),
+    ...extractSearchTerms(question, plan.keywords).slice(0, 10),
+  ]));
+  if (coreTerms.length === 0) return [];
+
+  const scopeSet = new Set(scopeFiles);
+  const concernKindBoost: Partial<Record<PlanConcern, Partial<Record<FactKind, number>>>> = {
+    ui_condition: { condition: 3, trigger: 2 },
+    data_flow: { trigger: 3, api: 2, state: 2 },
+    state_flow: { state: 3, condition: 2 },
+    api_list: { api: 4, trigger: 1 },
+    pagination: { condition: 1, state: 2, api: 1 },
+    component_relation: { trigger: 2, condition: 2, state: 1 },
+  };
+
+  const scored: Array<CodeFact & { score: number }> = [];
+  for (const fact of factIndex.facts) {
+    let termHits = 0;
+    for (const term of coreTerms) {
+      if (fact.terms.includes(term) || fact.text.toLowerCase().includes(term)) termHits++;
+    }
+    if (termHits === 0) continue;
+
+    let score = termHits * 3 + (concernKindBoost[plan.concern]?.[fact.kind] ?? 0);
+    if (scopeSet.has(fact.filePath)) score += 2;
+    if (fact.context && coreTerms.some((term) => fact.context!.toLowerCase().includes(term))) score += 2;
+    if (score < 5) continue;
+    scored.push({ ...fact, score });
+  }
+
+  return scored.sort((a, b) => b.score - a.score).slice(0, maxFacts);
+}
+
+function collectNodesFromFacts(facts: Array<CodeFact & { score: number }>, maxNodes: number = 45): GraphNode[] {
+  if (facts.length === 0) return [];
+  const rankedNodes: Array<{ node: GraphNode; score: number }> = [];
+
+  for (const fact of facts) {
+    const nodesInFile = fileNodeMap.get(fact.filePath) ?? [];
+    if (nodesInFile.length === 0) continue;
+    const nearby = nodesInFile
+      .map((node) => {
+        const distance = Math.abs(parseLine(node.loc) - fact.line);
+        const score = fact.score + Math.max(0, 8 - Math.min(distance, 8));
+        return { node, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+    rankedNodes.push(...nearby);
+  }
+
+  return Array.from(
+    new Map(
+      rankedNodes
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxNodes * 2)
+        .map((item) => [item.node.id, item.node])
+    ).values()
+  ).slice(0, maxNodes);
+}
+
+function buildActionBlockEvidence(
+  question: string,
+  plan: QuestionPlan,
+  scopeFiles: string[] = [],
+  maxEvidence: number = 8
+): Evidence[] {
+  const recalled = recallFacts(question, plan, scopeFiles, 260).filter((fact) => fact.context?.startsWith('action:'));
+  const buttonTerms = extractButtonLabelKeywords(question).map((term) => term.toLowerCase());
+  const scopeSet = new Set(scopeFiles);
+
+  const groupMap = new Map<string, { score: number; facts: Array<CodeFact & { score: number }> }>();
+  for (const fact of recalled) {
+    const key = `${fact.filePath}|${fact.context ?? ''}`;
+    const prev = groupMap.get(key) ?? { score: 0, facts: [] };
+    let gScore = fact.score;
+    if (buttonTerms.length > 0 && buttonTerms.some((term) => (fact.context ?? '').toLowerCase().includes(term))) gScore += 6;
+    if (scopeSet.has(fact.filePath)) gScore += 2;
+    prev.score += gScore;
+    prev.facts.push(fact);
+    groupMap.set(key, prev);
+  }
+
+  const kindLabel: Record<FactKind, string> = {
+    condition: '动作条件',
+    trigger: '动作触发',
+    state: '动作状态',
+    api: '动作接口',
+    logic: '动作逻辑',
+  };
+  const kindPriorityByConcern: Record<PlanConcern, FactKind[]> = {
+    ui_condition: ['condition', 'trigger', 'state', 'api', 'logic'],
+    data_flow: ['trigger', 'condition', 'state', 'api', 'logic'],
+    state_flow: ['state', 'condition', 'trigger', 'api', 'logic'],
+    api_list: ['api', 'trigger', 'condition', 'state', 'logic'],
+    pagination: ['condition', 'state', 'trigger', 'api', 'logic'],
+    component_relation: ['trigger', 'condition', 'state', 'api', 'logic'],
+    error_trace: ['logic', 'condition', 'state', 'trigger', 'api'],
+    general: ['condition', 'trigger', 'state', 'api', 'logic'],
+  };
+  const kindPriority = kindPriorityByConcern[plan.concern] ?? kindPriorityByConcern.general;
+
+  const selectedGroups = Array.from(groupMap.entries())
+    .sort((a, b) => b[1].score - a[1].score)
+    .slice(0, 5);
+
+  const evidence: Evidence[] = [];
+  for (const [, group] of selectedGroups) {
+    const usedKinds = new Set<FactKind>();
+    for (const kind of kindPriority) {
+      const matched = group.facts
+        .filter((fact) => fact.kind === kind)
+        .sort((a, b) => b.score - a.score)[0];
+      if (!matched || usedKinds.has(kind)) continue;
+      usedKinds.add(kind);
+      evidence.push({
+        file: matched.filePath,
+        line: matched.line,
+        code: matched.context ? `${matched.context} => ${matched.text}` : matched.text,
+        label: kindLabel[kind],
+      });
+      if (evidence.length >= maxEvidence) return evidence;
+    }
+  }
+
+  return evidence;
+}
+
+function extractMethodNamesFromEventLine(line: string): string[] {
+  const methods = new Set<string>();
+  const patterns = [
+    /handleClick\s*:\s*this\.(\w+)/g,
+    /onClick=\{this\.(\w+)\}/g,
+    /@click\s*=\s*["'{]\s*([\w$]+)/g,
+    /this\.\$refs\.\w+\.(\w+)\s*\(/g,
+  ];
+  for (const pattern of patterns) {
+    let m: RegExpExecArray | null = null;
+    while ((m = pattern.exec(line)) !== null) {
+      const name = (m[1] ?? '').trim();
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+      methods.add(name);
+    }
+  }
+  return Array.from(methods);
+}
+
+function findMethodDefinitionLine(lines: string[], methodName: string): number {
+  if (!methodName) return -1;
+  const escaped = escapeRegex(methodName);
+  const patterns = [
+    new RegExp(`^\\s*(?:async\\s+)?${escaped}\\s*\\(`),
+    new RegExp(`\\b${escaped}\\s*:\\s*(?:async\\s*)?function\\s*\\(`),
+    new RegExp(`\\b${escaped}\\s*=\\s*(?:async\\s*)?\\(`),
+    new RegExp(`\\b${escaped}\\s*=\\s*(?:async\\s*)?function\\s*\\(`),
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (patterns.some((pattern) => pattern.test(line))) return i;
+  }
+  return -1;
+}
+
+function resolveMethodScanEnd(lines: string[], startLine: number, maxSpan: number = 40): number {
+  let depth = 0;
+  let seenBlockStart = false;
+  const endLimit = Math.min(lines.length - 1, startLine + maxSpan);
+  for (let i = startLine; i <= endLimit; i++) {
+    const line = lines[i] ?? '';
+    const openCount = (line.match(/\{/g) ?? []).length;
+    const closeCount = (line.match(/\}/g) ?? []).length;
+    if (openCount > 0) seenBlockStart = true;
+    depth += openCount - closeCount;
+    if (seenBlockStart && i > startLine && depth <= 0) {
+      return i;
+    }
+  }
+  return endLimit;
+}
+
+function isMethodRelevantToQuestion(methodName: string, questionLower: string): boolean {
+  const name = methodName.toLowerCase();
+  if (!name) return false;
+  if (/(核实|校验|确认|verify|check)/i.test(questionLower)) {
+    return /(verify|check|confirm|inventory|batch)/i.test(name);
+  }
+  if (/(作废|废弃|void|discard|abolish)/i.test(questionLower)) {
+    return /(void|discard|abolish|cancel)/i.test(name);
+  }
+  if (/(审核|audit|审批)/i.test(questionLower)) {
+    return /(audit|approve|review)/i.test(name);
+  }
+  return /(open|confirm|submit|verify|check|handle|click|batch|void|discard|abolish)/i.test(name);
+}
+
+function collectActionMethodHints(
+  question: string,
+  scopeFiles: string[] = [],
+  scopeDir?: string
+): Map<string, number> {
+  const hints = new Map<string, number>();
+  if (!factIndex?.facts?.length) return hints;
+
+  const buttonTerms = extractButtonLabelKeywords(question).map((term) => term.toLowerCase());
+  const questionTerms = extractQuestionCoreTerms(question);
+  const scopeSet = new Set(scopeFiles);
+  const questionLower = question.toLowerCase();
+
+  for (const fact of factIndex.facts) {
+    if (fact.kind !== 'trigger' && fact.kind !== 'logic') continue;
+
+    const combined = `${fact.context ?? ''} ${fact.text}`;
+    if (!/(action:|handleClick|onClick|@click|openDialog|inventoryCheck|batchInventoryCheck)/i.test(combined)) continue;
+    if (scopeDir) {
+      if (!fact.filePath.startsWith(scopeDir)) continue;
+    } else if (scopeSet.size > 0 && !scopeSet.has(fact.filePath)) {
+      continue;
+    }
+
+    const lower = combined.toLowerCase();
+    if (buttonTerms.length > 0 && !buttonTerms.some((term) => lower.includes(term)) && (fact.context ?? '').startsWith('action:')) {
+      continue;
+    }
+
+    const methods = extractMethodNamesFromEventLine(combined);
+    for (const method of methods) {
+      const methodLower = method.toLowerCase();
+      let score = 3;
+      if (/(open|confirm|submit|verify|check|batch|void|discard|abolish|inventory|audit)/i.test(methodLower)) score += 5;
+      if (/(核实|校验|确认|verify|check)/i.test(questionLower) && /(verify|check|confirm|inventory|batch)/i.test(methodLower)) score += 8;
+      if (/(作废|废弃|void|discard|abolish)/i.test(questionLower) && /(void|discard|abolish|cancel)/i.test(methodLower)) score += 8;
+      if (/(审核|审批|audit|approve)/i.test(questionLower) && /(audit|approve|review)/i.test(methodLower)) score += 8;
+      for (const term of questionTerms) {
+        if (term.length >= 2 && methodLower.includes(term)) score += 2;
+      }
+      if (buttonTerms.length > 0 && buttonTerms.some((term) => lower.includes(term))) score += 5;
+      hints.set(method, (hints.get(method) ?? 0) + score);
+    }
+  }
+
+  return hints;
+}
+
+interface ImportedSymbolBinding {
+  localName: string;
+  importedName: string;
+  sourceFile: string;
+}
+
+interface ApiFunctionEndpointEvidence {
+  filePath: string;
+  functionName: string;
+  method: string;
+  endpoint: string;
+  line: number;
+}
+
+function extractImportBindingsFromFile(repoFilePath: string): ImportedSymbolBinding[] {
+  if (!REPO_PATH_ENV) return [];
+  const absPath = path.join(REPO_PATH_ENV, repoFilePath);
+  if (!fs.existsSync(absPath)) return [];
+
+  let content = '';
+  try {
+    content = fs.readFileSync(absPath, 'utf-8');
+  } catch {
+    return [];
+  }
+
+  const bindings: ImportedSymbolBinding[] = [];
+  const importRegex = /import\s+([\s\S]*?)\s+from\s*['"`]([^'"`]+)['"`]/g;
+  let match: RegExpExecArray | null = null;
+  while ((match = importRegex.exec(content)) !== null) {
+    const clause = (match[1] ?? '').trim();
+    const specifier = (match[2] ?? '').trim();
+    const sourceFile = resolveRepoImportPath(repoFilePath, specifier);
+    if (!sourceFile) continue;
+
+    const namedMatch = clause.match(/\{([\s\S]*?)\}/);
+    const namedPart = namedMatch?.[1] ?? '';
+    const defaultPart = clause.includes('{')
+      ? clause.slice(0, clause.indexOf('{')).replace(/,/g, '').trim()
+      : clause.trim();
+
+    if (defaultPart && /^[A-Za-z_$][\w$]*$/.test(defaultPart)) {
+      bindings.push({
+        localName: defaultPart,
+        importedName: 'default',
+        sourceFile,
+      });
+    }
+
+    if (namedPart) {
+      const items = namedPart.split(',').map((item) => item.trim()).filter(Boolean);
+      for (const item of items) {
+        const aliasMatch = item.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
+        if (aliasMatch) {
+          bindings.push({
+            localName: aliasMatch[2],
+            importedName: aliasMatch[1],
+            sourceFile,
+          });
+          continue;
+        }
+        if (/^[A-Za-z_$][\w$]*$/.test(item)) {
+          bindings.push({
+            localName: item,
+            importedName: item,
+            sourceFile,
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(
+    new Map(bindings.map((item) => [`${item.localName}|${item.importedName}|${item.sourceFile}`, item])).values()
+  );
+}
+
+function buildApiFunctionEndpointMap(repoFilePath: string): Map<string, ApiFunctionEndpointEvidence[]> {
+  if (!REPO_PATH_ENV) return new Map();
+  const absPath = path.join(REPO_PATH_ENV, repoFilePath);
+  if (!fs.existsSync(absPath)) return new Map();
+
+  let lines: string[] = [];
+  try {
+    lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
+  } catch {
+    return new Map();
+  }
+
+  const methodMap = new Map<string, ApiFunctionEndpointEvidence[]>();
+  const defPattern = /^\s*(?:export\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)\s*\(|const\s+([A-Za-z_$][\w$]*)\s*=)/;
+  const requestPattern = /(request|axios)\.(get|post|put|delete|patch)\s*(?:<[^>]*>)?\(\s*['"`]([^'"`]+)['"`]/ig;
+  const fetchPattern = /fetch\(\s*['"`]([^'"`]+)['"`]/ig;
+
+  const addEndpoint = (functionName: string, method: string, endpoint: string, line: number): void => {
+    const arr = methodMap.get(functionName) ?? [];
+    arr.push({
+      filePath: repoFilePath,
+      functionName,
+      method,
+      endpoint,
+      line,
+    });
+    methodMap.set(functionName, arr);
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const defMatch = line.match(defPattern);
+    const functionName = (defMatch?.[1] ?? defMatch?.[2] ?? '').trim();
+    if (!functionName) continue;
+
+    let endLine = resolveMethodScanEnd(lines, i, 30);
+    if (endLine <= i) {
+      endLine = Math.min(lines.length - 1, i + 8);
+    }
+
+    for (let j = i; j <= endLine; j++) {
+      const code = lines[j] ?? '';
+      requestPattern.lastIndex = 0;
+      let requestMatch: RegExpExecArray | null = null;
+      while ((requestMatch = requestPattern.exec(code)) !== null) {
+        const method = (requestMatch[2] ?? '').toUpperCase();
+        const endpoint = requestMatch[3] ?? '';
+        if (!method || !endpoint) continue;
+        addEndpoint(functionName, method, endpoint, j + 1);
+      }
+
+      fetchPattern.lastIndex = 0;
+      let fetchMatch: RegExpExecArray | null = null;
+      while ((fetchMatch = fetchPattern.exec(code)) !== null) {
+        const endpoint = fetchMatch[1] ?? '';
+        if (!endpoint) continue;
+        addEndpoint(functionName, 'FETCH', endpoint, j + 1);
+      }
+    }
+  }
+
+  return methodMap;
+}
+
+function buildFlowChainEvidence(
+  question: string,
+  scopeFiles: string[] = [],
+  maxEvidence: number = 10
+): Evidence[] {
+  if (!REPO_PATH_ENV || scopeFiles.length === 0 || maxEvidence <= 0) return [];
+
+  const questionTerms = extractQuestionCoreTerms(question);
+  const questionLower = question.toLowerCase();
+  const buttonTerms = extractButtonLabelKeywords(question).map((term) => term.toLowerCase());
+  const candidateFiles = Array.from(new Set(scopeFiles)).filter((file) => /\.(vue|tsx?|jsx?|ts|js)$/i.test(file));
+  const importBindingsByFile = new Map<string, ImportedSymbolBinding[]>();
+  const apiFunctionEndpointCache = new Map<string, Map<string, ApiFunctionEndpointEvidence[]>>();
+
+  const methodHintsByFile = new Map<string, Set<string>>();
+  const secondHopMethods = new Set<string>();
+  const secondHopRefHints = new Map<string, Set<string>>();
+  const rows: Array<Evidence & { score: number }> = [];
+
+  const pushRow = (item: Evidence & { score: number }): void => {
+    if (item.score < 4) return;
+    rows.push(item);
+  };
+
+  for (const filePath of candidateFiles) {
+    if (!importBindingsByFile.has(filePath)) {
+      const bindings = extractImportBindingsFromFile(filePath).filter((binding) =>
+        /(\/api\/|request\.(ts|js)$|api\/index\.(ts|js)$)/i.test(binding.sourceFile)
+      );
+      importBindingsByFile.set(filePath, bindings);
+      for (const binding of bindings) {
+        if (apiFunctionEndpointCache.has(binding.sourceFile)) continue;
+        apiFunctionEndpointCache.set(binding.sourceFile, buildApiFunctionEndpointMap(binding.sourceFile));
+      }
+    }
+
+    const absPath = path.join(REPO_PATH_ENV, filePath);
+    if (!fs.existsSync(absPath)) continue;
+    let lines: string[] = [];
+    try {
+      lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
+    } catch {
+      continue;
+    }
+
+    const methodHints = methodHintsByFile.get(filePath) ?? new Set<string>();
+    const buttonAnchorLines = new Set<number>();
+    if (buttonTerms.length > 0) {
+      for (let i = 0; i < lines.length; i++) {
+        const text = lines[i].trim();
+        if (!text) continue;
+        const lower = text.toLowerCase();
+        const hasButtonTerm = buttonTerms.some((term) => lower.includes(term));
+        if (!hasButtonTerm) continue;
+        if (!/(name\s*:|alias\s*:|<el-button|按钮|action)/i.test(text)) continue;
+        buttonAnchorLines.add(i);
+      }
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const text = lines[i].trim();
+      if (!text) continue;
+      const lower = text.toLowerCase();
+      const clickSignal = /(handleClick\s*:|onClick=|@click=)/i.test(text);
+      if (clickSignal) {
+        const extractedMethods = extractMethodNamesFromEventLine(text);
+        const hasButtonTerm = buttonTerms.length > 0 && buttonTerms.some((term) => lower.includes(term));
+        const nearButtonAnchor = buttonAnchorLines.size > 0
+          && Array.from(buttonAnchorLines).some((anchorLine) => Math.abs(anchorLine - i) <= 6);
+        const hasRelevantMethod = extractedMethods.some((method) => isMethodRelevantToQuestion(method, questionLower));
+        if (buttonTerms.length > 0 && !hasButtonTerm && (!nearButtonAnchor || !hasRelevantMethod)) {
+          continue;
+        }
+        let score = 8;
+        if (hasButtonTerm) score += 8;
+        if (nearButtonAnchor) score += 4;
+        for (const term of questionTerms) {
+          if (term.length >= 2 && lower.includes(term)) score += 2;
+        }
+        pushRow({
+          file: filePath,
+          line: i + 1,
+          code: text,
+          label: '链路触发',
+          score,
+        });
+        for (const method of extractedMethods) {
+          if (!hasButtonTerm && buttonTerms.length > 0 && !isMethodRelevantToQuestion(method, questionLower)) continue;
+          methodHints.add(method);
+        }
+      }
+    }
+    if (methodHints.size > 0) {
+      methodHintsByFile.set(filePath, methodHints);
+    }
+
+    for (const methodName of Array.from(methodHints).slice(0, 16)) {
+      if (buttonTerms.length > 0 && !isMethodRelevantToQuestion(methodName, questionLower)) continue;
+      const defLine = findMethodDefinitionLine(lines, methodName);
+      if (defLine < 0) continue;
+      pushRow({
+        file: filePath,
+        line: defLine + 1,
+        code: lines[defLine].trim(),
+        label: '链路函数',
+        score: 12,
+      });
+
+      const endLine = resolveMethodScanEnd(lines, defLine, 36);
+      for (let j = defLine; j <= endLine; j++) {
+        const code = lines[j].trim();
+        if (!code) continue;
+        const lower = code.toLowerCase();
+        if (hasApiSignal(code)) {
+          let score = 14;
+          for (const term of questionTerms) {
+            if (term.length >= 2 && lower.includes(term)) score += 2;
+          }
+          pushRow({
+            file: filePath,
+            line: j + 1,
+            code,
+            label: '链路接口',
+            score,
+          });
+        } else if (/(this\.\$refs\.\w+\.\w+\(|\.(open|confirm|submit|verify|check)\w*\(|\b(open|confirm|submit|verify|check)\w*\()/i.test(code)) {
+          let score = 9;
+          for (const term of questionTerms) {
+            if (term.length >= 2 && lower.includes(term)) score += 1;
+          }
+          pushRow({
+            file: filePath,
+            line: j + 1,
+            code,
+            label: '链路调用',
+            score,
+          });
+          const callMatches = Array.from(code.matchAll(/\.(\w+)\s*\(/g));
+          for (const match of callMatches) {
+            const called = (match[1] ?? '').trim();
+            if (!/^[A-Za-z_$][\w$]*$/.test(called)) continue;
+            if (!/^(open|confirm|submit|verify|check|batch)/i.test(called)) continue;
+            if (called === methodName) continue;
+            secondHopMethods.add(called);
+          }
+          const refMatches = Array.from(code.matchAll(/this\.\$refs\.(\w+)\.(\w+)\s*\(/g));
+          for (const match of refMatches) {
+            const refName = (match[1] ?? '').trim();
+            const called = (match[2] ?? '').trim();
+            if (!refName || !called) continue;
+            secondHopMethods.add(called);
+            const refs = secondHopRefHints.get(called) ?? new Set<string>();
+            refs.add(refName.toLowerCase());
+            secondHopRefHints.set(called, refs);
+          }
+        }
+
+        // 补充：导入的 API 包装函数映射到真实 endpoint（例如 verify -> POST /xxx/verify）
+        const importBindings = importBindingsByFile.get(filePath) ?? [];
+        for (const binding of importBindings) {
+          const bindingPattern = new RegExp(`\\b${escapeRegex(binding.localName)}\\b`);
+          if (!bindingPattern.test(code)) continue;
+          const endpointMap = apiFunctionEndpointCache.get(binding.sourceFile);
+          if (!endpointMap) continue;
+          const endpointItems = endpointMap.get(binding.importedName) ?? endpointMap.get(binding.localName) ?? [];
+          for (const item of endpointItems.slice(0, 2)) {
+            let score = 12;
+            const haystack = `${item.functionName} ${item.method} ${item.endpoint}`.toLowerCase();
+            for (const term of questionTerms) {
+              if (term.length >= 2 && haystack.includes(term)) score += 2;
+            }
+            if (/(核实|verify|check|确认)/i.test(questionLower) && /(verify|check|confirm|核实)/i.test(haystack)) score += 4;
+            pushRow({
+              file: item.filePath,
+              line: item.line,
+              code: `${item.method} ${item.endpoint} (via ${binding.localName})`,
+              label: '链路接口',
+              score,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (secondHopMethods.size > 0) {
+    const methodList = Array.from(secondHopMethods).slice(0, 20);
+    for (const filePath of candidateFiles) {
+      const absPath = path.join(REPO_PATH_ENV, filePath);
+      if (!fs.existsSync(absPath)) continue;
+      let lines: string[] = [];
+      try {
+        lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
+      } catch {
+        continue;
+      }
+
+      for (const methodName of methodList) {
+        const defLine = findMethodDefinitionLine(lines, methodName);
+        if (defLine < 0) continue;
+        const refHints = secondHopRefHints.get(methodName);
+        if (refHints && refHints.size > 0) {
+          const fileKey = filePath.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const isHintedFile = Array.from(refHints).some((ref) => {
+            const refKey = ref.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return refKey.length >= 3 && fileKey.includes(refKey);
+          });
+          if (!isHintedFile) continue;
+        }
+        pushRow({
+          file: filePath,
+          line: defLine + 1,
+          code: lines[defLine].trim(),
+          label: '链路函数',
+          score: 10,
+        });
+        const endLine = resolveMethodScanEnd(lines, defLine, 34);
+        for (let j = defLine; j <= endLine; j++) {
+          const code = lines[j].trim();
+          if (!code) continue;
+          if (!hasApiSignal(code)) continue;
+          pushRow({
+            file: filePath,
+            line: j + 1,
+            code,
+            label: '链路接口',
+            score: 12,
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(new Map(rows.map((item) => [`${item.file}:${item.line}:${item.label}`, item])).values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxEvidence)
+    .map(({ score, ...item }) => item);
+}
+
+const FLOW_PATH_EDGE_TYPES = new Set<GraphEdge['type']>([
+  'calls',
+  'dispatches',
+  'commits',
+  'bindsEvent',
+  'guardsBy',
+  'uses',
+  'assigns',
+  'defines',
+]);
+
+function rankApiTargetNodes(
+  question: string,
+  anchor: PageAnchor | null,
+  componentFiles: string[] = [],
+  maxTargets: number = 12
+): Array<{ node: GraphNode; score: number }> {
+  if (!graphStore) return [];
+
+  const scopeDir = anchor ? path.dirname(anchor.componentFile) : '';
+  const componentFileSet = new Set(componentFiles);
+  const terms = extractQuestionCoreTerms(question);
+  const questionLower = question.toLowerCase();
+  const askVerify = /(核实|校验|verify|check)/i.test(questionLower);
+  const askVoid = /(作废|废弃|void|discard|abolish)/i.test(questionLower);
+  const askAudit = /(审核|审批|audit|approve)/i.test(questionLower);
+
+  return graphStore.getAllNodes()
+    .filter((node) => node.type === 'apiCall')
+    .map((node) => {
+      const endpoint = node.meta?.apiEndpoint ?? '';
+      const haystack = `${node.name} ${node.filePath} ${endpoint}`.toLowerCase();
+      let score = NODE_TYPE_SCORE[node.type] ?? 0;
+      if (scopeDir && node.filePath.startsWith(scopeDir)) score += 14;
+      if (componentFileSet.has(node.filePath)) score += 8;
+      for (const term of terms) {
+        if (term.length >= 2 && haystack.includes(term)) score += 2;
+      }
+      if (askVerify) {
+        if (/(verify|check|核实|\/verify(?:\/|$))/i.test(haystack)) score += 12;
+        else score -= 8;
+        if (/todo\/confirm|batch\/todo\/confirm/i.test(haystack)) score -= 5;
+      }
+      if (askVoid && /(void|discard|abolish|作废)/i.test(haystack)) score += 10;
+      if (askAudit && /(audit|approve|review|审批|审核)/i.test(haystack)) score += 8;
+      return { node, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxTargets);
+}
+
+function findShortestGraphPath(
+  startId: string,
+  targetIds: Set<string>,
+  maxDepth: number = 7
+): GraphEdge[] | null {
+  if (!graphStore || targetIds.size === 0) return null;
+
+  const queue: Array<{ nodeId: string; depth: number; path: GraphEdge[] }> = [
+    { nodeId: startId, depth: 0, path: [] },
+  ];
+  const bestDepth = new Map<string, number>([[startId, 0]]);
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current.depth > maxDepth) continue;
+    if (targetIds.has(current.nodeId) && current.path.length > 0) {
+      return current.path;
+    }
+
+    for (const edge of graphStore.getOutEdges(current.nodeId)) {
+      if (!FLOW_PATH_EDGE_TYPES.has(edge.type)) continue;
+      const nextDepth = current.depth + 1;
+      if (nextDepth > maxDepth) continue;
+      const prevDepth = bestDepth.get(edge.to);
+      if (prevDepth !== undefined && prevDepth <= nextDepth) continue;
+      bestDepth.set(edge.to, nextDepth);
+      queue.push({
+        nodeId: edge.to,
+        depth: nextDepth,
+        path: [...current.path, edge],
+      });
+    }
+  }
+
+  return null;
+}
+
+function buildGraphPathEvidence(
+  question: string,
+  nodes: GraphNode[],
+  plan: QuestionPlan,
+  anchor: PageAnchor | null,
+  componentFiles: string[] = [],
+  maxEvidence: number = 8
+): Evidence[] {
+  if (!graphStore || nodes.length === 0 || maxEvidence <= 0) return [];
+  if (!(plan.concern === 'data_flow' || plan.concern === 'api_list' || plan.concern === 'component_relation' || isFlowQuestion(question))) {
+    return [];
+  }
+
+  const scopeDir = anchor ? path.dirname(anchor.componentFile) : '';
+  const componentFileSet = new Set(componentFiles);
+  const questionTerms = extractQuestionCoreTerms(question);
+  const actionHints = collectActionMethodHints(question, componentFiles, scopeDir || undefined);
+  const apiTargets = rankApiTargetNodes(question, anchor, componentFiles, 12);
+  if (apiTargets.length === 0) return [];
+  const targetScoreMap = new Map(apiTargets.map((item) => [item.node.id, item.score]));
+
+  const hintedGraphNodes = graphStore.getAllNodes().filter((node) => {
+    if (node.type === 'file' || node.type === 'import' || node.type === 'apiCall') return false;
+    if (scopeDir && !node.filePath.startsWith(scopeDir)) return false;
+    if (componentFileSet.size > 0 && !componentFileSet.has(node.filePath) && !scopeDir) return false;
+    if (actionHints.has(node.name)) return true;
+    return /(inventorycheck|batchinventorycheck|confirmdata|batchverify|verify|check|confirm|opendialog)/i.test(node.name);
+  });
+
+  const candidateNodeMap = new Map<string, GraphNode>([
+    ...nodes.filter((node) => node.type !== 'file' && node.type !== 'import').map((node) => [node.id, node] as const),
+    ...hintedGraphNodes.map((node) => [node.id, node] as const),
+  ]);
+
+  const startCandidates = Array.from(candidateNodeMap.values())
+    .filter((node) => node.type !== 'file' && node.type !== 'import')
+    .map((node) => {
+      const text = `${node.name} ${node.filePath}`.toLowerCase();
+      let score = NODE_TYPE_SCORE[node.type] ?? 0;
+      if (scopeDir && node.filePath.startsWith(scopeDir)) score += 8;
+      if (componentFileSet.has(node.filePath)) score += 6;
+      if (actionHints.has(node.name)) score += 10 + (actionHints.get(node.name) ?? 0);
+      if (/(inventorycheck|batchinventorycheck|confirmdata|verify|check|confirm|open|submit|handle)/i.test(node.name)) score += 4;
+      if (/^(getSource|getData|getList|init|setup|created|mounted)$/i.test(node.name)) score -= 6;
+      for (const term of questionTerms) {
+        if (term.length >= 2 && text.includes(term)) score += 2;
+      }
+      return { node, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 14);
+
+  const pathCandidates: Array<{ start: GraphNode; target: GraphNode; path: GraphEdge[]; score: number }> = [];
+  for (const candidate of startCandidates) {
+    for (const target of apiTargets.slice(0, 8)) {
+      const pathEdges = findShortestGraphPath(candidate.node.id, new Set([target.node.id]), 8);
+      if (!pathEdges || pathEdges.length === 0) continue;
+      const chainScore = candidate.score + (targetScoreMap.get(target.node.id) ?? 0) + Math.max(0, 18 - pathEdges.length * 2);
+      pathCandidates.push({
+        start: candidate.node,
+        target: target.node,
+        path: pathEdges,
+        score: chainScore,
+      });
+    }
+  }
+
+  if (pathCandidates.length === 0) return [];
+
+  const wantMultiPath = /完整|全链路|完整链路|完整流程|闭环|全流程/.test(question);
+  const selectedPaths: Array<{ start: GraphNode; target: GraphNode; path: GraphEdge[]; score: number }> = [];
+  const usedTargets = new Set<string>();
+  for (const candidate of pathCandidates.sort((a, b) => b.score - a.score)) {
+    if (usedTargets.has(candidate.target.id)) continue;
+    selectedPaths.push(candidate);
+    usedTargets.add(candidate.target.id);
+    if (selectedPaths.length >= (wantMultiPath ? 2 : 1)) break;
+  }
+  if (selectedPaths.length === 0) return [];
+
+  const nodeById = new Map<string, GraphNode>(graphStore.getAllNodes().map((node) => [node.id, node]));
+  const evidence: Evidence[] = [];
+  const appendedStarts = new Set<string>();
+
+  for (const selected of selectedPaths) {
+    if (!appendedStarts.has(selected.start.id)) {
+      evidence.push({
+        file: selected.start.filePath,
+        line: parseLine(selected.start.loc),
+        code: `入口函数 ${selected.start.name}`,
+        label: '链路起点',
+      });
+      appendedStarts.add(selected.start.id);
+    }
+
+    for (const edge of selected.path) {
+      const fromNode = nodeById.get(edge.from);
+      const toNode = nodeById.get(edge.to);
+      if (!toNode) continue;
+      if (scopeDir && !toNode.filePath.startsWith(scopeDir) && toNode.type !== 'apiCall') continue;
+
+      if (toNode.type === 'apiCall') {
+        evidence.push({
+          file: toNode.filePath,
+          line: parseLine(toNode.loc),
+          code: `${toNode.meta?.apiMethod ?? 'API'} ${toNode.meta?.apiEndpoint ?? toNode.name}`,
+          label: '链路接口',
+        });
+        continue;
+      }
+
+      const fromName = fromNode?.name ?? '调用方';
+      evidence.push({
+        file: toNode.filePath,
+        line: parseLine(toNode.loc),
+        code: `${fromName} --${edge.type}--> ${toNode.name}`,
+        label: edge.type === 'guardsBy' ? '链路条件' : '链路函数',
+      });
+    }
+  }
+
+  return Array.from(
+    new Map(evidence.map((item) => [`${item.file}:${item.line}:${item.label}`, item])).values()
+  ).slice(0, maxEvidence);
 }
 
 function buildUiConditionEvidence(
@@ -2067,6 +2976,201 @@ function enrichEvidenceWithButtonConditions(question: string, evidence: Evidence
   ).slice(0, maxEvidence);
 }
 
+function scoreEvidenceItem(
+  item: Evidence,
+  question: string,
+  plan: QuestionPlan,
+  anchor: PageAnchor | null,
+  componentFiles: string[]
+): number {
+  const coreTerms = extractQuestionCoreTerms(question);
+  const buttonTerms = extractButtonLabelKeywords(question);
+  const haystack = `${item.file} ${item.label} ${item.code}`.toLowerCase();
+  let score = 0;
+
+  for (const term of coreTerms) {
+    if (term.length >= 2 && haystack.includes(term)) score += 2;
+  }
+  for (const term of buttonTerms) {
+    if (term && haystack.includes(term.toLowerCase())) score += 4;
+  }
+  if (plan.concern === 'ui_condition' && buttonTerms.length > 0) {
+    const hasButtonTerm = buttonTerms.some((term) => haystack.includes(term.toLowerCase()));
+    if (!hasButtonTerm) {
+      score -= 4;
+      if (anchor && item.file === anchor.componentFile) score += 2;
+    }
+  }
+
+  if (anchor) {
+    const scopeDir = path.dirname(anchor.componentFile);
+    if (item.file.startsWith(scopeDir)) score += 6;
+    else if (plan.concern !== 'general') score -= 2;
+  }
+  if (componentFiles.includes(item.file)) score += 3;
+
+  if (plan.concern === 'ui_condition' && /条件|visible|disabled|v-if|v-show/i.test(`${item.label} ${item.code}`)) score += 4;
+  if (plan.concern === 'data_flow' && /触发|handle|click|confirm|submit|open/i.test(`${item.label} ${item.code}`)) score += 3;
+  if (plan.concern === 'api_list' && (/apiCall/i.test(item.label) || hasApiSignal(item.code))) score += 4;
+  if (/补充接口证据/i.test(item.label)) score += 20;
+  else if (/链路接口|动作接口|apiCall|通用接口/i.test(item.label)) score += 10;
+  if (
+    plan.concern === 'data_flow'
+    && (/链路接口|动作接口|apiCall|补充接口证据|通用接口/i.test(item.label) || hasApiSignal(item.code))
+  ) {
+    score += 12;
+  }
+  if (plan.concern === 'pagination' && /page|pagination|pageNum|pageSize/i.test(`${item.label} ${item.code}`)) score += 4;
+  if (/页面锚点/.test(item.label)) score += 10;
+
+  return score;
+}
+
+function evidenceCoversNeed(evidence: Evidence[], need: EvidenceNeed): boolean {
+  const text = evidence.map((item) => `${item.label} ${item.code}`).join('\n');
+  if (need === 'api') return evidence.some((item) => /apiCall|动作接口|补充接口证据|通用接口/i.test(item.label) || hasApiSignal(item.code));
+  if (need === 'condition') return /(条件|v-if|v-show|visible|disabled|if\s*\(|\?.*:|&&|\|\|)/i.test(text);
+  if (need === 'function') return /(function|handle[A-Z]|open[A-Z]|confirm[A-Z]|submit[A-Z]|\w+\s*\()/i.test(text);
+  if (need === 'state') return /(state|data\(|computed|watch|this\.\w+\s*=|ref\(|reactive\()/i.test(text);
+  if (need === 'route') return /(route|router|path|页面锚点)/i.test(text);
+  if (need === 'pagination') return /(pageNum|pageSize|pagination|currentPage|分页|页码)/i.test(text);
+  if (need === 'component') return /(组件|component|<.*>|props|emit|v-model)/i.test(text);
+  return false;
+}
+
+function selectFallbackEvidenceByNeed(
+  question: string,
+  plan: QuestionPlan,
+  need: EvidenceNeed,
+  scopeFiles: string[],
+  maxCount: number = 3
+): Evidence[] {
+  const facts = recallFacts(question, plan, scopeFiles, 120);
+  const scopeSet = new Set(scopeFiles);
+  const scopeDirs = Array.from(new Set(scopeFiles.map((file) => path.dirname(file))));
+  const scopedFacts = facts.filter((fact) => {
+    if (scopeSet.size === 0) return true;
+    if (scopeSet.has(fact.filePath)) return true;
+    return scopeDirs.some((dir) => fact.filePath.startsWith(dir));
+  });
+  const matcher: Record<EvidenceNeed, (fact: CodeFact) => boolean> = {
+    api: (fact) => fact.kind === 'api',
+    condition: (fact) => fact.kind === 'condition',
+    function: (fact) => fact.kind === 'logic' || fact.kind === 'trigger',
+    state: (fact) => fact.kind === 'state',
+    route: (fact) => /route|router|path|meta/.test(fact.text.toLowerCase()),
+    pagination: (fact) => /pageNum|pageSize|pagination|currentPage|分页|页码/i.test(fact.text),
+    component: (fact) => /component|props|emit|v-model|<.*>/.test(fact.text),
+  };
+  const predicate = matcher[need];
+  if (!predicate) return [];
+
+  const labelByNeed: Record<EvidenceNeed, string> = {
+    api: '补充接口证据',
+    condition: '补充条件证据',
+    function: '补充函数证据',
+    state: '补充状态证据',
+    route: '补充路由证据',
+    pagination: '补充分页证据',
+    component: '补充组件证据',
+  };
+  const matched = scopedFacts
+    .filter((fact) => predicate(fact))
+    .slice(0, maxCount)
+    .map((fact) => ({
+      file: fact.filePath,
+      line: fact.line,
+      code: fact.context ? `${fact.context} => ${fact.text}` : fact.text,
+      label: labelByNeed[need],
+    }));
+
+  if (matched.length > 0) return matched;
+
+  // 对 api 做强兜底：即使问题词未命中，也从作用域内补接口事实，避免链路回答“无接口证据”。
+  if (need === 'api' && factIndex?.facts?.length) {
+    const questionTerms = extractQuestionCoreTerms(question);
+    const questionLower = question.toLowerCase();
+    const factBased = factIndex.facts
+      .filter((fact) => {
+        if (fact.kind !== 'api') return false;
+        if (scopeSet.size === 0) return true;
+        if (scopeSet.has(fact.filePath)) return true;
+        return scopeDirs.some((dir) => fact.filePath.startsWith(dir));
+      })
+      .map((fact) => {
+        const haystack = `${fact.filePath} ${fact.context ?? ''} ${fact.text}`.toLowerCase();
+        let score = 0;
+        if (scopeSet.has(fact.filePath)) score += 6;
+        else if (scopeDirs.some((dir) => fact.filePath.startsWith(dir))) score += 3;
+        for (const term of questionTerms) {
+          if (term.length >= 2 && haystack.includes(term)) score += 2;
+        }
+        if (/(核实|verify|check|确认)/i.test(questionLower) && /(verify|check|confirm|核实)/i.test(haystack)) score += 6;
+        if (/(作废|void|discard|abolish)/i.test(questionLower) && /(void|discard|abolish|作废)/i.test(haystack)) score += 6;
+        return { fact, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map((item) => item.fact)
+      .slice(0, maxCount)
+      .map((fact) => ({
+        file: fact.filePath,
+        line: fact.line,
+        code: fact.context ? `${fact.context} => ${fact.text}` : fact.text,
+        label: labelByNeed[need],
+      }));
+    if (factBased.length > 0) return factBased;
+
+    // 最终兜底：直接在作用域目录扫描 request 调用，避免链路问题漏接口证据。
+    if (REPO_PATH_ENV && scopeDirs.length > 0) {
+      const endpointRegex = /request\.(get|post|put|delete|patch)\s*(?:<[^>]*>)?\(\s*['"`]([^'"`]+)['"`]/i;
+      const fallback: Array<Evidence & { score: number }> = [];
+      const questionTerms = extractQuestionCoreTerms(question);
+      const questionLower = question.toLowerCase();
+      for (const dir of scopeDirs) {
+        const absDir = path.join(REPO_PATH_ENV, dir);
+        if (!fs.existsSync(absDir)) continue;
+        const files = listFilesRecursively(absDir, 4).filter((file) => /\.(ts|js|vue|tsx|jsx)$/i.test(file));
+        for (const absFile of files) {
+          const filePath = toRepoRelative(absFile);
+          let lines: string[] = [];
+          try {
+            lines = fs.readFileSync(absFile, 'utf-8').split(/\r?\n/);
+          } catch {
+            continue;
+          }
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            const m = line.match(endpointRegex);
+            if (!m) continue;
+            const endpointText = `${m[1].toUpperCase()} ${m[2]}`;
+            const haystack = `${filePath} ${endpointText}`.toLowerCase();
+            let score = 0;
+            for (const term of questionTerms) {
+              if (term.length >= 2 && haystack.includes(term)) score += 2;
+            }
+            if (/(核实|verify|check|确认)/i.test(questionLower) && /(verify|check|confirm|核实)/i.test(haystack)) score += 6;
+            if (/(作废|void|discard|abolish)/i.test(questionLower) && /(void|discard|abolish|作废)/i.test(haystack)) score += 6;
+            fallback.push({
+              file: filePath,
+              line: i + 1,
+              code: endpointText,
+              label: labelByNeed[need],
+              score,
+            });
+          }
+        }
+      }
+      if (fallback.length > 0) {
+        return fallback
+          .sort((a, b) => b.score - a.score)
+          .slice(0, maxCount)
+          .map(({ score, ...item }) => item);
+      }
+    }
+  }
+  return [];
+}
+
 function buildPlanEvidence(
   question: string,
   nodes: GraphNode[],
@@ -2076,13 +3180,99 @@ function buildPlanEvidence(
 ): Evidence[] {
   const base = buildEvidence(nodes, 8);
   const scoped: Evidence[] = [];
-  const generic = buildGenericEvidence(question, nodes, componentFiles, plan.concern, plan.concern !== 'general', 6);
+  let generic = buildGenericEvidence(question, nodes, componentFiles, plan.concern, plan.concern !== 'general', 6);
+  if (anchor && plan.concern !== 'general') {
+    const scopeDir = path.dirname(anchor.componentFile);
+    const scopedGeneric = generic.filter((item) => item.file.startsWith(scopeDir));
+    if (scopedGeneric.length >= 3) {
+      generic = scopedGeneric;
+    }
+  }
 
   if (plan.concern === 'ui_condition') {
-    scoped.push(...buildUiConditionEvidence(question, nodes, componentFiles, 10));
+    let uiEvidence = buildUiConditionEvidence(question, nodes, componentFiles, 10);
+    if (anchor) {
+      const scopeDir = path.dirname(anchor.componentFile);
+      const scopedUi = uiEvidence.filter((item) => item.file.startsWith(scopeDir));
+      if (scopedUi.length >= 3) {
+        uiEvidence = scopedUi;
+      }
+    }
+    scoped.push(...uiEvidence);
   }
   if (plan.concern === 'pagination') {
     scoped.push(...buildPaginationEvidence(nodes, 8));
+  }
+  if (plan.concern === 'data_flow' || plan.concern === 'api_list' || plan.concern === 'component_relation' || isFlowQuestion(question)) {
+    let graphPathEvidence = buildGraphPathEvidence(question, nodes, plan, anchor, componentFiles, 8);
+    if (anchor) {
+      const scopeDir = path.dirname(anchor.componentFile);
+      const scopedPath = graphPathEvidence.filter((item) => item.file.startsWith(scopeDir));
+      if (scopedPath.length > 0) {
+        graphPathEvidence = scopedPath;
+      }
+    }
+    scoped.push(...graphPathEvidence);
+  }
+  if (anchor && (plan.concern === 'data_flow' || isFlowQuestion(question))) {
+    const scopeDir = path.dirname(anchor.componentFile);
+    let flowApiNodes = nodes.filter((node) => node.type === 'apiCall' && node.filePath.startsWith(scopeDir));
+    if (flowApiNodes.length < 2) {
+      const apiRecallNodes = findRelevantNodes(
+        `${anchor.title} ${anchor.componentFile} api request post get verify batch`,
+        60,
+        {
+          ...plan,
+          scope: anchor.title,
+          keywords: [...plan.keywords, 'api', 'request', 'post', 'get', 'verify', 'batch'],
+        }
+      );
+      flowApiNodes = Array.from(
+        new Map(
+          [...flowApiNodes, ...apiRecallNodes.filter((node) => node.type === 'apiCall' && node.filePath.startsWith(scopeDir))]
+            .map((node) => [node.id, node])
+        ).values()
+      );
+    }
+
+    scoped.push(...flowApiNodes.slice(0, 6).map((node) => ({
+      file: node.filePath,
+      line: parseLine(node.loc),
+      code: node.meta?.apiEndpoint ? `${node.meta.apiMethod ?? 'API'} ${node.meta.apiEndpoint}` : `${node.name}`,
+      label: '链路接口',
+    })));
+  }
+  if (plan.concern === 'data_flow' || isFlowQuestion(question)) {
+    const flowScopeFiles = Array.from(new Set([
+      ...(anchor?.componentFile ? [anchor.componentFile] : []),
+      ...componentFiles,
+      ...nodes.slice(0, 20).map((node) => node.filePath),
+    ]));
+    let flowEvidence = buildFlowChainEvidence(question, flowScopeFiles, 10);
+    if (anchor) {
+      const scopeDir = path.dirname(anchor.componentFile);
+      const scopedFlow = flowEvidence.filter((item) => item.file.startsWith(scopeDir));
+      if (scopedFlow.length > 0) {
+        flowEvidence = scopedFlow;
+      }
+    }
+    scoped.push(...flowEvidence);
+  }
+  if (plan.concern !== 'general') {
+    const actionScopeFiles = Array.from(new Set([
+      ...(anchor?.componentFile ? [anchor.componentFile] : []),
+      ...componentFiles,
+      ...nodes.slice(0, 16).map((node) => node.filePath),
+    ]));
+    let actionEvidence = buildActionBlockEvidence(question, plan, actionScopeFiles, 8);
+    if (anchor) {
+      const scopeDir = path.dirname(anchor.componentFile);
+      const scopedAction = actionEvidence.filter((item) => item.file.startsWith(scopeDir));
+      if (scopedAction.length > 0) {
+        actionEvidence = scopedAction;
+      }
+    }
+    scoped.push(...actionEvidence);
   }
   if (plan.concern === 'api_list' && anchor) {
     const hits = collectPageEndpointHits(anchor).slice(0, 16);
@@ -2130,7 +3320,14 @@ function buildPlanEvidence(
   // 若证据仍然不足，增加与问题关键词命中的行级证据
   if (merged.length < 6 && REPO_PATH_ENV) {
     const terms = extractSearchTerms(question, plan.keywords).slice(0, 8);
-    const candidateFiles = Array.from(new Set([...componentFiles, ...nodes.slice(0, 20).map((node) => node.filePath)]));
+    let candidateFiles = Array.from(new Set([...componentFiles, ...nodes.slice(0, 20).map((node) => node.filePath)]));
+    if (anchor && plan.concern !== 'general') {
+      const scopeDir = path.dirname(anchor.componentFile);
+      const scopedFiles = candidateFiles.filter((file) => file.startsWith(scopeDir));
+      if (scopedFiles.length > 0) {
+        candidateFiles = scopedFiles;
+      }
+    }
     for (const file of candidateFiles) {
       const absPath = path.join(REPO_PATH_ENV, file);
       if (!fs.existsSync(absPath)) continue;
@@ -2156,11 +3353,80 @@ function buildPlanEvidence(
     }
   }
 
-  const deduped = Array.from(new Map(merged.map((item) => [`${item.file}:${item.line}:${item.label}`, item])).values()).slice(0, 12);
-  if (isUiConditionQuestion(question)) {
-    return enrichEvidenceWithButtonConditions(question, deduped, 12);
+  const deduped = Array.from(new Map(merged.map((item) => [`${item.file}:${item.line}:${item.label}`, item])).values());
+  const enriched = isUiConditionQuestion(question)
+    ? enrichEvidenceWithButtonConditions(question, deduped, 24)
+    : deduped;
+  const scopedFilesForNeed = Array.from(new Set([
+    ...(anchor?.componentFile ? [anchor.componentFile] : []),
+    ...componentFiles,
+    ...nodes.slice(0, 20).map((node) => node.filePath),
+  ]));
+  const strictScopeFilesForNeed = (() => {
+    if (!anchor || plan.concern === 'general') return scopedFilesForNeed;
+    const scopeDir = path.dirname(anchor.componentFile);
+    const scoped = scopedFilesForNeed.filter((file) => file.startsWith(scopeDir));
+    if (scoped.length > 0) return scoped;
+    return [
+      anchor.componentFile,
+      ...componentFiles.filter((file) => file.startsWith(scopeDir)),
+    ];
+  })();
+  const withNeedCoverage = [...enriched];
+  for (const need of plan.mustEvidence) {
+    const forceApiForFlow = need === 'api' && plan.concern === 'data_flow';
+    if (!forceApiForFlow && evidenceCoversNeed(withNeedCoverage, need)) continue;
+    const supplements = selectFallbackEvidenceByNeed(question, plan, need, strictScopeFilesForNeed, 2);
+    if (need === 'api') {
+      withNeedCoverage.unshift(...supplements);
+    } else {
+      withNeedCoverage.push(...supplements);
+    }
   }
-  return deduped;
+  if (
+    (plan.concern === 'data_flow' || plan.concern === 'api_list' || plan.concern === 'component_relation')
+    && !evidenceCoversNeed(withNeedCoverage, 'api')
+  ) {
+    withNeedCoverage.unshift(...selectFallbackEvidenceByNeed(question, plan, 'api', strictScopeFilesForNeed, 3));
+  }
+
+  const ranked = Array.from(new Map(withNeedCoverage.map((item) => [`${item.file}:${item.line}:${item.label}`, item])).values())
+    .map((item) => ({
+      item,
+      score: scoreEvidenceItem(item, question, plan, anchor, componentFiles),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.item);
+
+  let ordered = ranked;
+  if (anchor && plan.concern !== 'general') {
+    const scopeDir = path.dirname(anchor.componentFile);
+    const inScope = ranked.filter((item) => item.file.startsWith(scopeDir));
+    if (inScope.length >= 6) {
+      ordered = inScope;
+    } else {
+      ordered = [...inScope, ...ranked.filter((item) => !item.file.startsWith(scopeDir))];
+    }
+  }
+
+  let finalEvidence = ordered.slice(0, 12);
+  const forcedNeeds: EvidenceNeed[] = (plan.concern === 'data_flow' || isFlowQuestion(question))
+    ? ['api', 'function', 'condition']
+    : [];
+  const mustCheckNeeds = Array.from(new Set<EvidenceNeed>([
+    ...plan.mustEvidence,
+    ...forcedNeeds,
+  ]));
+  for (const need of mustCheckNeeds) {
+    if (evidenceCoversNeed(finalEvidence, need)) continue;
+    const supplements = selectFallbackEvidenceByNeed(question, plan, need, strictScopeFilesForNeed, need === 'api' ? 3 : 2);
+    if (supplements.length === 0) continue;
+    finalEvidence = Array.from(
+      new Map([...supplements, ...finalEvidence].map((item) => [`${item.file}:${item.line}:${item.label}`, item])).values()
+    ).slice(0, 12);
+  }
+
+  return finalEvidence;
 }
 
 function applyAnchorScope(
@@ -2197,11 +3463,19 @@ function applyAnchorScope(
   return ranked;
 }
 
-function selectStartNode(question: string, nodes: GraphNode[], plan?: QuestionPlan, componentFiles: string[] = []): GraphNode | undefined {
+function selectStartNode(
+  question: string,
+  nodes: GraphNode[],
+  plan?: QuestionPlan,
+  componentFiles: string[] = [],
+  anchor: PageAnchor | null = null
+): GraphNode | undefined {
   if (nodes.length === 0) return undefined;
   const concern = plan?.concern ?? (isPaginationQuestion(question) ? 'pagination' : isUiConditionQuestion(question) ? 'ui_condition' : 'general');
   const componentFileSet = new Set(componentFiles);
   const questionTerms = extractSearchTerms(question);
+  const scopeDir = anchor ? path.dirname(anchor.componentFile) : '';
+  const actionMethodHints = collectActionMethodHints(question, componentFiles, scopeDir || undefined);
 
   if (concern === 'component_relation' && componentFileSet.size > 0) {
     const scored = nodes
@@ -2209,6 +3483,8 @@ function selectStartNode(question: string, nodes: GraphNode[], plan?: QuestionPl
       .map((node) => {
         const text = `${node.name} ${node.filePath}`.toLowerCase();
         let score = NODE_TYPE_SCORE[node.type] ?? 0;
+        if (scopeDir && node.filePath.startsWith(scopeDir)) score += 4;
+        if (actionMethodHints.has(node.name)) score += (actionMethodHints.get(node.name) ?? 0) + 6;
         if (/(component|props|emit|watch|computed|handle|click|open|dialog|table)/i.test(node.name)) score += 4;
         for (const term of questionTerms) {
           if (text.includes(term)) score += 1;
@@ -2219,12 +3495,52 @@ function selectStartNode(question: string, nodes: GraphNode[], plan?: QuestionPl
     if (scored.length > 0) return scored[0].node;
   }
   if (concern === 'data_flow' && componentFileSet.size > 0) {
-    const flowNode = nodes.find((node) =>
-      componentFileSet.has(node.filePath)
-      && /(open|confirm|submit|void|discard|verify|batch|handle|click)/i.test(node.name)
-      && node.type !== 'import'
-    );
-    if (flowNode) return flowNode;
+    const buttonTerms = extractButtonLabelKeywords(question).map((term) => term.toLowerCase());
+    const flowTerms = extractQuestionCoreTerms(question);
+    const askVerify = /(核实|校验|确认|verify|check)/i.test(question);
+    const askVoid = /(作废|废弃|void|discard|abolish)/i.test(question);
+    const askAudit = /(审核|审批|audit|approve)/i.test(question);
+
+    const hintedFlowNodes = nodes
+      .filter((node) => componentFileSet.has(node.filePath) && actionMethodHints.has(node.name))
+      .map((node) => {
+        let score = (actionMethodHints.get(node.name) ?? 0) + 12;
+        if (scopeDir && node.filePath.startsWith(scopeDir)) score += 4;
+        if (askVerify && /(verify|check|inventory|batch|confirm)/i.test(node.name)) score += 6;
+        if (askVoid && /(void|discard|abolish|cancel)/i.test(node.name)) score += 6;
+        if (askAudit && /(audit|approve|review)/i.test(node.name)) score += 6;
+        return { node, score };
+      })
+      .sort((a, b) => b.score - a.score);
+    if (hintedFlowNodes.length > 0) return hintedFlowNodes[0].node;
+
+    const scoredFlowNodes = nodes
+      .filter((node) => componentFileSet.has(node.filePath) && node.type !== 'import')
+      .map((node) => {
+        const text = `${node.name} ${node.filePath}`.toLowerCase();
+        let score = NODE_TYPE_SCORE[node.type] ?? 0;
+        if (scopeDir && node.filePath.startsWith(scopeDir)) score += 6;
+        if (actionMethodHints.has(node.name)) score += (actionMethodHints.get(node.name) ?? 0) + 8;
+        if (/(open|confirm|submit|void|discard|verify|batch|handle|click|inventory|check)/i.test(node.name)) score += 5;
+        if (/(inventorycheck|batchinventorycheck|verify|check|confirm)/i.test(node.name)) score += 7;
+        if (/handlecheckboxchange|data|get|set|created|mounted|setup/i.test(node.name)) score -= 3;
+        if (/handle(field|checkbox|year|season|filter|table)/i.test(node.name)) score -= 4;
+        if (/^(getSource|getData|getList|init|setup|created|mounted)$/i.test(node.name)) score -= 8;
+        if (askVerify && /(check|verify|inventory|batchinventory)/i.test(node.name)) score += 9;
+        if (askVoid && /(void|discard|abolish|cancel)/i.test(node.name)) score += 9;
+        if (askAudit && /(audit|approve|review)/i.test(node.name)) score += 9;
+        if (askVerify && /(expected|history|report|export)/i.test(node.name)) score -= 5;
+        if (askVoid && /(expected|history|report|export)/i.test(node.name)) score -= 4;
+        for (const term of buttonTerms) {
+          if (term && text.includes(term)) score += 6;
+        }
+        for (const term of flowTerms) {
+          if (term.length >= 2 && text.includes(term)) score += 2;
+        }
+        return { node, score };
+      })
+      .sort((a, b) => b.score - a.score);
+    if (scoredFlowNodes.length > 0) return scoredFlowNodes[0].node;
   }
 
   if (concern === 'pagination') {
@@ -2234,16 +3550,274 @@ function selectStartNode(question: string, nodes: GraphNode[], plan?: QuestionPl
     if (paginationNode) return paginationNode;
   }
   if (concern === 'ui_condition') {
-    const uiNode = nodes.find((node) =>
+    const uiCandidates = componentFileSet.size > 0
+      ? nodes.filter((node) => componentFileSet.has(node.filePath))
+      : nodes;
+    const uiNode = uiCandidates.find((node) =>
       /(abolish|discard|audit|status|visible|show|button|handle)/i.test(node.name)
-    );
+    ) ?? nodes.find((node) => /(abolish|discard|audit|status|visible|show|button|handle)/i.test(node.name));
     if (uiNode) return uiNode;
   }
   if (concern === 'api_list') {
-    const apiNode = nodes.find((node) => node.type === 'apiCall' || /api|request|get|post/i.test(node.name));
+    const apiCandidates = componentFileSet.size > 0
+      ? nodes.filter((node) => componentFileSet.has(node.filePath))
+      : nodes;
+    const hintedApiStart = apiCandidates
+      .filter((node) => actionMethodHints.has(node.name))
+      .sort((a, b) => (actionMethodHints.get(b.name) ?? 0) - (actionMethodHints.get(a.name) ?? 0))[0];
+    if (hintedApiStart) return hintedApiStart;
+
+    const directApiNode = apiCandidates.find((node) => node.type === 'apiCall')
+      ?? nodes.find((node) => node.type === 'apiCall');
+    if (directApiNode) return directApiNode;
+
+    let apiNode = apiCandidates.find((node) => /verify|check|confirm|inventory|api|request|post|get/i.test(node.name))
+      ?? nodes.find((node) => /verify|check|confirm|inventory|api|request|post|get/i.test(node.name));
+    if (!apiNode && graphStore) {
+      const scopedGraphApiNode = graphStore.getAllNodes().find((node) =>
+        node.type === 'apiCall' && (!scopeDir || node.filePath.startsWith(scopeDir))
+      );
+      if (scopedGraphApiNode) {
+        apiNode = nodes.find((node) => node.id === scopedGraphApiNode.id) ?? scopedGraphApiNode;
+      }
+    }
     if (apiNode) return apiNode;
   }
-  return nodes[0];
+
+  const fallback = nodes
+    .map((node) => {
+      const text = `${node.name} ${node.filePath}`.toLowerCase();
+      let score = NODE_TYPE_SCORE[node.type] ?? 0;
+      if (scopeDir && node.filePath.startsWith(scopeDir)) score += 5;
+      if (actionMethodHints.has(node.name)) score += (actionMethodHints.get(node.name) ?? 0) + 6;
+      if (/^(getSource|getData|getList|init|setup|created|mounted)$/i.test(node.name)) score -= 5;
+      for (const term of questionTerms) {
+        if (term.length >= 2 && text.includes(term)) score += 1;
+      }
+      return { node, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return fallback[0]?.node ?? nodes[0];
+}
+
+// ============================================================
+// Code-Reading RAG 管线辅助函数
+// ============================================================
+
+interface CodeLocation {
+  filePath: string;
+  line: number;
+  priority: number;
+  label: string;
+}
+
+/**
+ * 从目标行向上找函数声明开头，向下找匹配的闭合大括号
+ * 提取完整函数体（最多 maxLines 行）
+ */
+function findFunctionBoundary(lines: string[], targetLine: number, maxLines: number = 40): { start: number; end: number } {
+  const idx = Math.max(0, Math.min(targetLine - 1, lines.length - 1));
+
+  // 向上查找函数声明开头
+  let start = idx;
+  const funcDeclPattern = /^\s*(export\s+)?(async\s+)?function\s+\w+|^\s*(export\s+)?(const|let|var)\s+\w+\s*=\s*(async\s*)?\(|^\s*(async\s+)?\w+\s*\(.*\)\s*\{|^\s*(export\s+default\s+)?\{|methods\s*:\s*\{|computed\s*:\s*\{|watch\s*:\s*\{/;
+  for (let i = idx; i >= Math.max(0, idx - 20); i--) {
+    const line = lines[i];
+    if (funcDeclPattern.test(line)) {
+      start = i;
+      break;
+    }
+  }
+
+  // 向下找匹配的闭合大括号
+  let end = idx;
+  let depth = 0;
+  let seenOpen = false;
+  const maxEnd = Math.min(lines.length - 1, start + maxLines - 1);
+  for (let i = start; i <= maxEnd; i++) {
+    const line = lines[i];
+    const opens = (line.match(/\{/g) ?? []).length;
+    const closes = (line.match(/\}/g) ?? []).length;
+    if (opens > 0) seenOpen = true;
+    depth += opens - closes;
+    end = i;
+    if (seenOpen && depth <= 0) break;
+  }
+
+  return { start, end };
+}
+
+/**
+ * 按优先级收集需要读取的代码位置
+ */
+function collectCodeLocations(
+  nodes: GraphNode[],
+  graph: { nodes: GraphNode[]; edges: GraphEdge[] },
+  maxLocations: number = 15
+): CodeLocation[] {
+  const seen = new Set<string>();
+  const locations: CodeLocation[] = [];
+
+  const addLoc = (filePath: string, line: number, priority: number, label: string) => {
+    const key = `${filePath}:${line}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    locations.push({ filePath, line, priority, label });
+  };
+
+  // 1. 排名 top 5 的节点位置
+  for (let i = 0; i < Math.min(5, nodes.length); i++) {
+    const node = nodes[i];
+    if (node.type === 'file' || node.type === 'import') continue;
+    addLoc(node.filePath, parseLine(node.loc), 100 - i * 10, `top-${i + 1}: ${node.name}`);
+  }
+
+  // 2. 图谱中的调用链路径上的节点
+  const graphNodeMap = new Map(graph.nodes.map((n) => [n.id, n]));
+  for (const edge of graph.edges.slice(0, 20)) {
+    const fromNode = graphNodeMap.get(edge.from);
+    const toNode = graphNodeMap.get(edge.to);
+    if (fromNode && fromNode.type !== 'file' && fromNode.type !== 'import') {
+      addLoc(fromNode.filePath, parseLine(fromNode.loc), 50, `chain-from: ${fromNode.name}`);
+    }
+    if (toNode && toNode.type !== 'file' && toNode.type !== 'import') {
+      addLoc(toNode.filePath, parseLine(toNode.loc), 50, `chain-to: ${toNode.name}`);
+    }
+  }
+
+  // 3. 其余节点
+  for (const node of nodes.slice(5, 15)) {
+    if (node.type === 'file' || node.type === 'import') continue;
+    addLoc(node.filePath, parseLine(node.loc), 30, `related: ${node.name}`);
+  }
+
+  return locations
+    .sort((a, b) => b.priority - a.priority)
+    .slice(0, maxLocations);
+}
+
+/**
+ * 粗略估算字符串的 token 数
+ */
+function estimateTokens(text: string): number {
+  // 中文大约 1 字 = 1-2 token，英文大约 4 字符 = 1 token
+  const cjk = (text.match(/[\u4e00-\u9fa5]/g) ?? []).length;
+  const rest = text.length - cjk;
+  return Math.ceil(cjk * 1.5 + rest / 4);
+}
+
+/**
+ * 截断到 token 限制
+ */
+function truncateToTokenLimit(context: string, maxTokens: number): string {
+  if (estimateTokens(context) <= maxTokens) return context;
+
+  const fileBlocks = context.split(/\n---\s/);
+  let result = '';
+  for (const block of fileBlocks) {
+    const prefix = result ? `\n--- ` : '';
+    const candidate = result + prefix + block;
+    if (estimateTokens(candidate) > maxTokens) break;
+    result = candidate;
+  }
+  return result || context.slice(0, maxTokens * 3);
+}
+
+/**
+ * 组装代码上下文 — 核心改进：读取完整函数/代码块而非单行
+ */
+function assembleCodeContext(
+  nodes: GraphNode[],
+  graph: { nodes: GraphNode[]; edges: GraphEdge[] },
+  maxTokens: number = 6000
+): string {
+  if (!REPO_PATH_ENV) return '';
+
+  const fileSnippets = new Map<string, string[]>();
+  const locations = collectCodeLocations(nodes, graph);
+
+  for (const loc of locations) {
+    const absPath = path.join(REPO_PATH_ENV, loc.filePath);
+    if (!fs.existsSync(absPath)) continue;
+
+    let lines: string[];
+    try {
+      lines = fs.readFileSync(absPath, 'utf-8').split('\n');
+    } catch {
+      continue;
+    }
+
+    const { start, end } = findFunctionBoundary(lines, loc.line);
+    const snippet = lines.slice(start, end + 1)
+      .map((line, i) => `L${start + i + 1}: ${line}`)
+      .join('\n');
+
+    const existing = fileSnippets.get(loc.filePath) ?? [];
+    // 去重：如果已有覆盖此区间的片段，跳过
+    const isDuplicate = existing.some((s) => {
+      const firstLine = s.match(/^L(\d+):/);
+      const lastLineMatch = s.match(/\nL(\d+):[^\n]*$/);
+      if (!firstLine) return false;
+      const existStart = parseInt(firstLine[1]);
+      const existEnd = lastLineMatch ? parseInt(lastLineMatch[1]) : existStart;
+      return start + 1 >= existStart && end + 1 <= existEnd;
+    });
+    if (!isDuplicate) {
+      existing.push(snippet);
+      fileSnippets.set(loc.filePath, existing);
+    }
+  }
+
+  // 组装成结构化的代码上下文字符串
+  let context = '';
+  for (const [file, snippets] of fileSnippets) {
+    context += `\n--- ${file} ---\n`;
+    context += snippets.join('\n...\n');
+    context += '\n';
+  }
+
+  return truncateToTokenLimit(context, maxTokens);
+}
+
+/**
+ * 从 LLM 回答中提取结构化证据
+ */
+function extractEvidenceFromAnswer(answer: string, codeContext: string): Evidence[] {
+  const refs = answer.matchAll(/([^\s:：]+\.(vue|ts|js|tsx|jsx)):(\d+)/g);
+  const evidence: Evidence[] = [];
+  const seen = new Set<string>();
+
+  for (const ref of refs) {
+    const rawFile = ref[1];
+    const file = rawFile.replace(/^[`"'(<\[]+|[`"')>\],.;:]+$/g, '');
+    if (!/\.(vue|ts|js|tsx|jsx)$/i.test(file)) continue;
+    const line = parseInt(ref[3]);
+    const key = `${file}:${line}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // 从 codeContext 中找到对应行的代码
+    let code = '';
+    const blockPattern = new RegExp(`---\\s+${escapeRegex(file)}\\s+---([\\s\\S]*?)(?:\\n---\\s|$)`);
+    const blockMatch = codeContext.match(blockPattern);
+    if (blockMatch?.[1]) {
+      const linePattern = new RegExp(`^L${line}:\\s*(.+)$`, 'm');
+      const lineMatch = blockMatch[1].match(linePattern);
+      if (lineMatch?.[1]) {
+        code = lineMatch[1].trim();
+      }
+    }
+
+    evidence.push({
+      file,
+      line,
+      code: code || `(见 ${file}:${line})`,
+      label: '关键代码',
+    });
+  }
+
+  return evidence.slice(0, 12);
 }
 
 function composeAnswer(question: string, intent: IntentType, nodes: GraphNode[], graph: { nodes: GraphNode[]; edges: GraphEdge[] }): string {
@@ -2381,19 +3955,53 @@ function buildEvidenceContext(evidence: Evidence[]): string {
     .join('\n');
 }
 
+/**
+ * 构建证据提示文本，去重：跳过 codeContext 已包含的行
+ */
+function buildEvidenceHints(evidence: Evidence[], codeContext: string, tokenBudget: number): string {
+  if (evidence.length === 0) return '无';
+
+  const items = evidence.slice(0, 8);
+  const hints: string[] = [];
+  let usedTokens = 0;
+
+  for (let idx = 0; idx < items.length; idx++) {
+    const item = items[idx];
+    // 检查 codeContext 是否已包含此行 — 用 L{line}: 标记判断
+    const lineMarker = `L${item.line}:`;
+    const fileMarker = `--- ${item.file} ---`;
+    const alreadyCovered = codeContext.includes(fileMarker) && codeContext.includes(lineMarker);
+
+    let hint: string;
+    if (alreadyCovered) {
+      // codeContext 已覆盖，只给单行索引指示，不重复贴代码
+      hint = `${idx + 1}. [${item.label}] ${item.file}:${item.line}（已在代码片段中）`;
+    } else {
+      const snippet = getCodeSnippet(item.file, item.line);
+      hint = `${idx + 1}. [${item.label}] ${item.file}:${item.line}\n${snippet}`;
+    }
+
+    const hintTokens = estimateTokens(hint);
+    if (usedTokens + hintTokens > tokenBudget) break;
+    usedTokens += hintTokens;
+    hints.push(hint);
+  }
+
+  return hints.length > 0 ? hints.join('\n') : '无';
+}
+
 function getCodeSnippet(filePath: string, line: number): string {
   if (!REPO_PATH_ENV) return '  - 代码片段不可用';
   const absPath = path.join(REPO_PATH_ENV, filePath);
   if (!fs.existsSync(absPath)) return '  - 代码片段不可用';
   try {
     const lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
-    const start = Math.max(1, line);
-    const end = Math.min(lines.length, line);
+    const { start, end } = findFunctionBoundary(lines, line, 20);
     const rows: string[] = [];
     for (let i = start; i <= end; i++) {
-      const text = (lines[i - 1] ?? '').trim();
-      if (!text) continue;
-      rows.push(`  - L${i}: ${text}`);
+      const text = (lines[i] ?? '').trimEnd();
+      if (!text.trim()) continue;
+      rows.push(`  L${i + 1}: ${text}`);
     }
     return rows.length > 0 ? rows.join('\n') : '  - 代码片段不可用';
   } catch {
@@ -2436,6 +4044,7 @@ async function composeAnswerWithLlm(
     '2) 第二段给“实现说明：...”描述条件、触发和数据流',
     '3) 第三段给“相关代码：”并列出 3-8 条 文件:行号 + 作用',
     '4) 语言要面向业务同学，避免术语堆砌',
+    '4.1) 如需提到函数名/变量名，后面必须补一句白话作用，不能只给代码名词。',
     '5) 如果问题是“页面用了哪些接口”，按“接口清单”逐条列出 METHOD + endpoint',
   ].join('\n');
 
@@ -2524,8 +4133,31 @@ app.post('/api/ask', async (request, reply) => {
   }
 
   try {
+    // ====== Step 1: 理解问题 — LLM 驱动意图+实体提取 ======
+    const analysis = await analyzeQuestion(question, callChatCompletion as (messages: Array<{ role: string; content: string }>) => Promise<string | null>);
     const plan = await generateQuestionPlan(question);
-    const anchor = findBestPageAnchorByText(plan.scope ?? '') || findBestPageAnchorByText(question);
+    // 合并 LLM analysis 的关键词到 plan
+    plan.keywords = Array.from(new Set([...plan.keywords, ...analysis.searchKeywords])).slice(0, 24);
+    if (analysis.entities.pageName && !plan.scope) {
+      plan.scope = analysis.entities.pageName;
+    }
+
+    const scopedAnchor = plan.scope && plan.scope.trim().length >= 4
+      ? findBestPageAnchorByText(plan.scope)
+      : null;
+    const anchor = scopedAnchor
+      || (analysis.entities.pageName ? findBestPageAnchorByText(analysis.entities.pageName) : null)
+      || findBestPageAnchorByText(question);
+
+    // API 列表快速路径（保持原有逻辑）
+    if (isApiListQuestion(question) && anchor) {
+      const endpointHits = collectPageEndpointHits(anchor);
+      if (endpointHits.length > 0) {
+        return buildApiListResponse(question, anchor, endpointHits);
+      }
+    }
+
+    // ====== Step 2: 检索相关代码 ======
     const componentQuestion = plan.concern === 'component_relation' || isComponentFeatureQuestion(question);
     const componentFiles = anchor?.componentFile
       ? collectComponentScopeFiles(anchor.componentFile, componentQuestion ? 3 : 2, 180)
@@ -2533,15 +4165,25 @@ app.post('/api/ask', async (request, reply) => {
     const hintedComponentFiles = pickHintedComponentFiles(question, componentFiles);
     const componentTerms = collectComponentScopeTerms(componentFiles);
 
-    const queryForRecall = anchor
-      ? `${question} ${anchor.title} ${anchor.componentFile} ${componentTerms.slice(0, 12).join(' ')}`
-      : `${question} ${componentTerms.slice(0, 8).join(' ')}`;
-    const relevantNodes = findRelevantNodes(queryForRecall, 60, {
+    // 用 analysis.searchKeywords + plan.keywords 做图谱节点搜索
+    const searchQuery = [
+      question,
+      analysis.entities.pageName ?? '',
+      analysis.entities.functionName ?? '',
+      analysis.entities.componentName ?? '',
+      analysis.entities.buttonName ?? '',
+      anchor?.title ?? '',
+      anchor?.componentFile ?? '',
+      ...componentTerms.slice(0, 12),
+    ].filter(Boolean).join(' ');
+
+    const candidateNodes = findRelevantNodes(searchQuery, 60, {
       ...plan,
       keywords: [...plan.keywords, ...componentTerms.slice(0, 12)],
     });
 
-    let rankedNodes = relevantNodes;
+    // 如有 anchor，收集锚点范围节点
+    let rankedNodes = candidateNodes;
     if (anchor) {
       const anchorTerms = [
         ...tokenizeForRecall(anchor.title),
@@ -2574,40 +4216,171 @@ app.post('/api/ask', async (request, reply) => {
       rankedNodes = prioritizeNodesByFileScope(rankedNodes, hintedComponentFiles);
     }
 
-    if (plan.concern === 'api_list' && anchor) {
-      const endpointHits = collectPageEndpointHits(anchor);
-      if (endpointHits.length > 0) {
-        const endpointTerms = endpointHits
-          .slice(0, 20)
-          .flatMap((hit) => tokenizeForRecall(`${hit.method} ${hit.endpoint}`));
-        const endpointNodes = findRelevantNodes(
-          `${anchor.title} ${anchor.componentFile} ${endpointTerms.join(' ')}`,
-          40,
-          { ...plan, keywords: [...plan.keywords, ...endpointTerms] }
-        );
-        rankedNodes = mergeNodesByOrder(endpointNodes, rankedNodes);
+    // fact 召回
+    const factScopeFiles = Array.from(new Set([
+      ...(anchor?.componentFile ? [anchor.componentFile] : []),
+      ...hintedComponentFiles,
+      ...componentFiles,
+    ]));
+    const factHits = recallFacts(
+      question,
+      { ...plan, keywords: [...plan.keywords, ...componentTerms.slice(0, 12)] },
+      factScopeFiles,
+      60
+    );
+    if (factHits.length > 0) {
+      const factNodes = collectNodesFromFacts(factHits, 55);
+      rankedNodes = mergeNodesByOrder(factNodes, rankedNodes);
+    }
+
+    // 按文件作用域优先排序
+    rankedNodes = applyAnchorScope(rankedNodes, anchor, plan, [...hintedComponentFiles, ...componentFiles]);
+    if (anchor && plan.concern !== 'general') {
+      const scopeDir = path.dirname(anchor.componentFile);
+      const scopedFiles = Array.from(new Set([
+        anchor.componentFile,
+        ...componentFiles.filter((file) => file.startsWith(scopeDir)),
+      ]));
+      const scopedNodes = scopedFiles.flatMap((file) => fileNodeMap.get(file) ?? []);
+      if (scopedNodes.length > 0) {
+        rankedNodes = mergeNodesByOrder(scopedNodes, rankedNodes);
       }
     }
-    rankedNodes = applyAnchorScope(rankedNodes, anchor, plan, [...hintedComponentFiles, ...componentFiles]);
     if (componentQuestion && componentFiles.length > 0) {
       rankedNodes = prioritizeNodesByFileScope(rankedNodes, [...hintedComponentFiles, ...componentFiles]);
     }
     rankedNodes = rankedNodes.slice(0, 80);
+    const analysisNodes = rankedNodes.filter((node) => node.type !== 'import' && node.type !== 'file');
+    const answerNodes = analysisNodes.length > 0 ? analysisNodes : rankedNodes;
 
+    // 图谱追踪
     const intentResult = classifyIntent(question);
-    const finalIntent = plan.intentHint ?? intentResult.intent;
-    const startNode = selectStartNode(question, rankedNodes, plan, [...hintedComponentFiles, ...componentFiles]);
-    const graph = startNode ? pickTraceGraph(startNode, finalIntent, question, plan.concern) : { nodes: [], edges: [] };
-    const evidence = buildPlanEvidence(question, rankedNodes, plan, anchor, [...hintedComponentFiles, ...componentFiles]);
-    const answer = await composeAnswerWithLlm(question, finalIntent, rankedNodes, graph, evidence, plan, anchor);
-    const followUp = buildFollowUps(question, rankedNodes.slice(0, 3), plan);
+    const finalIntent = plan.intentHint ?? (analysis.intent !== 'GENERAL' ? analysis.intent : intentResult.intent);
+    const startNode = selectStartNode(question, answerNodes, plan, [...hintedComponentFiles, ...componentFiles], anchor);
+    const graph = startNode
+      ? graphStore!.traceBidirectional(startNode.id, 3, 2)
+      : { nodes: [], edges: [] };
+    // 限制返回体大小
+    const trimmedGraph = {
+      nodes: graph.nodes.slice(0, 180),
+      edges: graph.edges.slice(0, 260),
+    };
+
+    // ====== Step 3: 组装代码上下文（核心改进 — 读取完整函数体） ======
+    // 预算分配：codeContext ≤ 6000 token, evidenceHints ≤ 1500 token, graphContext ≤ 800 token
+    const CODE_BUDGET = 6000;
+    const EVIDENCE_BUDGET = 1500;
+    const GRAPH_BUDGET = 800;
+
+    const codeContext = assembleCodeContext(answerNodes, trimmedGraph, CODE_BUDGET);
+    // Step 3.5: 确定性证据链 — 始终计算，作为兜底 + LLM 提示
+    const traditionalEvidence = buildPlanEvidence(question, rankedNodes, plan, anchor, [...hintedComponentFiles, ...componentFiles]);
+
+    // ====== Step 4: LLM 分析回答（分层融合：代码阅读 + 确定性证据） ======
+    let answer: string;
+    let evidence: Evidence[];
+
+    // Fix 2: 按意图/关注点复杂度决定是否走 Code-Reading RAG
+    const complexConcerns = new Set(['click_flow', 'ui_condition', 'data_source', 'state_flow', 'general', 'error_trace']);
+    const needsCodeReading = complexConcerns.has(plan.concern)
+      || finalIntent === 'CLICK_FLOW'
+      || finalIntent === 'UI_CONDITION'
+      || finalIntent === 'DATA_SOURCE'
+      || finalIntent === 'STATE_FLOW'
+      || finalIntent === 'ERROR_TRACE'
+      || finalIntent === 'GENERAL';
+
+    if (canUseLlm() && codeContext.trim().length > 50 && needsCodeReading) {
+      // Fix 1: 使用去重 + 预算控制的证据提示
+      const evidenceHints = buildEvidenceHints(traditionalEvidence, codeContext, EVIDENCE_BUDGET);
+      const graphContext = buildGraphContext(trimmedGraph);
+      // 截断 graphContext 到预算
+      const trimmedGraphContext = estimateTokens(graphContext) > GRAPH_BUDGET
+        ? graphContext.split('\n').reduce((acc: string[], line: string) => {
+            const candidate = [...acc, line].join('\n');
+            return estimateTokens(candidate) <= GRAPH_BUDGET ? [...acc, line] : acc;
+          }, []).join('\n')
+        : graphContext;
+
+      const systemPrompt = `你是代码库分析助手。你会收到：
+1. 用户的代码问题
+2. 从代码库中检索到的相关代码片段（带文件名和行号）
+3. 系统通过规则引擎预定位的证据线索（可能包含关键条件、触发点、接口调用等）
+4. 代码之间的调用关系图
+
+请综合"相关代码"和"证据线索"两部分信息回答问题。要求：
+- 只基于给定信息回答，不要编造
+- 证据线索是通过确定性规则抽取的关键行，优先参考；代码片段提供完整上下文
+- 如果证据线索和代码片段有冲突，以代码片段中的实际代码为准
+- 输出格式：
+  结论：一句话白话结论
+  实现说明：条件→触发→状态变化→接口调用的逻辑链（缺失段明确标注"证据不足"）
+  关键代码：列出 3-8 条 文件:行号 + 该行做了什么
+  证据不足：如有未确认的部分，明确说明
+- 语言要面向业务同学，避免术语堆砌
+- 如果问题是"页面用了哪些接口"，按"接口清单"逐条列出 METHOD + endpoint`;
+
+      const entitiesInfo: string[] = [];
+      if (analysis.entities.pageName) entitiesInfo.push(`页面：${analysis.entities.pageName}`);
+      if (analysis.entities.buttonName) entitiesInfo.push(`按钮：${analysis.entities.buttonName}`);
+      if (analysis.entities.functionName) entitiesInfo.push(`函数：${analysis.entities.functionName}`);
+      if (analysis.entities.componentName) entitiesInfo.push(`组件：${analysis.entities.componentName}`);
+
+      const userPrompt = `问题：${question}
+${entitiesInfo.length > 0 ? entitiesInfo.join('\n') : ''}
+问题关注点：${plan.concern}
+页面范围：${plan.scope ?? anchor?.title ?? '未指定'}
+
+相关代码：
+${codeContext}
+
+系统已定位的证据线索：
+${evidenceHints}
+
+调用关系：
+${trimmedGraphContext}`;
+
+      const llmAnswer = await callChatCompletion([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ]);
+
+      if (llmAnswer) {
+        answer = llmAnswer;
+        // 从 LLM 回答中提取结构化证据
+        const extractedEvidence = extractEvidenceFromAnswer(llmAnswer, codeContext);
+        // Fix 3: 使用 file:line:label 复合键，保留不同标签
+        const mergedMap = new Map<string, Evidence>();
+        for (const item of traditionalEvidence) {
+          mergedMap.set(`${item.file}:${item.line}:${item.label}`, item);
+        }
+        for (const item of extractedEvidence) {
+          const key = `${item.file}:${item.line}:${item.label}`;
+          if (!mergedMap.has(key)) {
+            mergedMap.set(key, item);
+          }
+        }
+        evidence = [...mergedMap.values()].slice(0, 12);
+      } else {
+        // Fix 4: LLM 失败时平滑降级 — 先尝试轻量 LLM，再回退到模板
+        evidence = traditionalEvidence;
+        answer = await composeAnswerWithLlm(question, finalIntent, answerNodes, trimmedGraph, evidence, plan, anchor);
+      }
+    } else {
+      // 简单意图或无 LLM/无代码上下文 → 使用传统管线（确定性证据 + 旧 LLM 格式化）
+      evidence = traditionalEvidence;
+      answer = await composeAnswerWithLlm(question, finalIntent, answerNodes, trimmedGraph, evidence, plan, anchor);
+    }
+
+    const followUpNodes = answerNodes.slice(0, 3);
+    const followUp = buildFollowUps(question, followUpNodes, plan);
 
     const response: AskResponse = {
       answer,
       evidence,
-      graph,
+      graph: trimmedGraph,
       intent: finalIntent,
-      confidence: Math.max(intentResult.confidence, 0.55),
+      confidence: Math.max(analysis.confidence, intentResult.confidence, 0.55),
       followUp,
     };
 

@@ -1,1 +1,1 @@
-export { classifyIntent } from './intentClassifier';
+export { classifyIntent, analyzeQuestion } from './intentClassifier';

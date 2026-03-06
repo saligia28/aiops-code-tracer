@@ -177,9 +177,53 @@ export function extractImports(
     });
   }
 
+  function processExportDeclaration(node: ts.ExportDeclaration) {
+    const moduleSpecifier = node.moduleSpecifier;
+    if (!moduleSpecifier || !ts.isStringLiteral(moduleSpecifier)) return;
+
+    const rawSource = moduleSpecifier.text;
+    const resolvedSource = resolveRelativePath(rawSource, ctx.filePath, ctx.config);
+    const loc = getLoc(sourceFile, node.getStart());
+
+    const exportClause = node.exportClause;
+    if (!exportClause) {
+      // export * from './bar' — 无法跟踪具体符号，跳过
+      return;
+    }
+
+    if (ts.isNamedExports(exportClause)) {
+      // export { foo, bar as baz } from './bar'
+      for (const element of exportClause.elements) {
+        const exportedName = element.name.text;
+        const originalName = element.propertyName?.text ?? exportedName;
+        const importNodeId = `import:${ctx.filePath}:reexport:${exportedName}`;
+        nodes.push({
+          id: importNodeId,
+          type: 'import',
+          name: exportedName,
+          filePath: ctx.filePath,
+          loc: getLoc(sourceFile, element.getStart()),
+          meta: { isExported: true },
+        });
+        edges.push({ from: fileNodeId, to: importNodeId, type: 'imports', loc });
+        importMap.set(exportedName, { sourcePath: resolvedSource, originalName });
+        unresolvedRefs.push({
+          fromNodeId: importNodeId,
+          refName: exportedName,
+          originalName,
+          refType: 'import',
+          importSource: resolvedSource,
+          loc: getLoc(sourceFile, element.getStart()),
+        });
+      }
+    }
+  }
+
   function visit(node: ts.Node) {
     if (ts.isImportDeclaration(node)) {
       processImportDeclaration(node);
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+      processExportDeclaration(node);
     } else if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         processDynamicImport(node);
