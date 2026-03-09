@@ -39,6 +39,7 @@
                 <span></span><span></span><span></span>
               </div>
               <span class="loading-text">正在阅读代码并分析...</span>
+              <span v-if="turn.elapsed > 0" class="loading-elapsed">{{ turn.elapsed }}s</span>
             </div>
 
             <!-- 错误状态 -->
@@ -99,6 +100,8 @@ import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 
+const ASK_TIMEOUT_MS = 150000; // 150 秒：后端可能有多轮 LLM 调用（分析+生成），需留足时间
+
 interface ConversationTurn {
   question: string;
   answer: string;
@@ -106,6 +109,7 @@ interface ConversationTurn {
   followUp: string[];
   loading: boolean;
   error: string;
+  elapsed: number; // 已耗时（秒）
 }
 
 const route = useRoute();
@@ -144,18 +148,25 @@ async function fetchAnswer(q: string) {
     followUp: [],
     loading: true,
     error: '',
+    elapsed: 0,
   });
   history.value.push(turn);
   await scrollToBottom();
 
+  // 计时器：每秒更新已耗时
+  const elapsedTimer = setInterval(() => { turn.elapsed++; }, 1000);
+
   try {
-    const res = await axios.post('/api/ask', { question: q });
+    const res = await axios.post('/api/ask', { question: q }, {
+      timeout: ASK_TIMEOUT_MS,
+    });
     turn.answer = res.data.answer || '未能生成回答';
     turn.renderedAnswer = renderMarkdown(turn.answer);
     turn.followUp = res.data.followUp || [];
   } catch {
-    turn.error = '查询失败，请稍后重试';
+    turn.error = '查询超时或失败，请检查模型服务后重试';
   } finally {
+    clearInterval(elapsedTimer);
     turn.loading = false;
     await scrollToBottom();
   }
@@ -331,6 +342,12 @@ onMounted(() => {
 .loading-text {
   color: #8b8fa3;
   font-size: 14px;
+}
+
+.loading-elapsed {
+  color: #b0b4c3;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 错误消息 */

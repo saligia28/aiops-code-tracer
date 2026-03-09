@@ -12,7 +12,7 @@ const INTENT_RULES: { intent: IntentType; keywords: string[] }[] = [
   { intent: 'API_USAGE', keywords: ['接口在哪', '接口调用', '哪里调的', 'API', '请求'] },
   { intent: 'STATE_FLOW', keywords: ['状态什么时候', '状态变化', '什么时候变', '怎么更新'] },
   { intent: 'COMPONENT_RELATION', keywords: ['组件在哪', '哪里用到', '引用了', '依赖'] },
-  { intent: 'PAGE_STRUCTURE', keywords: ['页面结构', '有哪些组件', '组成', '模块有哪些'] },
+  { intent: 'PAGE_STRUCTURE', keywords: ['页面结构', '有哪些组件', '组成', '模块有哪些', '有几个tab', '有哪些tab', '有多少tab', '有几个模块', '有哪些模块', '有几个菜单', '有哪些菜单'] },
   { intent: 'ERROR_TRACE', keywords: ['报错', '错误', '异常', 'error', '出错'] },
 ];
 
@@ -58,6 +58,10 @@ export async function analyzeQuestion(
     entities: {},
     searchKeywords: extractKeywordsFromQuestion(question),
   };
+
+  if (fallback.intent !== 'GENERAL' && fallback.confidence >= 0.7) {
+    return fallback;
+  }
 
   try {
     const prompt = `分析以下代码相关问题，提取意图和实体。直接输出JSON，不要解释。

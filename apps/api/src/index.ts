@@ -14,6 +14,10 @@ import type {
   AskResponse,
   Evidence,
   IntentType,
+  LlmMode,
+  LlmOption,
+  LlmProvider,
+  LlmRuntimeConfig,
 } from '@aiops/shared-types';
 import { collectFiles, buildGraph } from '@aiops/parser';
 import type { SymbolIndex, BuildResult } from '@aiops/parser';
@@ -71,11 +75,143 @@ let indexTaskState: IndexTaskState = {
 const ALERT_WEBHOOK = process.env.ALERT_WEBHOOK?.trim() ?? '';
 const ALERT_TYPE = (process.env.ALERT_TYPE?.trim().toLowerCase() ?? '');
 const REPO_PATH_ENV = process.env.REPO_PATH?.trim() ?? '';
-const LLM_PROVIDER = (process.env.LLM_PROVIDER?.trim().toLowerCase() ?? 'deepseek');
 const LLM_API_KEY = process.env.LLM_API_KEY?.trim() ?? '';
-const LLM_MODEL = process.env.LLM_MODEL?.trim() ?? '';
-const LLM_BASE_URL = process.env.LLM_BASE_URL?.trim() ?? '';
-const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? '25000');
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? '60000');
+const LLM_MAX_TOKENS = Number(process.env.LLM_MAX_TOKENS || '') || 4096;
+const INTRANET_OLLAMA_TIMEOUT_MS = Number(process.env.INTRANET_OLLAMA_TIMEOUT_MS || '') || LLM_TIMEOUT_MS * 2;
+const INTRANET_OLLAMA_BASE_URL = (process.env.INTRANET_OLLAMA_BASE_URL?.trim() ?? '').replace(/\/+$/, '');
+const INTRANET_OLLAMA_MODELS_RAW = process.env.INTRANET_OLLAMA_MODELS?.trim() ?? '';
+const INTRANET_OLLAMA_DEFAULT_MODEL_ENV = process.env.INTRANET_OLLAMA_DEFAULT_MODEL?.trim() ?? '';
+
+function normalizeLlmProvider(value: string | undefined | null): LlmProvider {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'openai') return 'openai';
+  if (normalized === 'bailian') return 'bailian';
+  if (normalized === 'local') return 'local';
+  if (normalized === 'ollama') return 'ollama';
+  if (normalized === 'custom') return 'custom';
+  return 'deepseek';
+}
+
+function parseModelList(raw: string): string[] {
+  const input = raw.trim();
+  if (!input) return [];
+
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean);
+    }
+  } catch {
+    // ignore and fallback to comma split
+  }
+
+  return input
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .split(',')
+    .map((item) => item.trim().replace(/^['"]|['"]$/g, ''))
+    .filter(Boolean);
+}
+
+function getDefaultApiBaseUrl(provider: LlmProvider): string {
+  if (provider === 'openai') return 'https://api.openai.com/v1';
+  if (provider === 'bailian') return 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+  if (provider === 'local' || provider === 'ollama') return 'http://127.0.0.1:11434/v1';
+  if (provider === 'custom') return '';
+  return 'https://api.deepseek.com';
+}
+
+function getDefaultApiModel(provider: LlmProvider): string {
+  if (provider === 'openai') return 'gpt-4o-mini';
+  if (provider === 'bailian') return 'qwen-plus';
+  if (provider === 'local' || provider === 'ollama') return 'qwen2.5:7b-instruct';
+  if (provider === 'custom') return 'custom-chat-model';
+  return 'deepseek-chat';
+}
+
+function resolveChatCompletionUrl(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, '');
+  if (base.endsWith('/chat/completions')) return base;
+  if (base.endsWith('/v1')) return `${base}/chat/completions`;
+  if (base.endsWith('/v1/')) return `${base}chat/completions`;
+  return `${base}/chat/completions`;
+}
+
+function buildApiModelOptions(provider: LlmProvider, currentModel: string): LlmOption[] {
+  const defaults: Record<LlmProvider, string[]> = {
+    deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+    openai: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4.1'],
+    bailian: ['qwen-plus', 'qwen-max'],
+    local: ['qwen2.5:7b-instruct'],
+    ollama: ['qwen2.5:7b-instruct'],
+    custom: [],
+  };
+  const values = Array.from(new Set([currentModel, ...defaults[provider]].filter(Boolean)));
+  return values.map((value) => ({ value, label: value }));
+}
+
+async function fetchOllamaModelOptions(): Promise<LlmOption[]> {
+  if (!INTRANET_OLLAMA_BASE_URL) return [];
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+
+  try {
+    const resp = await fetch(`${INTRANET_OLLAMA_BASE_URL}/api/tags`, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) {
+      app.log.warn(`获取 Ollama 模型列表失败: ${resp.status} ${resp.statusText}`);
+      return [];
+    }
+
+    const json = await resp.json() as { models?: Array<{ name?: string; model?: string }> };
+    const values = (json.models ?? [])
+      .map((item) => item.name?.trim() || item.model?.trim() || '')
+      .filter(Boolean);
+
+    return Array.from(new Set(values)).map((value) => ({ value, label: value }));
+  } catch (err) {
+    app.log.warn(`获取 Ollama 模型列表异常: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function canUseApiLlm(): boolean {
+  const provider = llmRuntimeState.apiProvider;
+  if (provider === 'local' || provider === 'ollama') return true;
+  return Boolean(LLM_API_KEY);
+}
+
+const DEFAULT_API_PROVIDER = normalizeLlmProvider(process.env.LLM_PROVIDER?.trim() ?? 'deepseek');
+const DEFAULT_API_MODEL = process.env.LLM_MODEL?.trim() || getDefaultApiModel(DEFAULT_API_PROVIDER);
+const DEFAULT_API_BASE_URL = process.env.LLM_BASE_URL?.trim() || getDefaultApiBaseUrl(DEFAULT_API_PROVIDER);
+const INTRANET_OLLAMA_MODELS = parseModelList(INTRANET_OLLAMA_MODELS_RAW);
+const DEFAULT_INTRANET_MODEL = INTRANET_OLLAMA_DEFAULT_MODEL_ENV
+  || INTRANET_OLLAMA_MODELS[0]
+  || '';
+const DEFAULT_LLM_MODE: LlmMode = INTRANET_OLLAMA_BASE_URL ? 'intranet' : 'api';
+
+const llmRuntimeState: {
+  mode: LlmMode;
+  apiProvider: LlmProvider;
+  apiModel: string;
+  apiBaseUrl: string;
+  intranetModel: string;
+} = {
+  mode: DEFAULT_LLM_MODE,
+  apiProvider: DEFAULT_API_PROVIDER,
+  apiModel: DEFAULT_API_MODEL,
+  apiBaseUrl: DEFAULT_API_BASE_URL,
+  intranetModel: DEFAULT_INTRANET_MODEL,
+};
 
 interface RecallDoc {
   node: GraphNode;
@@ -980,6 +1116,15 @@ function heuristicQuestionPlan(question: string): QuestionPlan {
       intentHint: 'CLICK_FLOW',
     };
   }
+  if (isPageStructureQuestion(q)) {
+    return {
+      concern: 'general',
+      scope: extractLikelyScope(q) ?? undefined,
+      keywords,
+      mustEvidence: ['component', 'condition', 'function'],
+      intentHint: 'PAGE_STRUCTURE',
+    };
+  }
   if (isUiConditionQuestion(q)) {
     return {
       concern: 'ui_condition',
@@ -1037,6 +1182,7 @@ function toEvidenceNeeds(input: unknown): EvidenceNeed[] {
 async function generateQuestionPlan(question: string): Promise<QuestionPlan> {
   const fallback = heuristicQuestionPlan(question);
   if (!canUseLlm()) return fallback;
+  if (fallback.concern !== 'general') return fallback;
 
   const prompt = [
     '你是问题规划器。请将用户问题转成检索计划，输出 JSON。',
@@ -1560,6 +1706,10 @@ function buildFollowUps(question: string, topNodes: GraphNode[], plan?: Question
 
 function isPaginationQuestion(question: string): boolean {
   return /分页|page|pagesize|pagenum|currentpage|每页|页码/i.test(question);
+}
+
+function isPageStructureQuestion(question: string): boolean {
+  return /有几个.{0,4}(tab|模块|菜单|页签|标签页)|有哪些.{0,4}(tab|模块|菜单|页签|标签页)|有多少.{0,4}(tab|模块|菜单|页签|标签页)|页面结构|页面组成|包含.{0,4}(哪些|几个).{0,4}(tab|模块|页签)/i.test(question);
 }
 
 function isUiConditionQuestion(question: string): boolean {
@@ -3872,57 +4022,124 @@ function composeAnswer(question: string, intent: IntentType, nodes: GraphNode[],
   ].join('\n');
 }
 
-function resolveChatApiUrl(): string {
-  if (LLM_BASE_URL) {
-    const base = LLM_BASE_URL.replace(/\/+$/, '');
-    if (base.endsWith('/chat/completions')) return base;
-    return `${base}/chat/completions`;
-  }
-  if (LLM_PROVIDER === 'openai') return 'https://api.openai.com/v1/chat/completions';
-  if (LLM_PROVIDER === 'bailian') return 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-  if (LLM_PROVIDER === 'local') return 'http://127.0.0.1:11434/v1/chat/completions';
-  return 'https://api.deepseek.com/chat/completions';
+function getCurrentLlmProvider(): LlmProvider {
+  return llmRuntimeState.mode === 'intranet' ? 'ollama' : llmRuntimeState.apiProvider;
 }
 
-function resolveChatModel(): string {
-  if (LLM_MODEL) return LLM_MODEL;
-  if (LLM_PROVIDER === 'openai') return 'gpt-4o-mini';
-  if (LLM_PROVIDER === 'bailian') return 'qwen-plus';
-  if (LLM_PROVIDER === 'local') return 'qwen2.5:7b-instruct';
-  return 'deepseek-chat';
+function getCurrentLlmModel(): string {
+  return llmRuntimeState.mode === 'intranet'
+    ? (llmRuntimeState.intranetModel || DEFAULT_INTRANET_MODEL)
+    : (llmRuntimeState.apiModel || DEFAULT_API_MODEL);
+}
+
+function getCurrentLlmBaseUrl(): string {
+  return llmRuntimeState.mode === 'intranet'
+    ? INTRANET_OLLAMA_BASE_URL
+    : (llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL);
 }
 
 function canUseLlm(): boolean {
-  if (LLM_PROVIDER === 'local') return true;
-  return Boolean(LLM_API_KEY);
+  if (llmRuntimeState.mode === 'intranet') {
+    return Boolean(INTRANET_OLLAMA_BASE_URL && getCurrentLlmModel());
+  }
+  return canUseApiLlm();
 }
 
-async function callChatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<string | null> {
-  if (!canUseLlm()) return null;
+function buildLlmRuntimeConfig(): LlmRuntimeConfig {
+  const mode = llmRuntimeState.mode;
+  const availableModes: LlmOption[] = [
+    { value: 'api', label: `API / ${llmRuntimeState.apiProvider}` },
+  ];
+  if (INTRANET_OLLAMA_BASE_URL) {
+    availableModes.push({ value: 'intranet', label: '内网 Ollama' });
+  }
 
+  const availableModels = mode === 'intranet'
+    ? Array.from(new Set([llmRuntimeState.intranetModel, ...INTRANET_OLLAMA_MODELS].filter(Boolean)))
+      .map((value) => ({ value, label: value }))
+    : buildApiModelOptions(llmRuntimeState.apiProvider, llmRuntimeState.apiModel);
+
+  return {
+    mode,
+    provider: getCurrentLlmProvider(),
+    model: getCurrentLlmModel(),
+    baseUrl: getCurrentLlmBaseUrl(),
+    availableModes,
+    availableModels,
+    apiProvider: llmRuntimeState.apiProvider,
+    apiModel: llmRuntimeState.apiModel,
+    apiBaseUrl: llmRuntimeState.apiBaseUrl,
+    intranetModel: llmRuntimeState.intranetModel,
+    intranetBaseUrl: INTRANET_OLLAMA_BASE_URL,
+    intranetEnabled: Boolean(INTRANET_OLLAMA_BASE_URL),
+  };
+}
+
+async function hydrateLlmRuntimeConfig(config: LlmRuntimeConfig): Promise<LlmRuntimeConfig> {
+  // API 模式：直接返回，不混入 Ollama 模型
+  if (config.mode !== 'intranet') return config;
+
+  const remoteModels = await fetchOllamaModelOptions();
+  if (remoteModels.length === 0) {
+    if (canUseApiLlm()) {
+      app.log.warn('内网模型配置获取失败，自动降级为 API 模式');
+      llmRuntimeState.mode = 'api';
+      return buildLlmRuntimeConfig();
+    }
+    return config;
+  }
+
+  // intranet 模式：用远程实际可用的模型列表替换
+  return {
+    ...config,
+    availableModels: remoteModels,
+  };
+}
+
+function updateLlmRuntimeConfig(input: { mode?: string; model?: string }): LlmRuntimeConfig {
+  const nextMode = input.mode === 'intranet' && INTRANET_OLLAMA_BASE_URL ? 'intranet' : 'api';
+  llmRuntimeState.mode = nextMode;
+
+  const nextModel = input.model != null ? String(input.model).trim() : '';
+  if (nextMode === 'intranet') {
+    llmRuntimeState.intranetModel = nextModel || DEFAULT_INTRANET_MODEL;
+  } else {
+    llmRuntimeState.apiModel = nextModel || DEFAULT_API_MODEL;
+  }
+
+  return buildLlmRuntimeConfig();
+}
+
+async function callApiCompatibleChatCompletion(
+  messages: Array<{ role: 'system' | 'user'; content: string }>,
+  provider: LlmProvider,
+  model: string,
+  baseUrl: string
+): Promise<string | null> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (LLM_API_KEY) {
     headers.authorization = `Bearer ${LLM_API_KEY}`;
   }
 
-  const timeout = Number.isFinite(LLM_TIMEOUT_MS) && LLM_TIMEOUT_MS > 0 ? LLM_TIMEOUT_MS : 15000;
+  const timeout = Number.isFinite(LLM_TIMEOUT_MS) && LLM_TIMEOUT_MS > 0 ? LLM_TIMEOUT_MS : 60000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const resp = await fetch(resolveChatApiUrl(), {
+    const resp = await fetch(resolveChatCompletionUrl(baseUrl || getDefaultApiBaseUrl(provider)), {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model: resolveChatModel(),
+        model,
         temperature: 0.2,
+        max_tokens: LLM_MAX_TOKENS,
         messages,
       }),
       signal: controller.signal,
     });
 
     if (!resp.ok) {
-      app.log.warn(`LLM 调用失败: ${resp.status} ${resp.statusText}`);
+      app.log.warn(`LLM API 调用失败: ${resp.status} ${resp.statusText}`);
       return null;
     }
 
@@ -3937,11 +4154,73 @@ async function callChatCompletion(messages: Array<{ role: 'system' | 'user'; con
     }
     return null;
   } catch (err) {
-    app.log.warn(`LLM 调用异常: ${err instanceof Error ? err.message : String(err)}`);
+    app.log.warn(`LLM API 调用异常: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function callOllamaChatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<string | null> {
+  const baseUrl = INTRANET_OLLAMA_BASE_URL;
+  const model = getCurrentLlmModel();
+  if (!baseUrl || !model) return null;
+
+  const timeout = Number.isFinite(INTRANET_OLLAMA_TIMEOUT_MS) && INTRANET_OLLAMA_TIMEOUT_MS > 0 ? INTRANET_OLLAMA_TIMEOUT_MS : 120000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const resp = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        options: { temperature: 0.2, num_predict: LLM_MAX_TOKENS },
+        messages,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) {
+      app.log.warn(`内网 Ollama 调用失败: ${resp.status} ${resp.statusText}`);
+      return null;
+    }
+
+    const json = await resp.json() as { message?: { content?: string } };
+    return json.message?.content?.trim() || null;
+  } catch (err) {
+    app.log.warn(`内网 Ollama 调用异常: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callChatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<string | null> {
+  if (!canUseLlm()) return null;
+  if (llmRuntimeState.mode === 'intranet') {
+    const ollamaResult = await callOllamaChatCompletion(messages);
+    if (ollamaResult) return ollamaResult;
+    if (canUseApiLlm()) {
+      app.log.warn('内网 Ollama 调用失败，自动降级为 API 模式');
+      llmRuntimeState.mode = 'api';
+      return callApiCompatibleChatCompletion(
+        messages,
+        llmRuntimeState.apiProvider,
+        llmRuntimeState.apiModel || DEFAULT_API_MODEL,
+        llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL
+      );
+    }
+    return null;
+  }
+  return callApiCompatibleChatCompletion(
+    messages,
+    llmRuntimeState.apiProvider,
+    getCurrentLlmModel(),
+    llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL
+  );
 }
 
 function buildEvidenceContext(evidence: Evidence[]): string {
@@ -4122,6 +4401,19 @@ app.get('/api/health', async () => {
   };
 });
 
+app.get('/api/llm/config', async () => {
+  return hydrateLlmRuntimeConfig(buildLlmRuntimeConfig());
+});
+
+app.post('/api/llm/config', async (request, reply) => {
+  const body = (request.body as { mode?: string; model?: string } | undefined) || {};
+  if (body.mode && body.mode !== 'api' && body.mode !== 'intranet') {
+    return reply.code(400).send({ error: 'INVALID_MODE', message: 'mode 仅支持 api 或 intranet' });
+  }
+
+  return hydrateLlmRuntimeConfig(updateLlmRuntimeConfig(body));
+});
+
 // ============================================================
 // 自然语言问答（主入口）
 // ============================================================
@@ -4134,8 +4426,10 @@ app.post('/api/ask', async (request, reply) => {
 
   try {
     // ====== Step 1: 理解问题 — LLM 驱动意图+实体提取 ======
-    const analysis = await analyzeQuestion(question, callChatCompletion as (messages: Array<{ role: string; content: string }>) => Promise<string | null>);
-    const plan = await generateQuestionPlan(question);
+    const [analysis, plan] = await Promise.all([
+      analyzeQuestion(question, callChatCompletion as (messages: Array<{ role: string; content: string }>) => Promise<string | null>),
+      generateQuestionPlan(question),
+    ]);
     // 合并 LLM analysis 的关键词到 plan
     plan.keywords = Array.from(new Set([...plan.keywords, ...analysis.searchKeywords])).slice(0, 24);
     if (analysis.entities.pageName && !plan.scope) {
@@ -4364,7 +4658,7 @@ ${trimmedGraphContext}`;
       } else {
         // Fix 4: LLM 失败时平滑降级 — 先尝试轻量 LLM，再回退到模板
         evidence = traditionalEvidence;
-        answer = await composeAnswerWithLlm(question, finalIntent, answerNodes, trimmedGraph, evidence, plan, anchor);
+        answer = composeAnswer(question, finalIntent, answerNodes, trimmedGraph);
       }
     } else {
       // 简单意图或无 LLM/无代码上下文 → 使用传统管线（确定性证据 + 旧 LLM 格式化）

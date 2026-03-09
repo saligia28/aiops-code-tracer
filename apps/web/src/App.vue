@@ -1,8 +1,10 @@
 <template>
+  <TopModelSelector />
   <router-view />
 </template>
 
 <script setup lang="ts">
+import TopModelSelector from './components/TopModelSelector.vue';
 </script>
 
 <style>

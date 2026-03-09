@@ -155,6 +155,30 @@ export interface AskResponse {
   followUp: string[];
 }
 
+export type LlmMode = 'api' | 'intranet';
+
+export type LlmProvider = 'deepseek' | 'openai' | 'bailian' | 'local' | 'ollama' | 'custom';
+
+export interface LlmOption {
+  value: string;
+  label: string;
+}
+
+export interface LlmRuntimeConfig {
+  mode: LlmMode;
+  provider: LlmProvider;
+  model: string;
+  baseUrl: string;
+  availableModes: LlmOption[];
+  availableModels: LlmOption[];
+  apiProvider: LlmProvider;
+  apiModel: string;
+  apiBaseUrl: string;
+  intranetModel: string;
+  intranetBaseUrl: string;
+  intranetEnabled: boolean;
+}
+
 // ============================================================
 // 索引状态
 // ============================================================
@@ -178,7 +202,7 @@ export interface AppConfig {
   repos: RepoConfig[];
   port: number;
   llm: {
-    provider: 'bailian' | 'openai' | 'local';
+    provider: LlmProvider;
     apiKey?: string;
     model?: string;
     baseUrl?: string;
