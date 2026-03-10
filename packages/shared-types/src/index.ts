@@ -212,3 +212,40 @@ export interface AppConfig {
     webhook: string;
   };
 }
+
+// ============================================================
+// Agent 模式
+// ============================================================
+
+/** Agent SSE 事件类型 */
+export type AgentEventType = 'thinking' | 'tool_call' | 'tool_result' | 'answer_delta' | 'done' | 'error';
+
+/** Agent SSE 事件 */
+export interface AgentEvent {
+  type: AgentEventType;
+  data: {
+    /** thinking: LLM 的思考内容 */
+    thought?: string;
+    /** tool_call: 工具名称 */
+    toolName?: string;
+    /** tool_call: 工具参数 */
+    toolArgs?: Record<string, unknown>;
+    /** tool_result: 工具返回摘要 */
+    toolResult?: string;
+    /** answer_delta: 最终答案的流式片段 */
+    delta?: string;
+    /** done: 完成时的完整答案 */
+    answer?: string;
+    /** done: 追问建议 */
+    followUp?: string[];
+    /** error: 错误信息 */
+    error?: string;
+  };
+}
+
+/** Agent 工具定义 */
+export interface AgentToolDef {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>; // JSON Schema
+}

@@ -14,6 +14,19 @@
         </svg>
         <span>逻瞳</span>
       </div>
+      <!-- 模式切换 -->
+      <div class="mode-switch">
+        <button
+          class="mode-btn"
+          :class="{ active: mode === 'rag' }"
+          @click="mode = 'rag'"
+        >普通模式</button>
+        <button
+          class="mode-btn"
+          :class="{ active: mode === 'agent' }"
+          @click="mode = 'agent'"
+        >Agent 模式</button>
+      </div>
     </header>
 
     <!-- 对话区域 -->
@@ -33,12 +46,52 @@
             </svg>
           </div>
           <div class="answer-body">
+            <!-- Agent 思考步骤 -->
+            <div v-if="turn.steps && turn.steps.length > 0" class="agent-steps">
+              <div
+                class="agent-steps-header"
+                @click="turn.stepsCollapsed = !turn.stepsCollapsed"
+              >
+                <svg
+                  viewBox="0 0 24 24" width="14" height="14"
+                  fill="none" stroke="currentColor" stroke-width="2"
+                  :class="{ 'chevron-open': !turn.stepsCollapsed }"
+                  class="chevron-icon"
+                >
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
+                <span class="steps-label">思考过程（{{ turn.steps.length }} 步）</span>
+                <span v-if="turn.loading" class="steps-loading-dot"></span>
+              </div>
+              <div v-show="!turn.stepsCollapsed" class="agent-steps-body">
+                <div v-for="(step, si) in turn.steps" :key="si" class="agent-step">
+                  <template v-if="step.type === 'thinking'">
+                    <div class="step-icon step-thinking-icon">💭</div>
+                    <div class="step-content step-thinking">{{ step.thought }}</div>
+                  </template>
+                  <template v-else-if="step.type === 'tool_call'">
+                    <div class="step-icon step-tool-icon">🔧</div>
+                    <div class="step-content step-tool">
+                      <span class="tool-name">{{ step.toolName }}</span>
+                      <code class="tool-args">{{ formatArgs(step.toolArgs) }}</code>
+                    </div>
+                  </template>
+                  <template v-else-if="step.type === 'tool_result'">
+                    <div class="step-icon step-result-icon">📋</div>
+                    <div class="step-content step-result">{{ step.toolResult }}</div>
+                  </template>
+                </div>
+              </div>
+            </div>
+
             <!-- 加载状态 -->
             <div v-if="turn.loading" class="loading-indicator">
               <div class="typing-dots">
                 <span></span><span></span><span></span>
               </div>
-              <span class="loading-text">正在阅读代码并分析...</span>
+              <span class="loading-text">
+                {{ turn.steps && turn.steps.length > 0 ? 'Agent 正在分析代码...' : '正在阅读代码并分析...' }}
+              </span>
               <span v-if="turn.elapsed > 0" class="loading-elapsed">{{ turn.elapsed }}s</span>
             </div>
 
@@ -100,7 +153,17 @@ import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 
-const ASK_TIMEOUT_MS = 150000; // 150 秒：后端可能有多轮 LLM 调用（分析+生成），需留足时间
+const ASK_TIMEOUT_MS = 150000; // 150 秒
+
+type AnswerMode = 'rag' | 'agent';
+
+interface AgentStep {
+  type: 'thinking' | 'tool_call' | 'tool_result';
+  thought?: string;
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolResult?: string;
+}
 
 interface ConversationTurn {
   question: string;
@@ -109,7 +172,10 @@ interface ConversationTurn {
   followUp: string[];
   loading: boolean;
   error: string;
-  elapsed: number; // 已耗时（秒）
+  elapsed: number;
+  // Agent 模式
+  steps?: AgentStep[];
+  stepsCollapsed?: boolean;
 }
 
 const route = useRoute();
@@ -118,6 +184,7 @@ const inputRef = ref<HTMLInputElement>();
 const conversationRef = ref<HTMLElement>();
 const newQuestion = ref('');
 const history = ref<ConversationTurn[]>([]);
+const mode = ref<AnswerMode>('agent');
 
 const isAnyLoading = computed(() => history.value.some(t => t.loading));
 
@@ -137,10 +204,17 @@ function renderMarkdown(text: string): string {
   return marked.parse(text) as string;
 }
 
+function formatArgs(args?: Record<string, unknown>): string {
+  if (!args) return '';
+  return Object.entries(args)
+    .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+    .join(', ');
+}
+
+// ---- RAG 模式 ----
 async function fetchAnswer(q: string) {
   if (!q) return;
 
-  // 注意：必须是 reactive 对象，后续异步修改 turn.xxx 才能触发视图更新
   const turn = reactive<ConversationTurn>({
     question: q,
     answer: '',
@@ -153,7 +227,6 @@ async function fetchAnswer(q: string) {
   history.value.push(turn);
   await scrollToBottom();
 
-  // 计时器：每秒更新已耗时
   const elapsedTimer = setInterval(() => { turn.elapsed++; }, 1000);
 
   try {
@@ -172,6 +245,123 @@ async function fetchAnswer(q: string) {
   }
 }
 
+// ---- Agent 模式（SSE） ----
+async function fetchAgentAnswer(q: string) {
+  if (!q) return;
+
+  const turn = reactive<ConversationTurn>({
+    question: q,
+    answer: '',
+    renderedAnswer: '',
+    followUp: [],
+    loading: true,
+    error: '',
+    elapsed: 0,
+    steps: [],
+    stepsCollapsed: false,
+  });
+  history.value.push(turn);
+  await scrollToBottom();
+
+  const elapsedTimer = setInterval(() => { turn.elapsed++; }, 1000);
+
+  try {
+    const resp = await fetch('/api/agent/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q }),
+    });
+
+    if (!resp.ok) {
+      turn.error = `请求失败: ${resp.status}`;
+      return;
+    }
+
+    const reader = resp.body?.getReader();
+    if (!reader) {
+      turn.error = '无法建立流式连接';
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr) continue;
+
+        try {
+          const event = JSON.parse(jsonStr) as {
+            type: string;
+            data: Record<string, unknown>;
+          };
+
+          switch (event.type) {
+            case 'thinking':
+              turn.steps!.push({
+                type: 'thinking',
+                thought: event.data.thought as string,
+              });
+              break;
+
+            case 'tool_call':
+              turn.steps!.push({
+                type: 'tool_call',
+                toolName: event.data.toolName as string,
+                toolArgs: event.data.toolArgs as Record<string, unknown>,
+              });
+              break;
+
+            case 'tool_result':
+              turn.steps!.push({
+                type: 'tool_result',
+                toolResult: event.data.toolResult as string,
+              });
+              break;
+
+            case 'answer_delta':
+              turn.answer += event.data.delta as string;
+              turn.renderedAnswer = renderMarkdown(turn.answer);
+              break;
+
+            case 'done':
+              turn.answer = (event.data.answer as string) || turn.answer;
+              turn.renderedAnswer = renderMarkdown(turn.answer);
+              turn.followUp = (event.data.followUp as string[]) || [];
+              turn.stepsCollapsed = true;
+              break;
+
+            case 'error':
+              turn.error = (event.data.error as string) || '未知错误';
+              break;
+          }
+
+          await scrollToBottom();
+        } catch {
+          // 忽略 JSON 解析错误
+        }
+      }
+    }
+  } catch {
+    if (!turn.error) {
+      turn.error = '连接中断或超时';
+    }
+  } finally {
+    clearInterval(elapsedTimer);
+    turn.loading = false;
+    await scrollToBottom();
+  }
+}
+
 async function scrollToBottom() {
   await nextTick();
   if (conversationRef.value) {
@@ -183,12 +373,21 @@ function handleAsk() {
   const q = newQuestion.value.trim();
   if (!q || isAnyLoading.value) return;
   newQuestion.value = '';
-  fetchAnswer(q);
+
+  if (mode.value === 'agent') {
+    fetchAgentAnswer(q);
+  } else {
+    fetchAnswer(q);
+  }
 }
 
 function askFollowUp(q: string) {
   if (isAnyLoading.value) return;
-  fetchAnswer(q);
+  if (mode.value === 'agent') {
+    fetchAgentAnswer(q);
+  } else {
+    fetchAnswer(q);
+  }
 }
 
 // 监听路由参数
@@ -196,7 +395,11 @@ watch(
   () => route.query.q as string,
   (q) => {
     if (q && history.value.length === 0) {
-      fetchAnswer(q);
+      if (mode.value === 'agent') {
+        fetchAgentAnswer(q);
+      } else {
+        fetchAnswer(q);
+      }
     }
   },
   { immediate: true },
@@ -255,6 +458,39 @@ onMounted(() => {
   cursor: pointer;
 }
 
+/* 模式切换 */
+.mode-switch {
+  margin-left: auto;
+  display: flex;
+  background: #f4f5f7;
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.mode-btn {
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #8b8fa3;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.mode-btn.active {
+  background: #fff;
+  color: #4f6ef7;
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.mode-btn:hover:not(.active) {
+  color: #5a5e72;
+}
+
 /* 对话区域 */
 .conversation {
   flex: 1;
@@ -308,6 +544,122 @@ onMounted(() => {
 .answer-body {
   flex: 1;
   min-width: 0;
+}
+
+/* Agent 步骤 */
+.agent-steps {
+  margin-bottom: 12px;
+  border: 1px solid #e8ebf0;
+  border-radius: 12px;
+  background: #fafbfd;
+  overflow: hidden;
+}
+
+.agent-steps-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.agent-steps-header:hover {
+  background: #f0f2f6;
+}
+
+.chevron-icon {
+  transition: transform 0.2s;
+  color: #8b8fa3;
+}
+
+.chevron-open {
+  transform: rotate(90deg);
+}
+
+.steps-label {
+  font-size: 12px;
+  color: #8b8fa3;
+  font-weight: 500;
+}
+
+.steps-loading-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4f6ef7;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.agent-steps-body {
+  border-top: 1px solid #e8ebf0;
+  padding: 8px 14px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.agent-step {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0;
+  align-items: flex-start;
+}
+
+.agent-step + .agent-step {
+  border-top: 1px solid #f0f2f6;
+}
+
+.step-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.step-content {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #5a5e72;
+}
+
+.step-thinking {
+  color: #6b7280;
+  font-style: italic;
+}
+
+.step-tool .tool-name {
+  font-weight: 600;
+  color: #4f6ef7;
+  margin-right: 4px;
+}
+
+.step-tool .tool-args {
+  font-size: 11px;
+  color: #8b8fa3;
+  background: #f0f3ff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  word-break: break-all;
+}
+
+.step-result {
+  color: #6b7280;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 100px;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+  font-size: 11px;
+  background: #f8f9fb;
+  padding: 4px 6px;
+  border-radius: 4px;
 }
 
 /* 加载动画 */
