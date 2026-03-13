@@ -34,8 +34,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import axios from 'axios';
+import { useCurrentRepo } from '@/composables/useCurrentRepo';
+
+const { currentRepo } = useCurrentRepo();
 
 const status = ref<any>({});
 const building = ref(false);
@@ -97,6 +100,11 @@ function connectProgressWs() {
     }
   };
 }
+
+// 切换仓库后刷新索引状态
+watch(currentRepo, () => {
+  refreshStatus();
+});
 
 onMounted(async () => {
   await refreshStatus();

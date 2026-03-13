@@ -40,6 +40,9 @@
     </div>
 
     <div class="stats-bar" v-if="!hasHistory && indexStatus">
+      <span class="stat-pill repo-pill" v-if="currentRepo">
+        <strong>{{ currentRepo }}</strong>
+      </span>
       <span class="stat-pill" v-if="indexStatus.totalFiles">
         <strong>{{ indexStatus.totalFiles }}</strong> 文件
       </span>
@@ -57,9 +60,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
+import { useCurrentRepo } from '@/composables/useCurrentRepo';
+
+const { currentRepo } = useCurrentRepo();
 
 const router = useRouter();
 const inputRef = ref<HTMLInputElement>();
@@ -81,6 +87,15 @@ const suggestions = [
   '样衣作废按钮点击后做了什么？',
 ];
 
+async function fetchIndexStatus() {
+  try {
+    const res = await axios.get('/api/index/status');
+    indexStatus.value = res.data;
+  } catch {
+    indexStatus.value = null;
+  }
+}
+
 function handleAsk() {
   const q = question.value.trim();
   if (!q || loading.value) return;
@@ -89,13 +104,13 @@ function handleAsk() {
   router.push({ name: 'Answer', query: { q } });
 }
 
-onMounted(async () => {
-  try {
-    const res = await axios.get('/api/index/status');
-    indexStatus.value = res.data;
-  } catch {
-    // ignore
-  }
+// 切换仓库后自动刷新 stats
+watch(currentRepo, () => {
+  fetchIndexStatus();
+});
+
+onMounted(() => {
+  fetchIndexStatus();
   inputRef.value?.focus();
 });
 </script>
@@ -274,5 +289,14 @@ onMounted(async () => {
 .stat-pill.status.building {
   background: #fff3e0;
   color: #ef6c00;
+}
+
+.stat-pill.repo-pill {
+  background: rgba(79, 110, 247, 0.08);
+  color: #4f6ef7;
+}
+
+.stat-pill.repo-pill strong {
+  color: #4f6ef7;
 }
 </style>

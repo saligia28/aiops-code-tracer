@@ -100,6 +100,29 @@ export interface RepoConfig {
 }
 
 // ============================================================
+// 项目管理
+// ============================================================
+
+export type ProjectFramework =
+  | 'vue2' | 'vue3'
+  | 'react' | 'nextjs'
+  | 'angular' | 'svelte'
+  | 'typescript' | 'javascript'
+  | 'java' | 'python' | 'go'
+  | 'other';
+
+export interface ProjectRecord {
+  id: string;               // slug，同时也是 data/.aiops/{id}/ 的目录名
+  name: string;             // 显示名称
+  framework: ProjectFramework;
+  repoPath: string;         // 本地仓库绝对路径
+  gitUrl: string;           // 预留，默认 ""
+  scanPaths: string[];      // 默认 ["src"]
+  createdAt: string;        // ISO 时间戳
+  updatedAt: string;
+}
+
+// ============================================================
 // NLP 管线类型
 // ============================================================
 
