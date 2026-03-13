@@ -32,7 +32,15 @@
     <!-- 对话区域 -->
     <main class="conversation" ref="conversationRef">
       <div v-for="(turn, idx) in history" :key="idx" class="turn">
-        <!-- 用户问题 -->
+        <!-- 系统分隔消息 -->
+        <div v-if="turn.isSystemDivider" class="system-divider">
+          <span class="divider-line" />
+          <span class="divider-text">{{ turn.systemText }}</span>
+          <span class="divider-line" />
+        </div>
+
+        <!-- 正常对话 -->
+        <template v-else>
         <div class="question-bubble">
           <div class="bubble-content">{{ turn.question }}</div>
         </div>
@@ -122,6 +130,7 @@
             </div>
           </div>
         </div>
+        </template>
       </div>
     </main>
 
@@ -152,8 +161,11 @@ import axios from 'axios';
 import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
+import { useCurrentRepo } from '@/composables/useCurrentRepo';
 
 const ASK_TIMEOUT_MS = 150000; // 150 秒
+
+const { currentRepo } = useCurrentRepo();
 
 type AnswerMode = 'rag' | 'agent';
 
@@ -176,6 +188,9 @@ interface ConversationTurn {
   // Agent 模式
   steps?: AgentStep[];
   stepsCollapsed?: boolean;
+  // 系统分隔消息
+  isSystemDivider?: boolean;
+  systemText?: string;
 }
 
 const route = useRoute();
@@ -389,6 +404,19 @@ function askFollowUp(q: string) {
     fetchAnswer(q);
   }
 }
+
+// 切换仓库后插入系统分隔消息
+watch(currentRepo, (newRepo, oldRepo) => {
+  if (oldRepo && newRepo && newRepo !== oldRepo && history.value.length > 0) {
+    history.value.push(reactive({
+      question: '', answer: '', renderedAnswer: '', followUp: [],
+      loading: false, error: '', elapsed: 0,
+      isSystemDivider: true,
+      systemText: `已切换到仓库：${newRepo}`,
+    }));
+    scrollToBottom();
+  }
+});
 
 // 监听路由参数
 watch(
@@ -941,5 +969,25 @@ onMounted(() => {
 .send-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 系统分隔消息 */
+.system-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.divider-line {
+  flex: 1;
+  height: 1px;
+  background: #e2e4ea;
+}
+
+.divider-text {
+  font-size: 12px;
+  color: #8b8fa3;
+  white-space: nowrap;
 }
 </style>

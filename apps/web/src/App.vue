@@ -1,9 +1,11 @@
 <template>
+  <TopProjectSelector />
   <TopModelSelector />
   <router-view />
 </template>
 
 <script setup lang="ts">
+import TopProjectSelector from './components/TopProjectSelector.vue';
 import TopModelSelector from './components/TopModelSelector.vue';
 </script>
 
