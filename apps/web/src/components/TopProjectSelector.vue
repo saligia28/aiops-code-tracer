@@ -525,11 +525,11 @@ onUnmounted(() => {
 <style scoped>
 .project-floating {
   position: fixed;
-  top: 14px;
+  bottom: 80px;
   left: 16px;
   z-index: 1200;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   align-items: flex-start;
   gap: 8px;
 }
@@ -807,7 +807,7 @@ onUnmounted(() => {
 
 @media (max-width: 768px) {
   .project-floating {
-    top: 10px;
+    bottom: 76px;
     left: 12px;
     right: 12px;
     align-items: stretch;

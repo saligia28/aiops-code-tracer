@@ -116,6 +116,15 @@
             <!-- 正常回答（Markdown 渲染） -->
             <div v-else class="answer-content markdown-body" v-html="turn.renderedAnswer"></div>
 
+            <!-- 耗时标签 -->
+            <div v-if="!turn.loading && !turn.error && turn.elapsed > 0" class="answer-duration">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+              <span>耗时 {{ turn.elapsed }}s</span>
+            </div>
+
             <!-- 追问建议 -->
             <div v-if="turn.followUp?.length && !turn.loading" class="followup-area">
               <div class="followup-label">相关问题</div>
@@ -869,6 +878,17 @@ onMounted(() => {
   background: #f4f5f7;
   font-weight: 600;
   color: #1a1a2e;
+}
+
+/* 耗时标签 */
+.answer-duration {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #b0b4c3;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 追问区域 */
