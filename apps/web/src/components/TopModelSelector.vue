@@ -222,11 +222,11 @@ onMounted(() => {
 /* ---- 浮窗容器 ---- */
 .llm-floating {
   position: fixed;
-  top: 14px;
+  bottom: 80px;
   right: 16px;
   z-index: 1200;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   align-items: flex-end;
   gap: 8px;
 }
@@ -452,7 +452,7 @@ onMounted(() => {
 
 @media (max-width: 768px) {
   .llm-floating {
-    top: 10px;
+    bottom: 76px;
     left: 12px;
     right: 12px;
     align-items: stretch;
