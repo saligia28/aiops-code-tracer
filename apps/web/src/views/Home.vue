@@ -62,7 +62,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import axios from 'axios';
+import http from '@/lib/http';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
 
 const { currentRepo } = useCurrentRepo();
@@ -89,7 +89,7 @@ const suggestions = [
 
 async function fetchIndexStatus() {
   try {
-    const res = await axios.get('/api/index/status');
+    const res = await http.get('/api/index/status');
     indexStatus.value = res.data;
   } catch {
     indexStatus.value = null;

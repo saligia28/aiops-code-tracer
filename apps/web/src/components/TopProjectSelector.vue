@@ -246,7 +246,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, reactive, computed } from 'vue';
 import { ElMessage } from 'element-plus';
-import axios from 'axios';
+import http from '@/lib/http';
 import { useProject } from '@/composables/useProject';
 import type { ProjectFramework } from '@/composables/useProject';
 
@@ -312,7 +312,7 @@ const pathSegments = computed(() => {
 async function fetchDirs(dirPath: string) {
   browserLoading.value = true;
   try {
-    const res = await axios.get<BrowserInfo>('/api/fs/dirs', { params: { path: dirPath } });
+    const res = await http.get<BrowserInfo>('/api/fs/dirs', { params: { path: dirPath } });
     browserInfo.current = res.data.current;
     browserInfo.parent = res.data.parent;
     browserInfo.dirs = res.data.dirs;
@@ -439,7 +439,7 @@ async function handleDeleteCheck(id: string, name: string) {
   deleteTarget.deleteData = false;
 
   try {
-    const res = await axios.get<{ risks: string[] }>(`/api/projects/${id}/relations`);
+    const res = await http.get<{ risks: string[] }>(`/api/projects/${id}/relations`);
     deleteTarget.risks = res.data.risks;
   } catch {
     // 查询失败也允许继续删除

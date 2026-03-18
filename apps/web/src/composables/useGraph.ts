@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import axios from 'axios';
+import http from '@/lib/http';
 
 export function useGraph() {
   const graphData = ref<{ nodes: any[]; edges: any[] }>({ nodes: [], edges: [] });
@@ -8,7 +8,7 @@ export function useGraph() {
   async function loadFileGraph(filePath: string) {
     loading.value = true;
     try {
-      const res = await axios.get('/api/graph/file', { params: { path: filePath } });
+      const res = await http.get('/api/graph/file', { params: { path: filePath } });
       graphData.value = res.data;
     } finally {
       loading.value = false;
@@ -18,7 +18,7 @@ export function useGraph() {
   async function loadSymbolGraph(name: string) {
     loading.value = true;
     try {
-      const res = await axios.get('/api/graph/symbol', { params: { name } });
+      const res = await http.get('/api/graph/symbol', { params: { name } });
       graphData.value = res.data;
     } finally {
       loading.value = false;

@@ -166,7 +166,7 @@
 <script setup lang="ts">
 import { ref, watch, computed, nextTick, onMounted, reactive } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import axios from 'axios';
+import http from '@/lib/http';
 import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
@@ -254,7 +254,7 @@ async function fetchAnswer(q: string) {
   const elapsedTimer = setInterval(() => { turn.elapsed++; }, 1000);
 
   try {
-    const res = await axios.post('/api/ask', { question: q }, {
+    const res = await http.post('/api/ask', { question: q }, {
       timeout: ASK_TIMEOUT_MS,
     });
     turn.answer = res.data.answer || '未能生成回答';
@@ -294,9 +294,14 @@ async function fetchAgentAnswer(q: string) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: q }),
+      credentials: 'include',
     });
 
     if (!resp.ok) {
+      if (resp.status === 401) {
+        router.push('/login');
+        return;
+      }
       turn.error = `请求失败: ${resp.status}`;
       return;
     }

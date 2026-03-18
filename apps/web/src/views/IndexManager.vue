@@ -35,7 +35,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
-import axios from 'axios';
+import http from '@/lib/http';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
 
 const { currentRepo } = useCurrentRepo();
@@ -55,7 +55,7 @@ const statusTag = computed(() => {
 
 async function refreshStatus() {
   try {
-    const res = await axios.get('/api/index/status');
+    const res = await http.get('/api/index/status');
     status.value = res.data;
     if (status.value.status === 'building') {
       building.value = true;
@@ -120,7 +120,7 @@ onBeforeUnmount(() => {
 
 async function triggerBuild() {
   try {
-    const res = await axios.post('/api/index/build');
+    const res = await http.post('/api/index/build');
     if (res.data?.status === 'building') {
       building.value = true;
       progress.value = 0;
@@ -134,7 +134,7 @@ async function triggerBuild() {
 
 async function triggerRebuild() {
   try {
-    const res = await axios.post('/api/index/rebuild');
+    const res = await http.post('/api/index/rebuild');
     if (res.data?.status === 'building') {
       building.value = true;
       progress.value = 0;

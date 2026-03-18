@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue';
-import axios from 'axios';
+import http from '@/lib/http';
 
 export type ProjectFramework =
   | 'vue2' | 'vue3'
@@ -50,7 +50,7 @@ function persist(id: string) {
 async function fetchProjects() {
   loading.value = true;
   try {
-    const res = await axios.get<{ currentProjectId: string | null; projects: ProjectInfo[] }>(
+    const res = await http.get<{ currentProjectId: string | null; projects: ProjectInfo[] }>(
       '/api/projects',
     );
     projects.value = res.data.projects;
@@ -61,7 +61,7 @@ async function fetchProjects() {
 
     if (saved && ids.includes(saved)) {
       if (saved !== apiCurrent) {
-        await axios.post(`/api/projects/${saved}/switch`);
+        await http.post(`/api/projects/${saved}/switch`);
       }
       persist(saved);
     } else if (apiCurrent && ids.includes(apiCurrent)) {
@@ -77,7 +77,7 @@ async function fetchProjects() {
 async function switchProject(id: string) {
   loading.value = true;
   try {
-    await axios.post(`/api/projects/${id}/switch`);
+    await http.post(`/api/projects/${id}/switch`);
     persist(id);
   } finally {
     loading.value = false;
@@ -91,13 +91,13 @@ async function createProject(data: {
   gitUrl?: string;
   scanPaths?: string[];
 }) {
-  const res = await axios.post<ProjectRecord>('/api/projects', data);
+  const res = await http.post<ProjectRecord>('/api/projects', data);
   await fetchProjects();
   return res.data;
 }
 
 async function deleteProject(id: string, deleteData = false) {
-  await axios.delete(`/api/projects/${id}`, { params: deleteData ? { deleteData: 'true' } : {} });
+  await http.delete(`/api/projects/${id}`, { params: deleteData ? { deleteData: 'true' } : {} });
   if (currentProjectId.value === id) {
     persist('');
   }
@@ -105,7 +105,7 @@ async function deleteProject(id: string, deleteData = false) {
 }
 
 async function buildProject(id: string) {
-  return axios.post(`/api/projects/${id}/build`);
+  return http.post(`/api/projects/${id}/build`);
 }
 
 export function useProject() {

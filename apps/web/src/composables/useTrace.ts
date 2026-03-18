@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import axios from 'axios';
+import http from '@/lib/http';
 
 export function useTrace() {
   const traceResult = ref<any>(null);
@@ -8,7 +8,7 @@ export function useTrace() {
   async function traceForward(symbol: string, depth = 3) {
     loading.value = true;
     try {
-      const res = await axios.get('/api/trace', { params: { symbol, depth } });
+      const res = await http.get('/api/trace', { params: { symbol, depth } });
       traceResult.value = res.data;
     } finally {
       loading.value = false;
@@ -18,7 +18,7 @@ export function useTrace() {
   async function traceBackward(target: string, depth = 3) {
     loading.value = true;
     try {
-      const res = await axios.get('/api/why', { params: { target, depth } });
+      const res = await http.get('/api/why', { params: { target, depth } });
       traceResult.value = res.data;
     } finally {
       loading.value = false;
