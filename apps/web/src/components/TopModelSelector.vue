@@ -70,7 +70,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import axios from 'axios';
+import http from '@/lib/http';
 import { ElMessage } from 'element-plus';
 
 interface LlmOption {
@@ -159,7 +159,7 @@ async function fetchConfig() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const res = await axios.get<LlmRuntimeConfig>('/api/llm/config', {
+    const res = await http.get<LlmRuntimeConfig>('/api/llm/config', {
       timeout: CONFIG_TIMEOUT_MS,
     });
     applyConfig(res.data);
@@ -175,7 +175,7 @@ async function saveConfig(next: { mode?: 'api' | 'intranet'; model?: string }) {
   try {
     const body: Record<string, string> = { mode: next.mode ?? mode.value };
     if (next.model !== undefined) body.model = next.model;
-    const res = await axios.post<LlmRuntimeConfig>('/api/llm/config', body, {
+    const res = await http.post<LlmRuntimeConfig>('/api/llm/config', body, {
       timeout: CONFIG_TIMEOUT_MS,
     });
     applyConfig(res.data);

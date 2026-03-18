@@ -12,7 +12,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 4200,
-    allowedHosts: ['.local', 'macbook-pro.local', 'referrals-suggest-gaming-caroline.trycloudflare.com'],
+    allowedHosts: ['.local', 'macbook-pro.local', 'luotong.saligia.asia'],
     proxy: {
       '/api': {
         target: 'http://localhost:4201',

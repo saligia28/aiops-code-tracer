@@ -1,12 +1,17 @@
 <template>
-  <TopProjectSelector />
-  <TopModelSelector />
+  <TopProjectSelector v-if="!isLoginPage" />
+  <TopModelSelector v-if="!isLoginPage" />
   <router-view />
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
+import { useRoute } from 'vue-router';
 import TopProjectSelector from './components/TopProjectSelector.vue';
 import TopModelSelector from './components/TopModelSelector.vue';
+
+const route = useRoute();
+const isLoginPage = computed(() => route.name === 'Login');
 </script>
 
 <style>

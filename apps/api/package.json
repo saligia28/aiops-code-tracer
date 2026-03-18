@@ -15,6 +15,7 @@
     "@aiops/graph-core": "workspace:*",
     "@aiops/parser": "workspace:*",
     "@aiops/nlp": "workspace:*",
+    "@fastify/cookie": "^11.0.0",
     "@fastify/cors": "^10.0.0",
     "@fastify/websocket": "^11.0.0",
     "dotenv": "^16.4.0",
