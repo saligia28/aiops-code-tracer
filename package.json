@@ -4,7 +4,7 @@
   "private": true,
   "description": "代码智能分析平台 — 结构态分析为核心，自然语言问答为入口",
   "scripts": {
-    "dev": "sh scripts/dev-tunnel.sh & pnpm -r --parallel run dev",
+    "dev": "pnpm -r --parallel run dev & sh scripts/dev-tunnel.sh & wait",
     "dev:no-tunnel": "pnpm -r --parallel run dev",
     "dev:web": "pnpm --filter @aiops/web dev",
     "dev:api": "pnpm --filter @aiops/api dev",

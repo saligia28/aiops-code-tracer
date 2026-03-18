@@ -1,5 +1,4 @@
 import axios from 'axios';
-import router from '@/router/index';
 
 const http = axios.create({
   withCredentials: true,
@@ -7,8 +6,10 @@ const http = axios.create({
 
 http.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     if (error.response?.status === 401) {
+      // 延迟导入 router 避免循环依赖
+      const { default: router } = await import('@/router/index');
       router.push('/login');
     }
     return Promise.reject(error);
