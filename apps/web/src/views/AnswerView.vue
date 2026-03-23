@@ -71,7 +71,7 @@
                 <span class="steps-label">思考过程（{{ turn.steps.length }} 步）</span>
                 <span v-if="turn.loading" class="steps-loading-dot"></span>
               </div>
-              <div v-show="!turn.stepsCollapsed" class="agent-steps-body">
+              <div v-show="!turn.stepsCollapsed" class="agent-steps-body" :ref="(el) => { if (el) stepsBodyRefs[idx] = el as HTMLElement }">
                 <div v-for="(step, si) in turn.steps" :key="si" class="agent-step">
                   <template v-if="step.type === 'thinking'">
                     <div class="step-icon step-thinking-icon">💭</div>
@@ -206,6 +206,7 @@ const route = useRoute();
 const router = useRouter();
 const inputRef = ref<HTMLInputElement>();
 const conversationRef = ref<HTMLElement>();
+const stepsBodyRefs = ref<Record<number, HTMLElement>>({});
 const newQuestion = ref('');
 const history = ref<ConversationTurn[]>([]);
 const mode = ref<AnswerMode>('agent');
@@ -393,6 +394,13 @@ async function fetchAgentAnswer(q: string) {
 
 async function scrollToBottom() {
   await nextTick();
+  // 滚动正在加载的 turn 的思考步骤区域到底部
+  for (const [idx, el] of Object.entries(stepsBodyRefs.value)) {
+    const turn = history.value[Number(idx)];
+    if (turn?.loading && el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }
   if (conversationRef.value) {
     conversationRef.value.scrollTop = conversationRef.value.scrollHeight;
   }

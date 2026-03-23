@@ -9,7 +9,7 @@ import type {
   AskResponse,
 } from '@aiops/shared-types';
 import {
-  REPO_PATH_ENV,
+  currentRepoPath,
   graphStore,
   symbolIndex,
   fileNodeMap,
@@ -223,7 +223,7 @@ function listFilesRecursively(dir: string, maxDepth: number = 4): string[] {
 }
 
 function toRepoRelative(absPath: string): string {
-  return path.relative(REPO_PATH_ENV, absPath).replaceAll(path.sep, '/');
+  return path.relative(currentRepoPath, absPath).replaceAll(path.sep, '/');
 }
 
 // ============================================================
@@ -232,9 +232,9 @@ function toRepoRelative(absPath: string): string {
 
 export function buildPageAnchorIndex(log?: FastifyBaseLogger): void {
   setPageAnchors([]);
-  if (!REPO_PATH_ENV) return;
+  if (!currentRepoPath) return;
 
-  const routerDir = path.join(REPO_PATH_ENV, 'src/router/modules');
+  const routerDir = path.join(currentRepoPath, 'src/router/modules');
   if (!fs.existsSync(routerDir)) return;
 
   const files = fs.readdirSync(routerDir).filter((name) => name.endsWith('.ts'));
@@ -365,7 +365,7 @@ export function buildRecallIndex(nodes: GraphNode[], repoName: string, log?: Fas
 }
 
 export function buildFileRecallIndex(repoName: string, log?: FastifyBaseLogger): void {
-  if (!REPO_PATH_ENV || fileNodeMap.size === 0) {
+  if (!currentRepoPath || fileNodeMap.size === 0) {
     setFileRecallIndex(null);
     return;
   }
@@ -373,7 +373,7 @@ export function buildFileRecallIndex(repoName: string, log?: FastifyBaseLogger):
   const docs: FileRecallDoc[] = [];
   const df = new Map<string, number>();
   for (const filePath of fileNodeMap.keys()) {
-    const absPath = path.join(REPO_PATH_ENV, filePath);
+    const absPath = path.join(currentRepoPath, filePath);
     if (!fs.existsSync(absPath)) continue;
 
     try {
@@ -452,8 +452,8 @@ function classifyFactKinds(line: string): FactKind[] {
 }
 
 function extractFactsFromFile(filePath: string): CodeFact[] {
-  if (!REPO_PATH_ENV) return [];
-  const absPath = path.join(REPO_PATH_ENV, filePath);
+  if (!currentRepoPath) return [];
+  const absPath = path.join(currentRepoPath, filePath);
   if (!fs.existsSync(absPath)) return [];
 
   const ext = path.extname(filePath).toLowerCase();
@@ -503,7 +503,7 @@ function extractFactsFromFile(filePath: string): CodeFact[] {
 }
 
 export function buildFactIndex(repoName: string, log?: FastifyBaseLogger): void {
-  if (!REPO_PATH_ENV || fileNodeMap.size === 0) {
+  if (!currentRepoPath || fileNodeMap.size === 0) {
     setFactIndex(null);
     return;
   }
@@ -768,14 +768,14 @@ export function pickHintedComponentFiles(question: string, componentFiles: strin
 }
 
 export function resolveRepoImportPath(fromRepoFile: string, specifier: string): string | null {
-  if (!REPO_PATH_ENV) return null;
+  if (!currentRepoPath) return null;
   const spec = specifier.trim();
   if (!spec) return null;
   if (!spec.startsWith('@/') && !spec.startsWith('./') && !spec.startsWith('../')) {
     return null;
   }
 
-  const base = spec.startsWith('@/') ? path.join(REPO_PATH_ENV, 'src', spec.slice(2)) : path.join(REPO_PATH_ENV, path.dirname(fromRepoFile), spec);
+  const base = spec.startsWith('@/') ? path.join(currentRepoPath, 'src', spec.slice(2)) : path.join(currentRepoPath, path.dirname(fromRepoFile), spec);
   const candidates = [
     base,
     `${base}.ts`,
@@ -800,8 +800,8 @@ export function resolveRepoImportPath(fromRepoFile: string, specifier: string): 
 }
 
 export function extractLocalImportsFromFile(repoFilePath: string): string[] {
-  if (!REPO_PATH_ENV) return [];
-  const absPath = path.join(REPO_PATH_ENV, repoFilePath);
+  if (!currentRepoPath) return [];
+  const absPath = path.join(currentRepoPath, repoFilePath);
   if (!fs.existsSync(absPath)) return [];
 
   let content = '';
@@ -882,7 +882,7 @@ export function prioritizeNodesByFileScope(nodes: GraphNode[], scopeFiles: strin
 
 function extractEndpointHitsFromFile(absPath: string): EndpointHit[] {
   const hits: EndpointHit[] = [];
-  if (!fs.existsSync(absPath) || !REPO_PATH_ENV) return hits;
+  if (!fs.existsSync(absPath) || !currentRepoPath) return hits;
 
   const rel = toRepoRelative(absPath);
   const content = fs.readFileSync(absPath, 'utf-8');
@@ -914,8 +914,8 @@ function extractEndpointHitsFromFile(absPath: string): EndpointHit[] {
 }
 
 export function collectPageEndpointHits(anchor: PageAnchor): EndpointHit[] {
-  if (!REPO_PATH_ENV) return [];
-  const componentAbs = path.join(REPO_PATH_ENV, anchor.componentFile);
+  if (!currentRepoPath) return [];
+  const componentAbs = path.join(currentRepoPath, anchor.componentFile);
   const baseDir = path.dirname(componentAbs);
   if (!fs.existsSync(baseDir)) return [];
 
@@ -1128,9 +1128,9 @@ export function buildFollowUps(question: string, topNodes: GraphNode[], plan?: Q
 // ============================================================
 
 export function tryAnalyzeApiPassThrough(node: GraphNode): { endpoint?: string; paramName?: string } | null {
-  if (!REPO_PATH_ENV || node.type !== 'function') return null;
+  if (!currentRepoPath || node.type !== 'function') return null;
 
-  const absPath = path.join(REPO_PATH_ENV, node.filePath);
+  const absPath = path.join(currentRepoPath, node.filePath);
   if (!fs.existsSync(absPath)) return null;
 
   try {
@@ -1209,8 +1209,8 @@ export function composeAnswer(question: string, intent: IntentType, nodes: Graph
 // ============================================================
 
 export function getCodeSnippet(filePath: string, line: number): string {
-  if (!REPO_PATH_ENV) return '  - 代码片段不可用';
-  const absPath = path.join(REPO_PATH_ENV, filePath);
+  if (!currentRepoPath) return '  - 代码片段不可用';
+  const absPath = path.join(currentRepoPath, filePath);
   if (!fs.existsSync(absPath)) return '  - 代码片段不可用';
   try {
     const lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
@@ -1382,13 +1382,13 @@ export function assembleCodeContext(
   graph: { nodes: GraphNode[]; edges: GraphEdge[] },
   maxTokens: number = 6000
 ): string {
-  if (!REPO_PATH_ENV) return '';
+  if (!currentRepoPath) return '';
 
   const fileSnippets = new Map<string, string[]>();
   const locations = collectCodeLocations(nodes, graph);
 
   for (const loc of locations) {
-    const absPath = path.join(REPO_PATH_ENV, loc.filePath);
+    const absPath = path.join(currentRepoPath, loc.filePath);
     if (!fs.existsSync(absPath)) continue;
 
     let lines: string[];
@@ -1570,7 +1570,7 @@ function scoreGenericEvidenceLine(line: string, coreTerms: string[]): { score: n
 // For brevity in this refactoring pass, they are included inline below.
 
 export function buildGenericEvidence(question: string, nodes: GraphNode[], scopeFiles: string[] = [], concern: PlanConcern = 'general', requireTermHit: boolean = false, maxEvidence: number = 8): Evidence[] {
-  if (!REPO_PATH_ENV) return [];
+  if (!currentRepoPath) return [];
   const coreTerms = extractQuestionCoreTerms(question);
   const candidateFiles = Array.from(new Set([...scopeFiles, ...nodes.slice(0, 28).map((node) => node.filePath)])).filter((file) => /\.(vue|tsx?|jsx?|ts|js)$/i.test(file));
   const candidateFileSet = new Set(candidateFiles);
@@ -1602,7 +1602,7 @@ export function buildGenericEvidence(question: string, nodes: GraphNode[], scope
   }
 
   for (const file of candidateFiles) {
-    const absPath = path.join(REPO_PATH_ENV, file);
+    const absPath = path.join(currentRepoPath, file);
     if (!fs.existsSync(absPath)) continue;
     let lines: string[] = [];
     try { lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/); } catch { continue; }
@@ -1672,8 +1672,8 @@ export function collectConditionMethodEvidence(
   questionTerms: string[],
   maxEvidence: number
 ): Array<Evidence & { score: number }> {
-  if (!REPO_PATH_ENV || maxEvidence <= 0) return [];
-  const absPath = path.join(REPO_PATH_ENV, filePath);
+  if (!currentRepoPath || maxEvidence <= 0) return [];
+  const absPath = path.join(currentRepoPath, filePath);
   if (!fs.existsSync(absPath)) return [];
 
   let lines: string[] = [];
@@ -1922,8 +1922,8 @@ export function collectActionMethodHints(
 }
 
 function extractImportBindingsFromFile(repoFilePath: string): ImportedSymbolBinding[] {
-  if (!REPO_PATH_ENV) return [];
-  const absPath = path.join(REPO_PATH_ENV, repoFilePath);
+  if (!currentRepoPath) return [];
+  const absPath = path.join(currentRepoPath, repoFilePath);
   if (!fs.existsSync(absPath)) return [];
 
   let content = '';
@@ -1985,8 +1985,8 @@ function extractImportBindingsFromFile(repoFilePath: string): ImportedSymbolBind
 }
 
 function buildApiFunctionEndpointMap(repoFilePath: string): Map<string, ApiFunctionEndpointEvidence[]> {
-  if (!REPO_PATH_ENV) return new Map();
-  const absPath = path.join(REPO_PATH_ENV, repoFilePath);
+  if (!currentRepoPath) return new Map();
+  const absPath = path.join(currentRepoPath, repoFilePath);
   if (!fs.existsSync(absPath)) return new Map();
 
   let lines: string[] = [];
@@ -2053,7 +2053,7 @@ export function buildFlowChainEvidence(
   scopeFiles: string[] = [],
   maxEvidence: number = 10
 ): Evidence[] {
-  if (!REPO_PATH_ENV || scopeFiles.length === 0 || maxEvidence <= 0) return [];
+  if (!currentRepoPath || scopeFiles.length === 0 || maxEvidence <= 0) return [];
 
   const questionTerms = extractQuestionCoreTerms(question);
   const questionLower = question.toLowerCase();
@@ -2084,7 +2084,7 @@ export function buildFlowChainEvidence(
       }
     }
 
-    const absPath = path.join(REPO_PATH_ENV, filePath);
+    const absPath = path.join(currentRepoPath, filePath);
     if (!fs.existsSync(absPath)) continue;
     let lines: string[] = [];
     try {
@@ -2236,7 +2236,7 @@ export function buildFlowChainEvidence(
   if (secondHopMethods.size > 0) {
     const methodList = Array.from(secondHopMethods).slice(0, 20);
     for (const filePath of candidateFiles) {
-      const absPath = path.join(REPO_PATH_ENV, filePath);
+      const absPath = path.join(currentRepoPath, filePath);
       if (!fs.existsSync(absPath)) continue;
       let lines: string[] = [];
       try {
@@ -2507,7 +2507,7 @@ export function buildUiConditionEvidence(
   scopeFiles: string[] = [],
   maxEvidence: number = 8
 ): Evidence[] {
-  if (!REPO_PATH_ENV) return [];
+  if (!currentRepoPath) return [];
 
   const candidateFiles = new Set<string>(scopeFiles);
   for (const node of nodes.slice(0, 24)) {
@@ -2527,7 +2527,7 @@ export function buildUiConditionEvidence(
   const methodNameHintPattern = /^(is|has|can|show|hide|should|check|allow|enable|disabled|visible|pending|void|audit|verify)/i;
   for (const filePath of candidateFiles) {
     if (!/\.(vue|jsx?|tsx?)$/i.test(filePath)) continue;
-    const absPath = path.join(REPO_PATH_ENV, filePath);
+    const absPath = path.join(currentRepoPath, filePath);
     if (!fs.existsSync(absPath)) continue;
     try {
       const lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
@@ -2636,7 +2636,7 @@ export function buildUiConditionEvidence(
 }
 
 export function buildPaginationEvidence(nodes: GraphNode[], maxEvidence: number = 6): Evidence[] {
-  if (!REPO_PATH_ENV) return [];
+  if (!currentRepoPath) return [];
 
   const candidateFiles = new Set<string>(['src/components/YLTable/index.jsx']);
   for (const node of nodes.slice(0, 20)) {
@@ -2651,7 +2651,7 @@ export function buildPaginationEvidence(nodes: GraphNode[], maxEvidence: number 
   const result: Evidence[] = [];
   const pattern = /(pageNum|pageSize|pagination|fetchTableData|getTableData|queryParams|currentPage|每页|页码)/i;
   for (const filePath of candidateFiles) {
-    const absPath = path.join(REPO_PATH_ENV, filePath);
+    const absPath = path.join(currentRepoPath, filePath);
     if (!fs.existsSync(absPath)) continue;
     try {
       const lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
@@ -2681,7 +2681,7 @@ export function buildComponentEvidence(
   focusFiles: string[] = [],
   maxEvidence: number = 8
 ): Evidence[] {
-  if (!REPO_PATH_ENV) return [];
+  if (!currentRepoPath) return [];
 
   const questionTerms = extractSearchTerms(question).slice(0, 12);
   const candidateFiles = new Set<string>([...focusFiles, ...componentFiles]);
@@ -2696,7 +2696,7 @@ export function buildComponentEvidence(
   const signalPattern = /(props|emit|emits|v-model|watch|computed|methods|setup|defineprops|defineemits|open|dialog|drawer|click|handle|submit|confirm|filter|sort|table|pagination|validate|rule|void|abolish|discard|verify|batch|作废|核实|入库|出库|收货)/i;
   for (const filePath of candidateFiles) {
     if (!/\.(vue|tsx?|jsx?|js)$/.test(filePath)) continue;
-    const absPath = path.join(REPO_PATH_ENV, filePath);
+    const absPath = path.join(currentRepoPath, filePath);
     if (!fs.existsSync(absPath)) continue;
     try {
       const lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
@@ -2739,7 +2739,7 @@ export function buildComponentEvidence(
 }
 
 export function enrichEvidenceWithButtonConditions(question: string, evidence: Evidence[], maxEvidence: number = 12): Evidence[] {
-  if (!REPO_PATH_ENV || evidence.length === 0) return evidence.slice(0, maxEvidence);
+  if (!currentRepoPath || evidence.length === 0) return evidence.slice(0, maxEvidence);
 
   const labels = extractButtonLabelKeywords(question);
   if (labels.length === 0) return evidence.slice(0, maxEvidence);
@@ -2759,7 +2759,7 @@ export function enrichEvidenceWithButtonConditions(question: string, evidence: E
     );
     if (anchors.length === 0) continue;
 
-    const absPath = path.join(REPO_PATH_ENV, file);
+    const absPath = path.join(currentRepoPath, file);
     if (!fs.existsSync(absPath)) continue;
     let lines: string[] = [];
     try {
@@ -2935,13 +2935,13 @@ export function selectFallbackEvidenceByNeed(
     if (factBased.length > 0) return factBased;
 
     // 最终兜底：直接在作用域目录扫描 request 调用，避免链路问题漏接口证据。
-    if (REPO_PATH_ENV && scopeDirs.length > 0) {
+    if (currentRepoPath && scopeDirs.length > 0) {
       const endpointRegex = /request\.(get|post|put|delete|patch)\s*(?:<[^>]*>)?\(\s*['"`]([^'"`]+)['"`]/i;
       const fallback: Array<Evidence & { score: number }> = [];
       const questionTerms = extractQuestionCoreTerms(question);
       const questionLower = question.toLowerCase();
       for (const dir of scopeDirs) {
-        const absDir = path.join(REPO_PATH_ENV, dir);
+        const absDir = path.join(currentRepoPath, dir);
         if (!fs.existsSync(absDir)) continue;
         const files = listFilesRecursively(absDir, 4).filter((file) => /\.(ts|js|vue|tsx|jsx)$/i.test(file));
         for (const absFile of files) {
@@ -3132,7 +3132,7 @@ export function buildPlanEvidence(
   );
 
   // 若证据仍然不足，增加与问题关键词命中的行级证据
-  if (merged.length < 6 && REPO_PATH_ENV) {
+  if (merged.length < 6 && currentRepoPath) {
     const terms = extractSearchTerms(question, plan.keywords).slice(0, 8);
     let candidateFiles = Array.from(new Set([...componentFiles, ...nodes.slice(0, 20).map((node) => node.filePath)]));
     if (anchor && plan.concern !== 'general') {
@@ -3143,7 +3143,7 @@ export function buildPlanEvidence(
       }
     }
     for (const file of candidateFiles) {
-      const absPath = path.join(REPO_PATH_ENV, file);
+      const absPath = path.join(currentRepoPath, file);
       if (!fs.existsSync(absPath)) continue;
       try {
         const lines = fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);

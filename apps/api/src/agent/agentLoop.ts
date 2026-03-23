@@ -9,7 +9,7 @@ import { AGENT_SYSTEM_PROMPT } from './prompt.js'
 // ============================================================
 
 const MAX_TURNS = 50
-const TOTAL_TIMEOUT_MS = 10 * 60 * 1000 // 5 分钟
+const TOTAL_TIMEOUT_MS = 10 * 60 * 1000 // 10 分钟
 const SINGLE_LLM_TIMEOUT_MS = 60_000
 
 // ============================================================
@@ -42,14 +42,17 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
 
   const startTime = Date.now()
 
+  // 请求级工具结果缓存：key = "工具名:参数JSON"
+  const toolCache = new Map<string, string>()
+
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // 超时检查
     if (Date.now() - startTime > TOTAL_TIMEOUT_MS) {
-      onEvent({ type: 'error', data: { error: '达到最大推理时间（5 分钟）' } })
+      onEvent({ type: 'error', data: { error: '达到最大推理时间（10 分钟）' } })
       return
     }
 
-    // 上下文压缩：当消息过多时压缩早期工具结果
+    // 上下文压缩：渐进式压缩
     compressMessages(messages)
 
     let result
@@ -94,21 +97,38 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       }
       messages.push(assistantMsg)
 
-      // 依次执行工具
-      for (const tc of result.toolCalls) {
-        let args: Record<string, unknown> = {}
-        try {
-          args = JSON.parse(tc.arguments)
-        } catch {
-          args = {}
-        }
+      // 并行执行所有工具
+      const toolResults = await Promise.all(
+        result.toolCalls.map(async (tc) => {
+          let args: Record<string, unknown> = {}
+          try {
+            args = JSON.parse(tc.arguments)
+          } catch {
+            args = {}
+          }
 
+          // 检查缓存
+          const cacheKey = `${tc.name}:${tc.arguments}`
+          let toolResult: string
+
+          const cached = toolCache.get(cacheKey)
+          if (cached !== undefined) {
+            toolResult = cached
+          } else {
+            toolResult = await executeTool(tc.name, args, graphStore, repoPath)
+            toolCache.set(cacheKey, toolResult)
+          }
+
+          return { tc, args, toolResult }
+        }),
+      )
+
+      // 统一发送 SSE 事件并追加消息
+      for (const { tc, args, toolResult } of toolResults) {
         onEvent({
           type: 'tool_call',
           data: { toolName: tc.name, toolArgs: args },
         })
-
-        const toolResult = executeTool(tc.name, args, graphStore, repoPath)
 
         onEvent({
           type: 'tool_result',
@@ -144,7 +164,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
   }
 
   // 超过最大轮次
-  onEvent({ type: 'error', data: { error: '达到最大推理轮次（30 轮）' } })
+  onEvent({ type: 'error', data: { error: `达到最大推理轮次（${MAX_TURNS} 轮）` } })
 }
 
 // ============================================================
@@ -152,22 +172,34 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
 // ============================================================
 
 /**
- * 压缩消息列表：当工具结果消息过多时，截断早期的工具输出
+ * 渐进式压缩消息列表：
+ * - 20K 字符：轻度压缩（tool 结果截断到 500 字）
+ * - 40K 字符：重度压缩（tool 结果截断到 150 字 + 清除早期 reasoning_content）
  */
 function compressMessages(messages: ChatMessage[]): void {
-  // 粗略估算 token 数（1 字符 ≈ 0.5 token 中文，1 token 英文）
-  const estimateTokens = () => messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0)
+  const estimateChars = () => messages.reduce((sum, m) => {
+    let len = m.content?.length ?? 0
+    if (m.reasoning_content) len += m.reasoning_content.length
+    return sum + len
+  }, 0)
 
-  const TOKEN_LIMIT = 60_000 // 约 80% 的常见模型上下文窗口
+  const totalChars = estimateChars()
 
-  if (estimateTokens() < TOKEN_LIMIT) return
+  if (totalChars < 20_000) return
 
-  // 从第 3 条消息开始（跳过 system + 第一条 user）压缩 tool 结果
+  const isHeavy = totalChars >= 40_000
+  const toolTruncateLimit = isHeavy ? 150 : 500
+
+  // 从第 3 条消息开始（跳过 system + 第一条 user），保留最近 4 条
   for (let i = 2; i < messages.length - 4; i++) {
-    if (messages[i].role === 'tool' && messages[i].content && messages[i].content!.length > 200) {
-      messages[i].content = messages[i].content!.slice(0, 200) + '\n... (已压缩)'
+    // 压缩 tool 结果
+    if (messages[i].role === 'tool' && messages[i].content && messages[i].content!.length > toolTruncateLimit) {
+      messages[i].content = messages[i].content!.slice(0, toolTruncateLimit) + '\n... (已压缩)'
     }
-    if (estimateTokens() < TOKEN_LIMIT) break
+    // 重度压缩时清除早期 reasoning_content
+    if (isHeavy && messages[i].role === 'assistant' && messages[i].reasoning_content) {
+      messages[i].reasoning_content = null
+    }
   }
 }
 

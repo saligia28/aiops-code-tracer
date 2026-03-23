@@ -19,6 +19,7 @@ import {
   setSymbolIndex,
   setCurrentRepoName,
   setMetaData,
+  setCurrentRepoPath,
   setIndexTaskState,
   setFileNodeMap,
   setRecallIndex,
@@ -178,6 +179,14 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
     }
 
     setCurrentRepoName(repoName);
+
+    // 从项目注册表中读取 repoPath，更新全局状态
+    const projects = readProjectRegistry();
+    const matchedProject = projects.find((p) => p.id === repoName);
+    if (matchedProject?.repoPath) {
+      setCurrentRepoPath(matchedProject.repoPath);
+    }
+
     const newFileNodeMap = new Map<string, import('@aiops/shared-types').GraphNode[]>();
     for (const node of graphData.nodes) {
       if (node.type === 'file') continue;

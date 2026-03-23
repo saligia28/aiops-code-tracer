@@ -1,8 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { execFileSync } from 'child_process';
+import { execFile as execFileCb, execFileSync } from 'child_process';
+import { promisify } from 'util';
 import type { GraphStore } from '@aiops/graph-core';
 import type { AgentToolDef } from '@aiops/shared-types';
+
+const execFile = promisify(execFileCb);
 
 // ============================================================
 // 工具定义（OpenAI function calling 格式）
@@ -70,6 +73,21 @@ export const toolDefinitions: AgentToolDef[] = [
     },
   },
   {
+    name: 'batch_find_symbols',
+    description: '批量搜索多个符号（函数、变量、组件等）。一次查多个符号比逐个调 find_symbol 更高效。',
+    parameters: {
+      type: 'object',
+      properties: {
+        names: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '符号名称列表（每个支持模糊匹配）',
+        },
+      },
+      required: ['names'],
+    },
+  },
+  {
     name: 'trace_calls',
     description: '追踪符号的调用链路。可选正向追踪（该符号调用了什么）或反向追踪（谁调用了该符号）。',
     parameters: {
@@ -114,7 +132,7 @@ export function getOpenAITools(): Array<{
 // 工具执行
 // ============================================================
 
-const MAX_RESULT_CHARS = 4000;
+const MAX_RESULT_CHARS = 3000;
 
 function truncate(text: string, limit = MAX_RESULT_CHARS): string {
   if (text.length <= limit) return text;
@@ -122,24 +140,26 @@ function truncate(text: string, limit = MAX_RESULT_CHARS): string {
 }
 
 /** 执行指定工具 */
-export function executeTool(
+export async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
   graphStore: GraphStore | null,
   repoPath: string,
-): string {
+): Promise<string> {
   try {
     switch (toolName) {
       case 'search_code':
-        return toolSearchCode(repoPath, args.pattern as string, args.glob as string | undefined);
+        return await toolSearchCode(repoPath, args.pattern as string, args.glob as string | undefined);
       case 'read_file':
         return toolReadFile(repoPath, args.filePath as string, args.startLine as number | undefined, args.lineCount as number | undefined);
       case 'search_in_file':
         return toolSearchInFile(repoPath, args.filePath as string, args.pattern as string, args.contextLines as number | undefined);
       case 'list_files':
-        return toolListFiles(repoPath, args.glob as string);
+        return await toolListFiles(repoPath, args.glob as string);
       case 'find_symbol':
         return toolFindSymbol(graphStore, args.name as string);
+      case 'batch_find_symbols':
+        return toolBatchFindSymbols(graphStore, args.names as string[]);
       case 'trace_calls':
         return toolTraceCalls(graphStore, args.symbolId as string, args.direction as string, args.depth as number | undefined);
       case 'list_directory':
@@ -153,7 +173,7 @@ export function executeTool(
 }
 
 // ---- search_code ----
-function toolSearchCode(repoPath: string, pattern: string, glob?: string): string {
+async function toolSearchCode(repoPath: string, pattern: string, glob?: string): Promise<string> {
   if (!repoPath || !pattern) return '缺少参数: pattern';
 
   // 优先使用 ripgrep（rg），性能更好且默认忽略 .gitignore 文件
@@ -167,17 +187,17 @@ function toolSearchCode(repoPath: string, pattern: string, glob?: string): strin
     if (glob) args.push('--glob', glob);
     args.push(pattern, '.');
     try {
-      const result = execFileSync('rg', args, {
+      const { stdout } = await execFile('rg', args, {
         cwd: repoPath,
         timeout: 15000,
         maxBuffer: 1024 * 512,
         encoding: 'utf-8',
       });
-      if (!result.trim()) return '未找到匹配内容';
-      return truncate(result.trim());
+      if (!stdout.trim()) return '未找到匹配内容';
+      return truncate(stdout.trim());
     } catch (err: unknown) {
-      const execErr = err as { status?: number; stdout?: string };
-      if (execErr.status === 1) return '未找到匹配内容';
+      const execErr = err as { code?: number; stdout?: string };
+      if (execErr.code === 1) return '未找到匹配内容';
       if (execErr.stdout && typeof execErr.stdout === 'string' && execErr.stdout.trim()) {
         return truncate(execErr.stdout.trim());
       }
@@ -198,18 +218,18 @@ function toolSearchCode(repoPath: string, pattern: string, glob?: string): strin
     pattern, '.',
   ];
   try {
-    const result = execFileSync('grep', args, {
+    const { stdout } = await execFile('grep', args, {
       cwd: repoPath,
       timeout: 15000,
       maxBuffer: 1024 * 512,
       encoding: 'utf-8',
     });
-    if (!result.trim()) return '未找到匹配内容';
-    return truncate(result.trim());
+    if (!stdout.trim()) return '未找到匹配内容';
+    return truncate(stdout.trim());
   } catch (err: unknown) {
-    const execErr = err as { status?: number; stdout?: string; message?: string };
+    const execErr = err as { code?: number; stdout?: string; message?: string };
     // grep 返回 1 表示无匹配
-    if (execErr.status === 1) return '未找到匹配内容';
+    if (execErr.code === 1) return '未找到匹配内容';
     if (execErr.stdout && typeof execErr.stdout === 'string' && execErr.stdout.trim()) {
       return truncate(execErr.stdout.trim());
     }
@@ -315,30 +335,30 @@ function toolSearchInFile(repoPath: string, filePath: string, pattern: string, c
 }
 
 // ---- list_files ----
-function toolListFiles(repoPath: string, glob: string): string {
+async function toolListFiles(repoPath: string, glob: string): Promise<string> {
   if (!repoPath || !glob) return '缺少参数: glob';
 
   // 使用 find 命令简单实现 glob 匹配
   try {
-    const result = execFileSync('find', ['.', '-path', `./${glob}`, '-type', 'f'], {
+    const { stdout } = await execFile('find', ['.', '-path', `./${glob}`, '-type', 'f'], {
       cwd: repoPath,
       timeout: 10000,
       maxBuffer: 1024 * 128,
       encoding: 'utf-8',
     });
-    const files = result.trim().split('\n').filter(Boolean).slice(0, 50);
+    const files = stdout.trim().split('\n').filter(Boolean).slice(0, 50);
     if (files.length === 0) return '未找到匹配文件';
     return truncate(files.join('\n'));
   } catch {
     // 降级：递归列出后过滤
     try {
-      const result = execFileSync('find', ['.', '-type', 'f', '-name', path.basename(glob)], {
+      const { stdout } = await execFile('find', ['.', '-type', 'f', '-name', path.basename(glob)], {
         cwd: repoPath,
         timeout: 10000,
         maxBuffer: 1024 * 128,
         encoding: 'utf-8',
       });
-      const files = result.trim().split('\n').filter(Boolean).slice(0, 50);
+      const files = stdout.trim().split('\n').filter(Boolean).slice(0, 50);
       if (files.length === 0) return '未找到匹配文件';
       return truncate(files.join('\n'));
     } catch {
@@ -359,6 +379,26 @@ function toolFindSymbol(graphStore: GraphStore | null, name: string): string {
     (n) => `[${n.type}] ${n.name}  📄 ${n.filePath}:${n.loc}  (ID: ${n.id})`,
   );
   return truncate(lines.join('\n'));
+}
+
+// ---- batch_find_symbols ----
+function toolBatchFindSymbols(graphStore: GraphStore | null, names: string[]): string {
+  if (!graphStore) return '图谱未加载';
+  if (!names || names.length === 0) return '缺少参数: names';
+
+  const sections: string[] = [];
+  for (const name of names.slice(0, 10)) {
+    const nodes = graphStore.searchByName(name).slice(0, 10);
+    if (nodes.length === 0) {
+      sections.push(`### ${name}\n未找到符号`);
+    } else {
+      const lines = nodes.map(
+        (n) => `[${n.type}] ${n.name}  📄 ${n.filePath}:${n.loc}  (ID: ${n.id})`,
+      );
+      sections.push(`### ${name}\n${lines.join('\n')}`);
+    }
+  }
+  return truncate(sections.join('\n\n'));
 }
 
 // ---- trace_calls ----

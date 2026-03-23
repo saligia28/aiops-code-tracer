@@ -172,6 +172,7 @@ export type GenericEvidenceKind = 'condition' | 'trigger' | 'state' | 'api' | 'l
 export let graphStore: GraphStore | null = null;
 export let symbolIndex: SymbolIndex | null = null;
 export let currentRepoName: string | null = null;
+export let currentRepoPath: string = REPO_PATH_ENV;
 export let metaData: Record<string, unknown> | null = null;
 export const progressClients = new Set<{ send: (payload: string) => void; readyState: number }>();
 
@@ -278,6 +279,7 @@ export const llmRuntimeState: {
 export function setGraphStore(value: GraphStore | null): void { graphStore = value; }
 export function setSymbolIndex(value: SymbolIndex | null): void { symbolIndex = value; }
 export function setCurrentRepoName(value: string | null): void { currentRepoName = value; }
+export function setCurrentRepoPath(value: string): void { currentRepoPath = value; }
 export function setMetaData(value: Record<string, unknown> | null): void { metaData = value; }
 export function setCurrentProjectId(value: string | null): void { currentProjectId = value; }
 export function setIndexTaskState(value: IndexTaskState): void { indexTaskState = value; }

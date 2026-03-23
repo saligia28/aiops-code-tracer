@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { AgentEvent } from '@aiops/shared-types';
-import { graphStore, REPO_PATH_ENV, LLM_API_KEY, LLM_MAX_TOKENS } from '../context.js';
+import { graphStore, currentRepoPath, LLM_API_KEY, LLM_MAX_TOKENS } from '../context.js';
 import { agentLoop } from '../agent/index.js';
 import { getCurrentLlmProvider, getCurrentLlmModel, getCurrentLlmBaseUrl } from '../services/llmService.js';
 
@@ -31,7 +31,7 @@ export function registerAgent(app: FastifyInstance): void {
       await agentLoop({
         question: question.trim(),
         graphStore,
-        repoPath: REPO_PATH_ENV,
+        repoPath: currentRepoPath,
         onEvent: sendEvent,
         llm: {
           provider: getCurrentLlmProvider(),
