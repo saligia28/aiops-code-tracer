@@ -411,10 +411,13 @@ function connectProgressWs() {
       if (data.type !== 'index-progress') return;
 
       if (data.status === 'ready' || data.status === 'error') {
-        if (data.status === 'ready') {
-          ElMessage.success('图谱构建完成');
-        } else {
-          ElMessage.error('图谱构建失败');
+        // 仅在用户主动触发构建时才弹提示，避免服务初始化/重连时误弹
+        if (buildingId.value) {
+          if (data.status === 'ready') {
+            ElMessage.success('图谱构建完成');
+          } else {
+            ElMessage.error('图谱构建失败');
+          }
         }
         buildingId.value = null;
         void fetchProjects();

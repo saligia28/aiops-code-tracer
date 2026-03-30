@@ -165,7 +165,17 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
     const symbolIndexPath = path.join(repoDir, 'symbolIndex.json');
     const metaPath = path.join(repoDir, 'meta.json');
 
-    if (!fs.existsSync(graphPath)) return false;
+    if (!fs.existsSync(graphPath)) {
+      // 图谱不存在时清除旧数据，避免切换项目后仍使用上一个项目的图谱
+      setGraphStore(null);
+      setSymbolIndex(null);
+      setRecallIndex(null);
+      setFileRecallIndex(null);
+      setFactIndex(null);
+      setFileNodeMap(new Map());
+      setPageAnchors([]);
+      return false;
+    }
 
     const graphData: CodeGraph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
     setGraphStore(GraphStore.fromJSON(graphData));
@@ -202,6 +212,8 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
     log?.info(`图谱已加载: ${repoName} (${graphStore!.nodeCount} nodes, ${graphStore!.edgeCount} edges)`);
     return true;
   } catch (err) {
+    setGraphStore(null);
+    setSymbolIndex(null);
     setRecallIndex(null);
     setFileRecallIndex(null);
     setFactIndex(null);
