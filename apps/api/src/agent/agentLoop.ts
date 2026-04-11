@@ -8,7 +8,7 @@ import { AGENT_SYSTEM_PROMPT } from './prompt.js'
 // 配置
 // ============================================================
 
-const MAX_TURNS = 50
+const MAX_TURNS = 100
 const TOTAL_TIMEOUT_MS = 10 * 60 * 1000 // 10 分钟
 const SINGLE_LLM_TIMEOUT_MS = 60_000
 
@@ -99,7 +99,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
 
       // 并行执行所有工具
       const toolResults = await Promise.all(
-        result.toolCalls.map(async (tc) => {
+        result.toolCalls.map(async tc => {
           let args: Record<string, unknown> = {}
           try {
             args = JSON.parse(tc.arguments)
@@ -177,11 +177,12 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
  * - 40K 字符：重度压缩（tool 结果截断到 150 字 + 清除早期 reasoning_content）
  */
 function compressMessages(messages: ChatMessage[]): void {
-  const estimateChars = () => messages.reduce((sum, m) => {
-    let len = m.content?.length ?? 0
-    if (m.reasoning_content) len += m.reasoning_content.length
-    return sum + len
-  }, 0)
+  const estimateChars = () =>
+    messages.reduce((sum, m) => {
+      let len = m.content?.length ?? 0
+      if (m.reasoning_content) len += m.reasoning_content.length
+      return sum + len
+    }, 0)
 
   const totalChars = estimateChars()
 

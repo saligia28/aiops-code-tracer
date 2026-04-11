@@ -35,6 +35,12 @@ export interface ChatCompletionResult {
   reasoningContent: string | null;
 }
 
+export interface BuildChatCompletionRequestBodyOptions {
+  provider: LlmProvider;
+  model: string;
+  maxTokens?: number;
+}
+
 // ============================================================
 // 带工具的 LLM 调用
 // ============================================================
@@ -56,40 +62,12 @@ export async function callChatCompletionWithTools(
   },
 ): Promise<ChatCompletionResult> {
   const { provider, model, baseUrl, apiKey, timeoutMs = 60000, maxTokens = 4096 } = opts;
+  const isOllama = provider === 'ollama' || provider === 'local';
 
   const url = resolveChatCompletionUrl(baseUrl);
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-
-  const isOllama = provider === 'ollama' || provider === 'local';
-
-  // 构建请求体
-  const body: Record<string, unknown> = {
-    model,
-    temperature: 0.2,
-    max_tokens: maxTokens,
-    messages: messages.map((m) => {
-      const msg: Record<string, unknown> = { role: m.role, content: m.content };
-      if (m.tool_calls) msg.tool_calls = m.tool_calls;
-      if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
-      // DeepSeek Reasoner 要求 assistant 消息中回传 reasoning_content
-      if (m.role === 'assistant' && m.reasoning_content !== undefined) {
-        msg.reasoning_content = m.reasoning_content;
-      }
-      return msg;
-    }),
-  };
-
-  // Ollama 可能不支持 tools 参数，检测是否使用文本降级
-  if (tools.length > 0 && !isOllama) {
-    body.tools = tools;
-    body.tool_choice = 'auto';
-  }
-
-  // 如果是 Ollama 且有工具，在 system 消息里注入工具说明
-  if (tools.length > 0 && isOllama) {
-    body.messages = injectToolsAsText(messages, tools);
-  }
+  const body = buildChatCompletionRequestBody(messages, tools, { provider, model, maxTokens });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -161,11 +139,61 @@ export async function callChatCompletionWithTools(
 // 辅助函数
 // ============================================================
 
+export function buildChatCompletionRequestBody(
+  messages: ChatMessage[],
+  tools: ToolDefinition[],
+  opts: BuildChatCompletionRequestBodyOptions,
+): Record<string, unknown> {
+  const { provider, model, maxTokens = 4096 } = opts;
+  const isOllama = provider === 'ollama' || provider === 'local';
+
+  const body: Record<string, unknown> = {
+    model,
+    temperature: 0.2,
+    max_tokens: maxTokens,
+    messages: buildApiMessages(messages),
+  };
+
+  if (tools.length > 0 && !isOllama) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
+
+  if (tools.length > 0 && isOllama) {
+    body.messages = injectToolsAsText(messages, tools);
+  }
+
+  return body;
+}
+
 function resolveChatCompletionUrl(baseUrl: string): string {
   const base = baseUrl.replace(/\/+$/, '');
   if (base.endsWith('/chat/completions')) return base;
   if (base.endsWith('/v1')) return `${base}/chat/completions`;
   return `${base}/chat/completions`;
+}
+
+function buildApiMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
+  return messages.map((m) => {
+    const msg: Record<string, unknown> = {
+      role: m.role,
+      content: sanitizeMessageText(m.content),
+    };
+    if (m.tool_calls) msg.tool_calls = m.tool_calls;
+    if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+    if (m.role === 'assistant' && m.reasoning_content !== undefined) {
+      msg.reasoning_content = sanitizeMessageText(m.reasoning_content);
+    }
+    return msg;
+  });
+}
+
+export function sanitizeMessageText(text: string | null | undefined): string | null | undefined {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  return text.replace(/(\\+)([xu])/g, (full, slashes: string, marker: string) => {
+    if (slashes.length % 2 === 0) return full;
+    return `${slashes}\\${marker}`;
+  });
 }
 
 /**
@@ -193,9 +221,9 @@ ${toolDesc}
 如果你不需要调用工具，直接用自然语言回答即可。`;
 
   return messages.map((m) => {
-    const msg: Record<string, unknown> = { role: m.role, content: m.content };
+    const msg: Record<string, unknown> = { role: m.role, content: sanitizeMessageText(m.content) };
     if (m.role === 'system' && typeof m.content === 'string') {
-      msg.content = m.content + injection;
+      msg.content = sanitizeMessageText(m.content + injection);
     }
     return msg;
   });
