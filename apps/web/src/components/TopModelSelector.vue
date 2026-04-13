@@ -1,5 +1,5 @@
 <template>
-  <div class="llm-floating">
+  <div ref="floatingRef" class="llm-floating" :class="{ 'is-expanded': expanded }">
     <button
       class="llm-trigger"
       :class="triggerStateClass"
@@ -7,6 +7,14 @@
       @click="toggleExpanded"
     >
       <span class="trigger-dot" />
+      <span class="mobile-icon" aria-hidden="true">
+        <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6">
+          <rect x="2" y="5" width="16" height="10" rx="2"/>
+          <line x1="6" y1="8.5" x2="6" y2="11.5"/>
+          <line x1="10" y1="7.5" x2="10" y2="12.5"/>
+          <line x1="14" y1="8.5" x2="14" y2="11.5"/>
+        </svg>
+      </span>
       <span class="trigger-body">
         <span class="trigger-model">{{ compactLabel }}</span>
         <span class="trigger-badge">{{ compactStatus }}</span>
@@ -69,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import http from '@/lib/http';
 import { ElMessage } from 'element-plus';
 
@@ -100,6 +108,7 @@ const saving = ref(false);
 const loading = ref(false);
 const errorMessage = ref('');
 const expanded = ref(false);
+const floatingRef = ref<HTMLElement | null>(null);
 const CONFIG_TIMEOUT_MS = 4000;
 
 const availableModes = computed<LlmOption[]>(() => {
@@ -199,11 +208,36 @@ function handleModelChange(value: string) {
 }
 
 function toggleExpanded() {
-  expanded.value = !expanded.value;
+  const next = !expanded.value;
+  expanded.value = next;
+  if (next) {
+    window.dispatchEvent(new CustomEvent('floating-panel-open', { detail: 'model' }));
+  }
+}
+
+function handlePanelOpen(event: Event) {
+  const customEvent = event as CustomEvent<string>;
+  if (customEvent.detail !== 'model') {
+    expanded.value = false;
+  }
+}
+
+function handleClickOutside(event: Event) {
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (floatingRef.value?.contains(target)) return;
+  expanded.value = false;
 }
 
 onMounted(() => {
+  window.addEventListener('floating-panel-open', handlePanelOpen as EventListener);
+  document.addEventListener('pointerdown', handleClickOutside);
   void fetchConfig();
+});
+
+onUnmounted(() => {
+  window.removeEventListener('floating-panel-open', handlePanelOpen as EventListener);
+  document.removeEventListener('pointerdown', handleClickOutside);
 });
 </script>
 
@@ -229,6 +263,10 @@ onMounted(() => {
   flex-direction: column-reverse;
   align-items: flex-end;
   gap: 8px;
+}
+
+.llm-floating.is-expanded {
+  z-index: 1210;
 }
 
 /* ---- 触发按钮 ---- */
@@ -299,6 +337,14 @@ onMounted(() => {
 .is-loading .trigger-dot {
   background: #909399;
   animation: dot-pulse 1s ease-in-out infinite;
+}
+
+/* ---- 移动端图标（桌面隐藏）---- */
+.mobile-icon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: #5a5e72;
 }
 
 /* ---- 按钮文字 ---- */
@@ -452,25 +498,43 @@ onMounted(() => {
 
 @media (max-width: 768px) {
   .llm-floating {
-    bottom: 76px;
-    left: 12px;
-    right: 12px;
-    align-items: stretch;
+    bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+    right: 16px;
+    left: auto;
+    align-items: flex-end;
   }
 
-  .llm-trigger,
+  /* 触发按钮变圆形 */
+  .llm-trigger {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    max-width: 44px;
+    border-radius: 50%;
+    padding: 0;
+    justify-content: center;
+    position: relative;
+  }
+
+  /* 文字标签隐藏，图标显示 */
+  .trigger-body {
+    display: none;
+  }
+
+  .mobile-icon {
+    display: flex;
+  }
+
+  /* 移动端隐藏状态圆点，状态由边框呼吸效果体现 */
+  .trigger-dot {
+    display: none;
+  }
+
+  /* 面板从右侧弹出，宽度自适应 */
   .llm-panel {
-    width: 100%;
+    width: min(340px, calc(100vw - 32px));
     max-width: none;
-  }
-
-  .toolbar-row {
-    flex-direction: column;
-  }
-
-  .toolbar-select,
-  .toolbar-model {
-    width: 100%;
+    margin-bottom: 8px;
   }
 }
 </style>

@@ -103,6 +103,15 @@
               <span v-if="turn.elapsed > 0" class="loading-elapsed">{{ turn.elapsed }}s</span>
             </div>
 
+            <!-- 中止状态 -->
+            <div v-else-if="turn.aborted" class="aborted-msg">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="8" y1="12" x2="16" y2="12" />
+              </svg>
+              <span>已中止</span>
+            </div>
+
             <!-- 错误状态 -->
             <div v-else-if="turn.error" class="error-msg">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -117,7 +126,7 @@
             <div v-else class="answer-content markdown-body" v-html="turn.renderedAnswer"></div>
 
             <!-- 耗时标签 -->
-            <div v-if="!turn.loading && !turn.error && turn.elapsed > 0" class="answer-duration">
+            <div v-if="!turn.loading && !turn.error && !turn.aborted && turn.elapsed > 0" class="answer-duration">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10" />
                 <polyline points="12 6 12 12 16 14" />
@@ -153,7 +162,12 @@
           @keyup.enter="handleAsk"
           :disabled="isAnyLoading"
         />
-        <button class="send-btn" @click="handleAsk" :disabled="isAnyLoading || !newQuestion.trim()">
+        <button v-if="isAnyLoading" class="stop-btn" @click="handleAbort" title="中止">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <rect x="5" y="5" width="14" height="14" rx="2" />
+          </svg>
+        </button>
+        <button v-else class="send-btn" @click="handleAsk" :disabled="!newQuestion.trim()">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
           </svg>
@@ -194,6 +208,7 @@ interface ConversationTurn {
   loading: boolean;
   error: string;
   elapsed: number;
+  aborted?: boolean;
   // Agent 模式
   steps?: AgentStep[];
   stepsCollapsed?: boolean;
@@ -212,6 +227,12 @@ const history = ref<ConversationTurn[]>([]);
 const mode = ref<AnswerMode>('agent');
 
 const isAnyLoading = computed(() => history.value.some(t => t.loading));
+const currentAbortController = ref<AbortController | null>(null);
+
+function handleAbort() {
+  currentAbortController.value?.abort();
+  currentAbortController.value = null;
+}
 
 // 配置 marked + highlight.js
 const marked = new Marked({
@@ -253,19 +274,27 @@ async function fetchAnswer(q: string) {
   await scrollToBottom();
 
   const elapsedTimer = setInterval(() => { turn.elapsed++; }, 1000);
+  const ctrl = new AbortController();
+  currentAbortController.value = ctrl;
 
   try {
     const res = await http.post('/api/ask', { question: q }, {
       timeout: ASK_TIMEOUT_MS,
+      signal: ctrl.signal,
     });
     turn.answer = res.data.answer || '未能生成回答';
     turn.renderedAnswer = renderMarkdown(turn.answer);
     turn.followUp = res.data.followUp || [];
-  } catch {
-    turn.error = '查询超时或失败，请检查模型服务后重试';
+  } catch (err: unknown) {
+    if ((err as { name?: string })?.name === 'CanceledError' || ctrl.signal.aborted) {
+      turn.aborted = true;
+    } else {
+      turn.error = '查询超时或失败，请检查模型服务后重试';
+    }
   } finally {
     clearInterval(elapsedTimer);
     turn.loading = false;
+    currentAbortController.value = null;
     await scrollToBottom();
   }
 }
@@ -289,6 +318,8 @@ async function fetchAgentAnswer(q: string) {
   await scrollToBottom();
 
   const elapsedTimer = setInterval(() => { turn.elapsed++; }, 1000);
+  const ctrl = new AbortController();
+  currentAbortController.value = ctrl;
 
   try {
     const resp = await fetch('/api/agent/ask', {
@@ -296,6 +327,7 @@ async function fetchAgentAnswer(q: string) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: q }),
       credentials: 'include',
+      signal: ctrl.signal,
     });
 
     if (!resp.ok) {
@@ -381,13 +413,16 @@ async function fetchAgentAnswer(q: string) {
         }
       }
     }
-  } catch {
-    if (!turn.error) {
+  } catch (err: unknown) {
+    if ((err as { name?: string })?.name === 'AbortError' || ctrl.signal.aborted) {
+      turn.aborted = true;
+    } else if (!turn.error) {
       turn.error = '连接中断或超时';
     }
   } finally {
     clearInterval(elapsedTimer);
     turn.loading = false;
+    currentAbortController.value = null;
     await scrollToBottom();
   }
 }
@@ -466,6 +501,7 @@ onMounted(() => {
   flex-direction: column;
   height: 100vh;
   background: #f9fafb;
+  overflow-x: hidden;
 }
 
 /* 顶部导航 */
@@ -545,6 +581,7 @@ onMounted(() => {
 .conversation {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 24px 20px;
 }
 
@@ -773,6 +810,9 @@ onMounted(() => {
   font-size: 15px;
   line-height: 1.75;
   color: #2c3e50;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Markdown 排版 */
@@ -791,6 +831,8 @@ onMounted(() => {
 
 .answer-content :deep(p) {
   margin-bottom: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .answer-content :deep(ul),
@@ -801,6 +843,8 @@ onMounted(() => {
 
 .answer-content :deep(li) {
   margin-bottom: 6px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .answer-content :deep(strong) {
@@ -816,6 +860,9 @@ onMounted(() => {
   border-radius: 4px;
   font-size: 13px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* 代码块 */
@@ -870,14 +917,19 @@ onMounted(() => {
   padding-left: 14px;
   color: #5a5e72;
   margin: 12px 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* 表格 */
 .answer-content :deep(table) {
+  display: block;
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   margin: 12px 0;
   font-size: 14px;
+  overflow-x: auto;
 }
 
 .answer-content :deep(th),
@@ -885,6 +937,8 @@ onMounted(() => {
   padding: 8px 12px;
   border: 1px solid #eef0f4;
   text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .answer-content :deep(th) {
@@ -1002,6 +1056,35 @@ onMounted(() => {
 .send-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.stop-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: none;
+  background: #fee2e2;
+  color: #e74c3c;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.stop-btn:hover {
+  background: #fecaca;
+}
+
+/* 中止提示 */
+.aborted-msg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #9ca3af;
+  font-size: 13px;
+  padding: 10px 0;
 }
 
 /* 系统分隔消息 */

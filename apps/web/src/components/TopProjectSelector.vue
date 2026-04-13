@@ -1,5 +1,5 @@
 <template>
-  <div class="project-floating">
+  <div ref="floatingRef" class="project-floating" :class="{ 'is-expanded': expanded }">
     <button
       class="project-trigger"
       :class="{ 'is-active': expanded, 'is-loading': loading }"
@@ -7,6 +7,11 @@
       @click="toggleExpanded"
     >
       <span class="trigger-dot" />
+      <span class="mobile-icon" aria-hidden="true">
+        <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M3 6a2 2 0 012-2h2.586a1 1 0 01.707.293l1.414 1.414A1 1 0 0010.414 6H15a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2V6z"/>
+        </svg>
+      </span>
       <span class="trigger-body">
         <span class="trigger-label">{{ currentProjectName || '未选择项目' }}</span>
         <span class="trigger-badge">{{ projects.length }} 项目</span>
@@ -266,6 +271,7 @@ const expanded = ref(false);
 const dialogVisible = ref(false);
 const creating = ref(false);
 const buildingId = ref<string | null>(null);
+const floatingRef = ref<HTMLElement | null>(null);
 
 // ---- 删除确认 ----
 const deleteDialogVisible = ref(false);
@@ -368,7 +374,25 @@ function frameworkLabel(fw: string): string {
 }
 
 function toggleExpanded() {
-  expanded.value = !expanded.value;
+  const next = !expanded.value;
+  expanded.value = next;
+  if (next) {
+    window.dispatchEvent(new CustomEvent('floating-panel-open', { detail: 'project' }));
+  }
+}
+
+function handlePanelOpen(event: Event) {
+  const customEvent = event as CustomEvent<string>;
+  if (customEvent.detail !== 'project') {
+    expanded.value = false;
+  }
+}
+
+function handleClickOutside(event: Event) {
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (floatingRef.value?.contains(target)) return;
+  expanded.value = false;
 }
 
 async function handleSwitch(id: string) {
@@ -511,11 +535,15 @@ async function handleCreate() {
 }
 
 onMounted(() => {
+  window.addEventListener('floating-panel-open', handlePanelOpen as EventListener);
+  document.addEventListener('pointerdown', handleClickOutside);
   void fetchProjects();
   connectProgressWs();
 });
 
 onUnmounted(() => {
+  window.removeEventListener('floating-panel-open', handlePanelOpen as EventListener);
+  document.removeEventListener('pointerdown', handleClickOutside);
   if (progressWs) {
     const ws = progressWs;
     progressWs = null;
@@ -535,6 +563,18 @@ onUnmounted(() => {
   flex-direction: column-reverse;
   align-items: flex-start;
   gap: 8px;
+}
+
+.project-floating.is-expanded {
+  z-index: 1210;
+}
+
+/* ---- 移动端图标（桌面隐藏）---- */
+.mobile-icon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: #4f6ef7;
 }
 
 /* ---- 触发按钮 ---- */
@@ -810,16 +850,43 @@ onUnmounted(() => {
 
 @media (max-width: 768px) {
   .project-floating {
-    bottom: 76px;
-    left: 12px;
-    right: 12px;
-    align-items: stretch;
+    bottom: calc(140px + env(safe-area-inset-bottom, 0px));
+    right: 16px;
+    left: auto;
+    align-items: flex-end;
   }
 
-  .project-trigger,
+  /* 触发按钮变圆形 */
+  .project-trigger {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    max-width: 44px;
+    border-radius: 50%;
+    padding: 0;
+    justify-content: center;
+    position: relative;
+  }
+
+  /* 文字标签隐藏，图标显示 */
+  .trigger-body {
+    display: none;
+  }
+
+  .mobile-icon {
+    display: flex;
+  }
+
+  /* 移动端隐藏状态圆点，状态由边框体现 */
+  .trigger-dot {
+    display: none;
+  }
+
+  /* 面板从右侧弹出，宽度自适应 */
   .project-panel {
-    width: 100%;
+    width: min(300px, calc(100vw - 32px));
     max-width: none;
+    margin-bottom: 8px;
   }
 }
 </style>

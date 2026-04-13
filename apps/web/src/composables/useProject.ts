@@ -61,7 +61,7 @@ async function fetchProjects() {
 
     if (saved && ids.includes(saved)) {
       if (saved !== apiCurrent) {
-        await http.post(`/api/projects/${saved}/switch`);
+        await http.post(`/api/projects/${saved}/switch`, {});
       }
       persist(saved);
     } else if (apiCurrent && ids.includes(apiCurrent)) {
@@ -77,7 +77,7 @@ async function fetchProjects() {
 async function switchProject(id: string) {
   loading.value = true;
   try {
-    await http.post(`/api/projects/${id}/switch`);
+    await http.post(`/api/projects/${id}/switch`, {});
     persist(id);
   } finally {
     loading.value = false;
@@ -105,7 +105,7 @@ async function deleteProject(id: string, deleteData = false) {
 }
 
 async function buildProject(id: string) {
-  return http.post(`/api/projects/${id}/build`);
+  return http.post(`/api/projects/${id}/build`, {});
 }
 
 export function useProject() {
