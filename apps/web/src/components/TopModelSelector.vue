@@ -32,6 +32,7 @@
           v-model="mode"
           size="small"
           class="toolbar-select"
+          popper-class="llm-floating-owned-popper"
           :disabled="saving || loading || !config"
           @change="handleModeChange"
         >
@@ -49,6 +50,7 @@
           filterable
           allow-create
           default-first-option
+          popper-class="llm-floating-owned-popper"
           :disabled="saving || loading || !config"
           @change="handleModelChange"
         >
@@ -226,6 +228,7 @@ function handleClickOutside(event: Event) {
   const target = event.target;
   if (!(target instanceof Node)) return;
   if (floatingRef.value?.contains(target)) return;
+  if (target instanceof Element && target.closest('.llm-floating-owned-popper')) return;
   expanded.value = false;
 }
 

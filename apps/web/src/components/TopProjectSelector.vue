@@ -392,6 +392,7 @@ function handleClickOutside(event: Event) {
   const target = event.target;
   if (!(target instanceof Node)) return;
   if (floatingRef.value?.contains(target)) return;
+  if (target instanceof Element && target.closest('.glass-dialog')) return;
   expanded.value = false;
 }
 
