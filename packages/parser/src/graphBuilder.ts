@@ -58,18 +58,18 @@ export function parseFile(filePath: string, config: RepoConfig): FileParseResult
       scriptLang = sfcResult.scriptLang;
       isSetupScript = sfcResult.scriptSetup;
     } catch {
-      return { filePath, nodes: [fileNode], edges: [], unresolvedRefs: [], error: 'SFC_PARSE_ERROR' };
+      return { filePath, parserId: 'typescript', nodes: [fileNode], edges: [], unresolvedRefs: [], error: 'SFC_PARSE_ERROR' };
     }
   } else {
     try {
       scriptContent = fs.readFileSync(absolutePath, 'utf-8');
     } catch {
-      return { filePath, nodes: [fileNode], edges: [], unresolvedRefs: [], error: 'FILE_READ_ERROR' };
+      return { filePath, parserId: 'typescript', nodes: [fileNode], edges: [], unresolvedRefs: [], error: 'FILE_READ_ERROR' };
     }
   }
 
   if (!scriptContent) {
-    return { filePath, nodes: [fileNode], edges: [], unresolvedRefs: [] };
+    return { filePath, parserId: 'typescript', nodes: [fileNode], edges: [], unresolvedRefs: [] };
   }
 
   const scriptKind = resolveScriptKind(filePath, scriptLang);
@@ -96,6 +96,7 @@ export function parseFile(filePath: string, config: RepoConfig): FileParseResult
 
   return {
     filePath,
+    parserId: 'typescript',
     nodes: [
       fileNode,
       ...importResult.nodes,

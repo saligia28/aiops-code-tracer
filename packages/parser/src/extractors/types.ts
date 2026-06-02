@@ -1,14 +1,17 @@
 import ts from 'typescript';
-import type { GraphNode, GraphEdge, RepoConfig, EdgeType } from '@aiops/shared-types';
+import type { GraphNode, GraphEdge, RepoConfig, EdgeType, LanguageParserId } from '@aiops/shared-types';
 
 /**
  * 单文件解析结果
  */
 export interface FileParseResult {
   filePath: string;
+  parserId: LanguageParserId;
   nodes: GraphNode[];
   edges: GraphEdge[];
   unresolvedRefs: UnresolvedRef[];
+  /** 语言专属中间态（编排层只透传，不检视其结构）。Java: JavaParserData */
+  parserData?: unknown;
   error?: string;
 }
 
