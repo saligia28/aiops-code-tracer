@@ -19,13 +19,15 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@aiops/shared-types": "workspace:*",
     "@aiops/graph-core": "workspace:*",
+    "@aiops/shared-types": "workspace:*",
     "@vue/compiler-sfc": "^3.5.0",
     "fast-glob": "^3.3.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "web-tree-sitter": "0.26.9"
   },
   "devDependencies": {
+    "tree-sitter-java": "0.23.5",
     "vitest": "^3.0.0"
   }
 }
