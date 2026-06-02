@@ -79,7 +79,7 @@ WEB_PORT=4200
 # LLM 配置（以 DeepSeek 为例）
 LLM_PROVIDER=deepseek
 LLM_API_KEY=your_api_key_here
-LLM_MODEL=deepseek-chat
+LLM_MODEL=deepseek-v4-flash
 LLM_BASE_URL=https://api.deepseek.com
 LLM_TIMEOUT_MS=60000
 

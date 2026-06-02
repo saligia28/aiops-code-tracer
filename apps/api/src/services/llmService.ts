@@ -35,7 +35,7 @@ export function resolveChatCompletionUrl(baseUrl: string): string {
 
 export function buildApiModelOptions(provider: LlmProvider, currentModel: string): LlmOption[] {
   const defaults: Record<LlmProvider, string[]> = {
-    deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+    deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro'],
     openai: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4.1'],
     bailian: ['qwen-plus', 'qwen-max'],
     local: ['qwen2.5:7b-instruct'],

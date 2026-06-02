@@ -69,3 +69,7 @@ temp/
 
 # 文档信息
 docs/
+
+# AI相关
+.AGENT.md
+.CLAUDE.md

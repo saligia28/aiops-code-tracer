@@ -253,7 +253,7 @@ export function getDefaultApiModel(provider: LlmProvider): string {
   if (provider === 'bailian') return 'qwen-plus';
   if (provider === 'local' || provider === 'ollama') return 'qwen2.5:7b-instruct';
   if (provider === 'custom') return 'custom-chat-model';
-  return 'deepseek-chat';
+  return 'deepseek-v4-flash';
 }
 
 export const DEFAULT_API_PROVIDER = normalizeLlmProvider(process.env.LLM_PROVIDER?.trim() ?? 'deepseek');
