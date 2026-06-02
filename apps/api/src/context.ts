@@ -35,6 +35,13 @@ export const REPO_PATH_ENV = process.env.REPO_PATH?.trim() ?? '';
 export const LLM_API_KEY = process.env.LLM_API_KEY?.trim() ?? '';
 export const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? '60000');
 export const LLM_MAX_TOKENS = Number(process.env.LLM_MAX_TOKENS || '') || 4096;
+const parsePositiveIntEnv = (value: string | undefined, fallback: number): number => {
+  const parsed = Number(value || '');
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+};
+export const AGENT_MAX_TURNS = parsePositiveIntEnv(process.env.AGENT_MAX_TURNS, 200);
+export const AGENT_TOTAL_TIMEOUT_MS = parsePositiveIntEnv(process.env.AGENT_TOTAL_TIMEOUT_MS, 20 * 60 * 1000);
+export const AGENT_SINGLE_LLM_TIMEOUT_MS = parsePositiveIntEnv(process.env.AGENT_SINGLE_LLM_TIMEOUT_MS, 120_000);
 export const INTRANET_OLLAMA_TIMEOUT_MS = Number(process.env.INTRANET_OLLAMA_TIMEOUT_MS || '') || LLM_TIMEOUT_MS * 2;
 export const INTRANET_OLLAMA_BASE_URL = (process.env.INTRANET_OLLAMA_BASE_URL?.trim() ?? '').replace(/\/+$/, '');
 export const INTRANET_OLLAMA_MODELS_RAW = process.env.INTRANET_OLLAMA_MODELS?.trim() ?? '';
@@ -256,7 +263,7 @@ export const INTRANET_OLLAMA_MODELS = parseModelList(INTRANET_OLLAMA_MODELS_RAW)
 export const DEFAULT_INTRANET_MODEL = INTRANET_OLLAMA_DEFAULT_MODEL_ENV
   || INTRANET_OLLAMA_MODELS[0]
   || '';
-export const DEFAULT_LLM_MODE: LlmMode = INTRANET_OLLAMA_BASE_URL ? 'intranet' : 'api';
+export const DEFAULT_LLM_MODE: LlmMode = 'api';
 
 export const llmRuntimeState: {
   mode: LlmMode;

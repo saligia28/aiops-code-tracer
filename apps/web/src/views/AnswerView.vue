@@ -185,6 +185,7 @@ import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
+import { consumePendingQuestion } from '@/composables/usePendingQuestion';
 
 const ASK_TIMEOUT_MS = 150000; // 150 秒
 
@@ -475,22 +476,22 @@ watch(currentRepo, (newRepo, oldRepo) => {
   }
 });
 
-// 监听路由参数
-watch(
-  () => route.query.q as string,
-  (q) => {
-    if (q && history.value.length === 0) {
-      if (mode.value === 'agent') {
-        fetchAgentAnswer(q);
-      } else {
-        fetchAnswer(q);
-      }
-    }
-  },
-  { immediate: true },
-);
-
 onMounted(() => {
+  const query = { ...route.query };
+  if ('q' in query) {
+    delete query.q;
+    void router.replace({ name: 'Answer', query, hash: route.hash });
+  }
+
+  const pendingQuestion = consumePendingQuestion();
+  if (pendingQuestion) {
+    if (mode.value === 'agent') {
+      void fetchAgentAnswer(pendingQuestion);
+    } else {
+      void fetchAnswer(pendingQuestion);
+    }
+  }
+
   inputRef.value?.focus();
 });
 </script>

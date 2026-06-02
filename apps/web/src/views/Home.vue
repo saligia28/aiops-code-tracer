@@ -64,6 +64,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import http from '@/lib/http';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
+import { setPendingQuestion } from '@/composables/usePendingQuestion';
 
 const { currentRepo } = useCurrentRepo();
 
@@ -101,7 +102,8 @@ function handleAsk() {
   if (!q || loading.value) return;
   recentQuestions.value.unshift(q);
   question.value = '';
-  router.push({ name: 'Answer', query: { q } });
+  setPendingQuestion(q);
+  router.push({ name: 'Answer' });
 }
 
 // 切换仓库后自动刷新 stats

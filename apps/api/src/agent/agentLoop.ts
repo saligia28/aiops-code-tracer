@@ -1,5 +1,6 @@
 import type { GraphStore } from '@aiops/graph-core'
 import type { AgentEvent, LlmProvider } from '@aiops/shared-types'
+import { AGENT_MAX_TURNS, AGENT_SINGLE_LLM_TIMEOUT_MS, AGENT_TOTAL_TIMEOUT_MS } from '../context.js'
 import { executeTool, getOpenAITools } from './tools.js'
 import { callChatCompletionWithTools, type ChatMessage, type ToolDefinition } from './llmWithTools.js'
 import { AGENT_SYSTEM_PROMPT } from './prompt.js'
@@ -8,9 +9,9 @@ import { AGENT_SYSTEM_PROMPT } from './prompt.js'
 // 配置
 // ============================================================
 
-const MAX_TURNS = 100
-const TOTAL_TIMEOUT_MS = 10 * 60 * 1000 // 10 分钟
-const SINGLE_LLM_TIMEOUT_MS = 60_000
+const MAX_TURNS = AGENT_MAX_TURNS
+const TOTAL_TIMEOUT_MS = AGENT_TOTAL_TIMEOUT_MS
+const SINGLE_LLM_TIMEOUT_MS = AGENT_SINGLE_LLM_TIMEOUT_MS
 
 // ============================================================
 // Agent ReAct 循环
@@ -48,7 +49,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // 超时检查
     if (Date.now() - startTime > TOTAL_TIMEOUT_MS) {
-      onEvent({ type: 'error', data: { error: '达到最大推理时间（10 分钟）' } })
+      onEvent({ type: 'error', data: { error: `达到最大推理时间（${formatDuration(TOTAL_TIMEOUT_MS)}）` } })
       return
     }
 
@@ -202,6 +203,12 @@ function compressMessages(messages: ChatMessage[]): void {
       messages[i].reasoning_content = null
     }
   }
+}
+
+function formatDuration(ms: number): string {
+  const minutes = ms / 60_000
+  if (minutes >= 1) return `${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} 分钟`
+  return `${Math.ceil(ms / 1000)} 秒`
 }
 
 /**
