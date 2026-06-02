@@ -14,7 +14,10 @@ export type NodeType =
   | 'computed'
   | 'watcher'
   | 'routeEntry'
-  | 'component';
+  | 'component'
+  // Java / OOP
+  | 'class'
+  | 'interface';
 
 export interface GraphNode {
   id: string; // 格式: "type:filePath:name"
@@ -30,6 +33,33 @@ export interface GraphNode {
     apiMethod?: string;
     reactiveType?: 'ref' | 'reactive' | 'data';
     autoImported?: boolean;
+    // Java / OOP
+    /** 区分 method/field/enum 等成员节点的子类型 */
+    kind?: 'method' | 'field' | 'enum' | string;
+    /** 声明该 method/field 的类 FQN */
+    ownerType?: string;
+    /** 方法签名，用于 method 节点 ID（Task 1.15） */
+    signature?: string;
+    /** method 节点：返回类型 */
+    returnType?: string;
+    /** method 节点：参数类型列表 */
+    paramTypes?: string[];
+    /** method/field 节点：访问可见性 */
+    visibility?: 'public' | 'protected' | 'private' | 'package';
+    /** method/field 节点：是否 static */
+    isStatic?: boolean;
+    /** class/interface/method/field 节点：注解列表 */
+    annotations?: string[];
+    /** field 节点：字段类型 */
+    fieldType?: string;
+    /** class/interface 节点：所属包名 */
+    package?: string;
+    /** Spring 组件类的 stereotype */
+    springStereotype?: 'controller' | 'service' | 'repository' | 'component';
+    /** 路由 method/routeEntry 节点：HTTP 方法 */
+    httpMethod?: string;
+    /** 路由 method/routeEntry 节点：HTTP 路径 */
+    httpPath?: string;
   };
 }
 
@@ -49,7 +79,11 @@ export type EdgeType =
   | 'bindsEvent'
   | 'guardsBy'
   | 'watchesSource'
-  | 'registersRoute';
+  | 'registersRoute'
+  // Java / OOP
+  | 'extends'
+  | 'implements'
+  | 'injects';
 
 export interface GraphEdge {
   from: string;
@@ -61,6 +95,13 @@ export interface GraphEdge {
     condition?: string;
     apiMethod?: string;
     confidence: 'high' | 'medium' | 'low';
+    // Java / OOP
+    /** 低置信边的原因，e.g. multipleImplementations */
+    reason?: string;
+    /** injects 边：被注入字段/参数的声明类型 */
+    declaredType?: string;
+    /** injects 边：Bean 限定符（@Qualifier） */
+    beanQualifier?: string;
   };
 }
 
@@ -87,6 +128,9 @@ export interface GraphMeta {
 // 仓库配置
 // ============================================================
 
+/** 语言解析器标识（跨包共享，便于 registry / preset 引用） */
+export type LanguageParserId = 'typescript' | 'java';
+
 export interface RepoConfig {
   repoName: string;
   repoPath: string;
@@ -94,7 +138,9 @@ export interface RepoConfig {
   excludePaths: string[];
   aliases: Record<string, string>;
   autoImportDirs: string[];
-  framework: 'vue2' | 'vue3';
+  framework: ProjectFramework;
+  /** 启用的解析器；由 framework preset 推导填充（Task 1.5/1.7 接线前可为空）。空 = 沿用默认 TS 解析。 */
+  parsers?: LanguageParserId[];
   stateManagement: 'vuex' | 'pinia' | 'none';
   scriptStyle: 'options' | 'composition' | 'mixed';
 }
