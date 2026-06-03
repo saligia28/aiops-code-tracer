@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import path from 'path';
+import type { ProjectFramework } from '@aiops/shared-types';
 import {
   graphStore,
   currentRepoName,
@@ -118,7 +119,8 @@ export function registerIndexOps(app: FastifyInstance): void {
 
     const repoName = body.repoName || process.env.REPO_NAME || path.basename(path.resolve(repoPath));
     const scanPaths = normalizeScanPaths(body.scanPaths);
-    void executeIndexBuild({ repoPath, repoName, scanPaths, mode: 'full' }, app.log);
+    const framework = process.env.REPO_FRAMEWORK as ProjectFramework | undefined;
+    void executeIndexBuild({ repoPath, repoName, scanPaths, framework, mode: 'full' }, app.log);
     return {
       message: '全量索引构建任务已提交',
       status: 'building',
@@ -147,7 +149,8 @@ export function registerIndexOps(app: FastifyInstance): void {
 
     const repoName = body.repoName || process.env.REPO_NAME || path.basename(path.resolve(repoPath));
     const scanPaths = normalizeScanPaths(body.scanPaths);
-    void executeIndexBuild({ repoPath, repoName, scanPaths, mode: 'incremental' }, app.log);
+    const framework = process.env.REPO_FRAMEWORK as ProjectFramework | undefined;
+    void executeIndexBuild({ repoPath, repoName, scanPaths, framework, mode: 'incremental' }, app.log);
     return {
       message: '增量重建任务已提交（当前按全量流程执行）',
       status: 'building',

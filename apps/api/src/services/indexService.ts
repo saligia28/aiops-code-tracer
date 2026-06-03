@@ -234,10 +234,11 @@ export async function executeIndexBuild(options: {
   repoPath: string;
   repoName: string;
   scanPaths?: string[];
+  framework?: ProjectFramework;
   mode: 'full' | 'incremental';
 }, log?: FastifyBaseLogger): Promise<void> {
-  const { repoPath, repoName, scanPaths, mode } = options;
-  const config = buildRepoConfig(repoPath, repoName, scanPaths);
+  const { repoPath, repoName, scanPaths, framework, mode } = options;
+  const config = buildRepoConfig(repoPath, repoName, scanPaths, framework ? { framework } : undefined, log);
 
   patchIndexTaskState({
     status: 'building',

@@ -12,8 +12,8 @@ import {
   setGraphStore,
   setCurrentRepoName,
 } from '../context.js';
-import { readProjectRegistry, writeProjectRegistry, slugify, toParserFramework } from '../services/projectService.js';
-import { loadGraph, executeIndexBuild, buildRepoConfig } from '../services/indexService.js';
+import { readProjectRegistry, writeProjectRegistry, slugify } from '../services/projectService.js';
+import { loadGraph, executeIndexBuild } from '../services/indexService.js';
 
 export function registerProjects(app: FastifyInstance): void {
   app.get('/api/projects', async () => {
@@ -225,13 +225,11 @@ export function registerProjects(app: FastifyInstance): void {
       return reply.code(400).send({ error: 'REPO_PATH_INVALID', message: `仓库路径不存在: ${project.repoPath}` });
     }
 
-    const config = buildRepoConfig(project.repoPath, project.id, project.scanPaths, {
-      framework: toParserFramework(project.framework),
-    }, app.log);
     void executeIndexBuild({
-      repoPath: config.repoPath,
+      repoPath: project.repoPath,
       repoName: project.id,
-      scanPaths: config.scanPaths,
+      scanPaths: project.scanPaths,
+      framework: project.framework,
       mode: 'full',
     }, app.log);
 
