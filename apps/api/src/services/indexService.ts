@@ -58,7 +58,7 @@ export function patchIndexTaskState(patch: Partial<IndexTaskState>): void {
   });
 }
 
-export function normalizeScanPaths(scanPaths?: string[]): string[] {
+export function normalizeScanPaths(scanPaths?: string[], fallback: string[] = ['src']): string[] {
   if (scanPaths && scanPaths.length > 0) {
     return scanPaths.map((p) => p.trim()).filter(Boolean);
   }
@@ -67,7 +67,7 @@ export function normalizeScanPaths(scanPaths?: string[]): string[] {
     return process.env.INDEX_SCAN_PATHS.split(',').map((p) => p.trim()).filter(Boolean);
   }
 
-  return ['src'];
+  return fallback;
 }
 
 export function parseJsonRecordEnv(envName: string, log?: FastifyBaseLogger): Record<string, string> | undefined {
@@ -113,7 +113,7 @@ export function buildRepoConfig(repoPath: string, repoName: string, scanPaths?: 
   return {
     repoName,
     repoPath: path.resolve(repoPath),
-    scanPaths: normalizeScanPaths(scanPaths),
+    scanPaths: normalizeScanPaths(scanPaths, preset.scanPaths),
     excludePaths,
     parsers: preset.parsers,
     aliases: overrides?.aliases ?? envAliases ?? { '@': 'src' },

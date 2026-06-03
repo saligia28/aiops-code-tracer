@@ -118,7 +118,7 @@
         </label>
         <label class="glass-label">
           <span class="glass-label-text">扫描路径</span>
-          <input v-model="form.scanPathsStr" class="glass-input" placeholder="src（多个用逗号分隔）" />
+          <input v-model="form.scanPathsStr" class="glass-input" placeholder="src（多个用逗号分隔）" @input="scanPathsTouched = true" />
         </label>
       </div>
 
@@ -249,7 +249,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, reactive, computed } from 'vue';
+import { onMounted, onUnmounted, ref, reactive, computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import http from '@/lib/http';
 import { useProject } from '@/composables/useProject';
@@ -368,6 +368,28 @@ const form = reactive({
   gitUrl: '',
   scanPathsStr: 'src',
 });
+
+// 各框架的默认扫描路径，需与后端 preset（@aiops/parser presets.ts）保持一致；
+// web 不依赖 @aiops/parser，故在此内联一份最小映射。
+const FRAMEWORK_DEFAULT_SCAN_PATHS: Partial<Record<ProjectFramework, string>> = {
+  java: 'src/main/java',
+};
+
+function defaultScanPathsFor(fw: ProjectFramework): string {
+  return FRAMEWORK_DEFAULT_SCAN_PATHS[fw] ?? 'src';
+}
+
+// 用户是否手动编辑过扫描路径；未编辑时随 framework 切换同步默认值，编辑后用户输入优先。
+const scanPathsTouched = ref(false);
+
+watch(
+  () => form.framework,
+  (fw) => {
+    if (!scanPathsTouched.value) {
+      form.scanPathsStr = defaultScanPathsFor(fw);
+    }
+  },
+);
 
 function frameworkLabel(fw: string): string {
   return frameworkOptions.find((o) => o.value === fw)?.label ?? fw;
@@ -494,7 +516,8 @@ function resetForm() {
   form.framework = 'vue3';
   form.repoPath = '';
   form.gitUrl = '';
-  form.scanPathsStr = 'src';
+  form.scanPathsStr = defaultScanPathsFor('vue3');
+  scanPathsTouched.value = false;
 }
 
 async function handleCreate() {

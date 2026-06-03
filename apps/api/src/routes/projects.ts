@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'fs';
 import path from 'path';
 import type { ProjectRecord, ProjectFramework } from '@aiops/shared-types';
+import { presetFor } from '@aiops/parser';
 import {
   DATA_DIR,
   graphStore,
@@ -62,15 +63,16 @@ export function registerProjects(app: FastifyInstance): void {
     }
 
     const now = new Date().toISOString();
+    const framework: ProjectFramework = body.framework ?? 'vue3';
     const record: ProjectRecord = {
       id,
       name: body.name.trim(),
-      framework: body.framework ?? 'vue3',
+      framework,
       repoPath: path.resolve(body.repoPath.trim()),
       gitUrl: body.gitUrl?.trim() ?? '',
       scanPaths: body.scanPaths && body.scanPaths.length > 0
         ? body.scanPaths.map((s) => s.trim()).filter(Boolean)
-        : ['src'],
+        : presetFor(framework).scanPaths,
       createdAt: now,
       updatedAt: now,
     };
