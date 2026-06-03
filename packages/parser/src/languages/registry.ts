@@ -1,18 +1,12 @@
 import type { LanguageParserId } from '@aiops/shared-types';
 import type { LanguageParser } from './types.js';
+import { TypeScriptLanguageParser } from './typescript/index.js';
 
 export const DEFAULT_PARSER_IDS: readonly LanguageParserId[] = ['typescript'];
 
 function pendingParserMethod(parserId: LanguageParserId): never {
   throw new Error(`Language parser "${parserId}" is registered but not implemented yet`);
 }
-
-const TypeScriptLanguageParser: LanguageParser = {
-  id: 'typescript',
-  extensions: ['.vue', '.ts', '.js', '.tsx', '.jsx'],
-  parseFile: () => pendingParserMethod('typescript'),
-  resolve: () => pendingParserMethod('typescript'),
-};
 
 const JavaLanguageParser: LanguageParser = {
   id: 'java',

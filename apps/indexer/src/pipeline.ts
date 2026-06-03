@@ -27,7 +27,7 @@ export async function runPipeline(
   onProgress?.({ phase: 'collect', current: files.length, total: files.length });
 
   // Phase 2 & 3: 解析 + 跨文件解析 + 构建索引
-  const result = buildGraph(files, config, (current, total, file) => {
+  const result = await buildGraph(files, config, (current, total, file) => {
     onProgress?.({ phase: 'parse', current, total, file });
   });
 

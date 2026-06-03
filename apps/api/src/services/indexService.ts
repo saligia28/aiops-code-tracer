@@ -263,7 +263,7 @@ export async function executeIndexBuild(options: {
       message: `收集完成，共 ${files.length} 个文件`,
     });
 
-    const result = buildGraph(files, config, (current, total, file) => {
+    const result = await buildGraph(files, config, (current, total, file) => {
       const ratio = total > 0 ? current / total : 0;
       const progress = Math.min(90, 5 + Math.floor(ratio * 80));
       if (current % 20 === 0 || current === total) {
