@@ -34,3 +34,12 @@ export type {
   RouteIndex,
   RouteEntry,
 } from './symbolIndex.js';
+
+// language parser registry
+export {
+  DEFAULT_PARSER_IDS,
+  getEnabledParsers,
+  getParserForExtension,
+  scanExtensionsFor,
+} from './languages/registry.js';
+export type { LanguageParser, ParserContext, ResolveResult } from './languages/types.js';
