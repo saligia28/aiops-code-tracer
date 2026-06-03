@@ -58,6 +58,7 @@ export function patchIndexTaskState(patch: Partial<IndexTaskState>): void {
   });
 }
 
+/** Resolve scan paths. Precedence: explicit non-empty `scanPaths` > `INDEX_SCAN_PATHS` env > `fallback` (caller passes the framework preset default). */
 export function normalizeScanPaths(scanPaths?: string[], fallback: string[] = ['src']): string[] {
   if (scanPaths && scanPaths.length > 0) {
     return scanPaths.map((p) => p.trim()).filter(Boolean);

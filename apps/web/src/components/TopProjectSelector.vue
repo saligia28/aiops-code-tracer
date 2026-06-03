@@ -542,7 +542,7 @@ async function handleCreate() {
       framework: form.framework,
       repoPath: form.repoPath.trim(),
       gitUrl: form.gitUrl.trim(),
-      scanPaths: scanPaths.length > 0 ? scanPaths : ['src'],
+      scanPaths,
     });
 
     ElMessage.success(`项目 "${record.name}" 创建成功`);
