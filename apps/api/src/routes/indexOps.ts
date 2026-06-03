@@ -10,7 +10,6 @@ import {
 import {
   loadGraph,
   executeIndexBuild,
-  normalizeScanPaths,
   patchIndexTaskState,
 } from '../services/indexService.js';
 
@@ -118,14 +117,14 @@ export function registerIndexOps(app: FastifyInstance): void {
     }
 
     const repoName = body.repoName || process.env.REPO_NAME || path.basename(path.resolve(repoPath));
-    const scanPaths = normalizeScanPaths(body.scanPaths);
     const framework = process.env.REPO_FRAMEWORK as ProjectFramework | undefined;
-    void executeIndexBuild({ repoPath, repoName, scanPaths, framework, mode: 'full' }, app.log);
+    // 传入原始 body.scanPaths，让 buildRepoConfig 按 framework preset 解析缺省值
+    void executeIndexBuild({ repoPath, repoName, scanPaths: body.scanPaths, framework, mode: 'full' }, app.log);
     return {
       message: '全量索引构建任务已提交',
       status: 'building',
       repoName,
-      scanPaths,
+      scanPaths: body.scanPaths ?? null,
     };
   });
 
@@ -148,14 +147,14 @@ export function registerIndexOps(app: FastifyInstance): void {
     }
 
     const repoName = body.repoName || process.env.REPO_NAME || path.basename(path.resolve(repoPath));
-    const scanPaths = normalizeScanPaths(body.scanPaths);
     const framework = process.env.REPO_FRAMEWORK as ProjectFramework | undefined;
-    void executeIndexBuild({ repoPath, repoName, scanPaths, framework, mode: 'incremental' }, app.log);
+    // 传入原始 body.scanPaths，让 buildRepoConfig 按 framework preset 解析缺省值
+    void executeIndexBuild({ repoPath, repoName, scanPaths: body.scanPaths, framework, mode: 'incremental' }, app.log);
     return {
       message: '增量重建任务已提交（当前按全量流程执行）',
       status: 'building',
       repoName,
-      scanPaths,
+      scanPaths: body.scanPaths ?? null,
     };
   });
 }
