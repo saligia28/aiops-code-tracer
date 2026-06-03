@@ -43,3 +43,7 @@ export {
   scanExtensionsFor,
 } from './languages/registry.js';
 export type { LanguageParser, ParserContext, ResolveResult } from './languages/types.js';
+
+// framework → preset mapping
+export { presetFor } from './presets.js';
+export type { LanguagePreset } from './presets.js';

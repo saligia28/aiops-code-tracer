@@ -2,8 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import type { FastifyBaseLogger } from 'fastify';
 import { GraphStore } from '@aiops/graph-core';
-import type { CodeGraph, RepoConfig } from '@aiops/shared-types';
-import { collectFiles, buildGraph } from '@aiops/parser';
+import type { CodeGraph, RepoConfig, ProjectFramework } from '@aiops/shared-types';
+import { collectFiles, buildGraph, presetFor } from '@aiops/parser';
 import type { SymbolIndex, BuildResult } from '@aiops/parser';
 import {
   DATA_DIR,
@@ -95,24 +95,30 @@ export function buildRepoConfig(repoPath: string, repoName: string, scanPaths?: 
   const envFramework = process.env.REPO_FRAMEWORK;
   const envStateManagement = process.env.REPO_STATE_MANAGEMENT;
 
+  const framework = (overrides?.framework ?? envFramework ?? 'vue3') as ProjectFramework;
+  const preset = presetFor(framework);
+  const excludePaths = Array.from(new Set([
+    'node_modules',
+    'dist',
+    '.git',
+    'coverage',
+    '.turbo',
+    '.next',
+    '.nuxt',
+    '*.spec.*',
+    '*.test.*',
+    ...preset.exclude,
+  ]));
+
   return {
     repoName,
     repoPath: path.resolve(repoPath),
     scanPaths: normalizeScanPaths(scanPaths),
-    excludePaths: [
-      'node_modules',
-      'dist',
-      '.git',
-      'coverage',
-      '.turbo',
-      '.next',
-      '.nuxt',
-      '*.spec.*',
-      '*.test.*',
-    ],
+    excludePaths,
+    parsers: preset.parsers,
     aliases: overrides?.aliases ?? envAliases ?? { '@': 'src' },
     autoImportDirs: overrides?.autoImportDirs ?? envAutoImportDirs ?? ['src/hooks', 'src/assets/utils', 'src/static', 'src/store/browser'],
-    framework: (overrides?.framework ?? envFramework ?? 'vue3') as RepoConfig['framework'],
+    framework,
     stateManagement: (overrides?.stateManagement ?? envStateManagement ?? 'vuex') as RepoConfig['stateManagement'],
     scriptStyle: 'mixed',
   };
