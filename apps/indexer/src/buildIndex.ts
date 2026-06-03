@@ -1,5 +1,6 @@
 import path from 'path';
-import type { RepoConfig } from '@aiops/shared-types';
+import type { RepoConfig, ProjectFramework } from '@aiops/shared-types';
+import { presetFor } from '@aiops/parser';
 import { runPipeline } from './pipeline.js';
 
 interface BuildOptions {
@@ -7,19 +8,26 @@ interface BuildOptions {
   repoName: string;
   outputDir: string;
   scanPaths?: string[];
+  framework?: ProjectFramework;
 }
 
 export async function buildIndex(options: BuildOptions): Promise<void> {
   const { repoPath, repoName, outputDir, scanPaths } = options;
 
+  const framework = options.framework ?? 'vue3';
+  const preset = presetFor(framework);
+
   const config: RepoConfig = {
     repoName,
     repoPath,
-    scanPaths: scanPaths ?? ['src'],
-    excludePaths: ['node_modules', 'dist', '*.spec.*', '*.test.*'],
+    parsers: preset.parsers,
+    scanPaths: scanPaths && scanPaths.length > 0 ? scanPaths : preset.scanPaths,
+    excludePaths: Array.from(
+      new Set(['node_modules', 'dist', '*.spec.*', '*.test.*', ...preset.exclude]),
+    ),
     aliases: { '@': 'src' },
     autoImportDirs: ['src/hooks', 'src/assets/utils'],
-    framework: 'vue3',
+    framework,
     stateManagement: 'vuex',
     scriptStyle: 'mixed',
   };
