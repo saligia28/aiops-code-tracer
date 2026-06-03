@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { collectFiles } from '../src/scanner/fileCollector.js';
-import type { RepoConfig } from '@aiops/shared-types';
+import type { LanguageParserId, RepoConfig } from '@aiops/shared-types';
 
 function createTempRepo(files: Record<string, string>): { repoPath: string; cleanup: () => void } {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aiops-collector-'));
@@ -18,7 +18,7 @@ function createTempRepo(files: Record<string, string>): { repoPath: string; clea
   };
 }
 
-function createConfig(repoPath: string): RepoConfig {
+function createConfig(repoPath: string, parsers?: LanguageParserId[]): RepoConfig {
   return {
     repoName: 'test',
     repoPath,
@@ -29,6 +29,7 @@ function createConfig(repoPath: string): RepoConfig {
     framework: 'vue3',
     stateManagement: 'none',
     scriptStyle: 'composition',
+    ...(parsers ? { parsers } : {}),
   };
 }
 
@@ -51,6 +52,42 @@ describe('collectFiles', () => {
       expect(files.some((f) => f.includes('node_modules'))).toBe(false);
       expect(files.some((f) => f.includes('/dist/'))).toBe(false);
       expect(files.some((f) => f.includes('.test.'))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('parsers=[java] 时只收集 .java 文件，扩展名由 registry 推导', async () => {
+    const { repoPath, cleanup } = createTempRepo({
+      'apps/svc/src/Main.java': 'class Main {}',
+      'apps/svc/src/util.ts': 'export const x = 1',
+    });
+
+    try {
+      const config = createConfig(repoPath, ['java']);
+      const files = await collectFiles(config);
+
+      expect(files).toContain('apps/svc/src/Main.java');
+      expect(files.some((f) => f.endsWith('.ts'))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('parsers=[typescript,java] 时用合并花括号同时收集多语言文件', async () => {
+    const { repoPath, cleanup } = createTempRepo({
+      'apps/svc/src/Main.java': 'class Main {}',
+      'apps/web/src/app.ts': 'export const x = 1',
+      'apps/web/src/Comp.vue': '<template></template>',
+    });
+
+    try {
+      const config = createConfig(repoPath, ['typescript', 'java']);
+      const files = await collectFiles(config);
+
+      expect(files).toContain('apps/svc/src/Main.java');
+      expect(files).toContain('apps/web/src/app.ts');
+      expect(files).toContain('apps/web/src/Comp.vue');
     } finally {
       cleanup();
     }

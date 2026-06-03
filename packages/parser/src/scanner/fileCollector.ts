@@ -1,5 +1,6 @@
 import fg from 'fast-glob';
 import type { RepoConfig } from '@aiops/shared-types';
+import { scanExtensionsFor } from '../languages/registry.js';
 
 function normalize(filePath: string): string {
   return filePath.replaceAll('\\', '/');
@@ -39,9 +40,12 @@ function shouldIgnore(filePath: string, excludePatterns: string[]): boolean {
  * 按仓库配置收集需要扫描的文件列表
  */
 export async function collectFiles(config: RepoConfig): Promise<string[]> {
-  const patterns = config.scanPaths.map((p) =>
-    `${p}/**/*.{vue,ts,js,tsx,jsx}`
-  );
+  const exts = scanExtensionsFor(config.parsers); // e.g. ['.java'] or ['.vue','.ts','.js','.tsx','.jsx']
+  const extGroup = exts.map((e) => e.slice(1)).join(','); // 'java' or 'vue,ts,js,tsx,jsx'
+  // fast-glob 不会展开单成员花括号 `{java}`（无逗号时按字面量处理，匹配不到任何文件），
+  // 因此单扩展名时用无花括号形式。
+  const extPattern = exts.length === 1 ? `*.${extGroup}` : `*.{${extGroup}}`;
+  const patterns = config.scanPaths.map((p) => `${p}/**/${extPattern}`);
 
   const defaultIgnores = [
     '**/node_modules/**',
