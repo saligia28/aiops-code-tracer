@@ -313,3 +313,83 @@ describe('java pass1 — method-body calls', () => {
     expect(byName('bare').argCount).toBe(0);
   });
 });
+
+describe('java pass1 — constructor injection', () => {
+  const injects = (data: JavaParserData) =>
+    data.pendingRefs.filter(
+      (r): r is Extract<JavaParserData['pendingRefs'][number], { kind: 'inject' }> =>
+        r.kind === 'inject'
+    );
+
+  it('treats a sole constructor param (same-named field) as injection', async () => {
+    const src = [
+      'package com.foo;',
+      '@Service',
+      'class Foo {',
+      '  private final Bar bar;',
+      '  Foo(Bar bar) { this.bar = bar; }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('Foo.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    const field = result.nodes.find((n) => n.type === 'variable' && n.name === 'bar')!;
+
+    const inj = injects(data);
+    expect(inj).toHaveLength(1);
+    expect(inj[0].fromFieldNodeId).toBe(field.id);
+    expect(inj[0].declaredType).toBe('Bar');
+  });
+
+  it('treats @Autowired constructor params as injection (multi-arg)', async () => {
+    const src = [
+      'package com.foo;',
+      'class Foo {',
+      '  private Bar bar;',
+      '  private Baz baz;',
+      '  Foo() {}',
+      '  @Autowired Foo(Bar bar, Baz baz) { this.bar = bar; this.baz = baz; }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('Foo.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+
+    const types = injects(data)
+      .map((r) => r.declaredType)
+      .sort();
+    expect(types).toEqual(['Bar', 'Baz']);
+  });
+
+  it('does not inject when there are multiple un-annotated constructors', async () => {
+    const src = [
+      'package com.foo;',
+      'class Foo {',
+      '  private Bar bar;',
+      '  Foo() {}',
+      '  Foo(Bar bar) { this.bar = bar; }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('Foo.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    expect(injects(data)).toHaveLength(0);
+  });
+
+  it('captures @Qualifier on a constructor parameter', async () => {
+    const src = [
+      'package com.foo;',
+      '@Service',
+      'class Foo {',
+      '  private Bar bar;',
+      '  Foo(@Qualifier("primary") Bar bar) { this.bar = bar; }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('Foo.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    const inj = injects(data);
+    expect(inj).toHaveLength(1);
+    expect(inj[0].qualifier).toBe('primary');
+  });
+});

@@ -281,9 +281,11 @@ function extractFields(
   filePath: string,
   packageName: string,
   data: JavaParserData
-): { nodes: GraphNode[]; edges: GraphEdge[] } {
+): { nodes: GraphNode[]; edges: GraphEdge[]; fieldsByOwner: Map<string, Map<string, string>> } {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
+  /** ownerFQN → (fieldName → fieldNodeId)，供构造注入按形参名匹配字段 */
+  const fieldsByOwner = new Map<string, Map<string, string>>();
 
   for (const fd of root.descendantsOfType('field_declaration')) {
     const owner = enclosingTypeDecl(fd);
@@ -322,6 +324,10 @@ function extractFields(
       nodes.push({ id: fieldId, type: 'variable', name: fieldName, filePath, loc: fieldLoc, meta });
       edges.push({ from: ownerId, to: fieldId, type: 'defines', loc: fieldLoc });
 
+      const ownerFields = fieldsByOwner.get(ownerFQN) ?? new Map<string, string>();
+      ownerFields.set(fieldName, fieldId);
+      fieldsByOwner.set(ownerFQN, ownerFields);
+
       if (declaredType) data.typeEnv.fieldTypes[fieldName] = declaredType;
 
       if (isInject && declaredType) {
@@ -336,7 +342,63 @@ function extractFields(
     }
   }
 
-  return { nodes, edges };
+  return { nodes, edges, fieldsByOwner };
+}
+
+/**
+ * 构造注入：@Autowired/@Inject 构造器，或唯一构造器（Spring 4.3+ 隐式）的每个形参，
+ * 若类内存在同名字段，则记一条 inject pendingRef（字段 → 形参声明类型），复用 Pass2 解析。
+ * v1 按「形参名 == 字段名」匹配（覆盖 `this.x = x` 主流写法）；重命名赋值暂不解析。
+ */
+function extractConstructorInjections(
+  root: Node,
+  packageName: string,
+  fieldsByOwner: Map<string, Map<string, string>>,
+  data: JavaParserData
+): void {
+  const ctorsByOwner = new Map<string, Node[]>();
+  for (const ctor of root.descendantsOfType('constructor_declaration')) {
+    const owner = enclosingTypeDecl(ctor);
+    if (!owner) continue;
+    const ownerFQN = computeTypeFQN(owner, packageName);
+    const arr = ctorsByOwner.get(ownerFQN) ?? [];
+    arr.push(ctor);
+    ctorsByOwner.set(ownerFQN, arr);
+  }
+
+  for (const [ownerFQN, ctors] of ctorsByOwner) {
+    const fields = fieldsByOwner.get(ownerFQN);
+    if (!fields || fields.size === 0) continue;
+
+    for (const ctor of ctors) {
+      const annotations = extractAnnotations(ctor);
+      const annotated = annotations.some((a) => a === '@Autowired' || a === '@Inject');
+      const paramsNode = ctor.childForFieldName('parameters');
+      const params = paramsNode
+        ? paramsNode.namedChildren.filter(
+            (p): p is Node => p?.type === 'formal_parameter'
+          )
+        : [];
+      // 注入条件：注解构造器，或唯一构造器且有参数（Spring 4.3+ 隐式）
+      if (!annotated && !(ctors.length === 1 && params.length > 0)) continue;
+
+      for (const p of params) {
+        const pName = p.childForFieldName('name')?.text;
+        const pType = rawType(p.childForFieldName('type')?.text ?? '');
+        if (!pName || !pType) continue;
+        const fieldId = fields.get(pName);
+        if (!fieldId) continue; // 无同名字段 → 不连
+        const qualifier = annotationArg(p, 'Qualifier') ?? annotationArg(p, 'Named');
+        data.pendingRefs.push({
+          kind: 'inject',
+          fromFieldNodeId: fieldId,
+          declaredType: pType,
+          ...(qualifier ? { qualifier } : {}),
+          loc: loc(ctor),
+        });
+      }
+    }
+  }
 }
 
 /** 常见 java.lang 隐式类型 — 用于方法签名 FQN 归一化（保证重载 ID 稳定可读） */
@@ -594,6 +656,8 @@ export async function runPass1(
   const methods = extractMethods(root, filePath, packageName, parserData);
   nodes.push(...methods.nodes);
   edges.push(...methods.edges);
+
+  extractConstructorInjections(root, packageName, fields.fieldsByOwner, parserData);
 
   return { filePath, parserId: 'java', nodes, edges, unresolvedRefs: [], parserData };
 }
