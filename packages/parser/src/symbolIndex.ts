@@ -72,38 +72,103 @@ export interface ApiCallLocation {
   loc: string;
   method: string;
   callerNodeId?: string;
+  /** 规范化端点键 "METHOD path"，用于跨语言聚合 */
+  endpointKey?: string;
+  kind?: 'clientCall';
+}
+
+/** 服务端路由（后端 HTTP 端点），来自 routeEntry 节点 */
+export interface ServerRouteLocation {
+  nodeId: string;
+  filePath: string;
+  loc: string;
+  httpMethod: string;
+  routePath: string;
+  endpointKey: string;
+  handlerNodeId?: string;
+  kind: 'serverRoute';
 }
 
 export interface ApiIndex {
+  /** 旧结构：path → 客户端调用[]（前端/API 既有消费，保持不变） */
   endpoints: Record<string, ApiCallLocation[]>;
+  /** 后端路由（serverRoute） */
+  serverRoutes?: ServerRouteLocation[];
+  /** 跨语言聚合：endpointKey → { 前端调用, 后端路由 }（索引层桥，不产实体边） */
+  byEndpointKey?: Record<string, { clientCalls: ApiCallLocation[]; serverRoutes: ServerRouteLocation[] }>;
+}
+
+/** 规范化路径：去 query/hash、折叠重复斜杠、去尾斜杠（root 保留 '/'） */
+function normalizePath(p: string): string {
+  const cleaned = (p ?? '').split('?')[0].split('#')[0];
+  const parts = cleaned.split('/').filter(Boolean);
+  return `/${parts.join('/')}`;
+}
+
+/** 端点键 "METHOD path"，前后端共用以便聚合 */
+export function normalizeEndpointKey(method: string | undefined, path: string): string {
+  return `${(method || 'GET').toUpperCase()} ${normalizePath(path)}`;
 }
 
 export function buildApiIndex(nodes: GraphNode[], edges: GraphEdge[]): ApiIndex {
   const endpoints = Object.create(null) as Record<string, ApiCallLocation[]>;
+  const serverRoutes: ServerRouteLocation[] = [];
 
-  // 找到调用 apiCall 节点的边
+  // apiCall 的调用方（calls 边）；routeEntry 的处理方（registersRoute 边）
   const callerMap = new Map<string, string>();
+  const handlerByRoute = new Map<string, string>();
   for (const edge of edges) {
-    if (edge.type === 'calls') {
-      callerMap.set(edge.to, edge.from);
-    }
+    if (edge.type === 'calls') callerMap.set(edge.to, edge.from);
+    else if (edge.type === 'registersRoute') handlerByRoute.set(edge.from, edge.to);
   }
 
   for (const node of nodes) {
     if (node.type === 'apiCall' && node.meta?.apiEndpoint) {
       const endpoint = node.meta.apiEndpoint;
+      const method = node.meta.apiMethod ?? 'UNKNOWN';
       const endpointCalls = endpoints[endpoint] ?? (endpoints[endpoint] = []);
       endpointCalls.push({
         nodeId: node.id,
         filePath: node.filePath,
         loc: node.loc,
-        method: node.meta.apiMethod ?? 'UNKNOWN',
+        method,
         callerNodeId: callerMap.get(node.id),
+        endpointKey: normalizeEndpointKey(method, endpoint),
+        kind: 'clientCall',
+      });
+    } else if (node.type === 'routeEntry' && node.meta?.apiEndpoint) {
+      const routePath = node.meta.apiEndpoint;
+      const httpMethod = node.meta.apiMethod ?? 'UNKNOWN';
+      serverRoutes.push({
+        nodeId: node.id,
+        filePath: node.filePath,
+        loc: node.loc,
+        httpMethod,
+        routePath,
+        endpointKey: normalizeEndpointKey(httpMethod, routePath),
+        handlerNodeId: handlerByRoute.get(node.id),
+        kind: 'serverRoute',
       });
     }
   }
 
-  return { endpoints };
+  // 跨语言聚合：同 endpointKey 下并列前端调用与后端路由
+  const byEndpointKey: Record<
+    string,
+    { clientCalls: ApiCallLocation[]; serverRoutes: ServerRouteLocation[] }
+  > = Object.create(null);
+  const bucket = (key: string) =>
+    byEndpointKey[key] ?? (byEndpointKey[key] = { clientCalls: [], serverRoutes: [] });
+  for (const calls of Object.values(endpoints)) {
+    for (const call of calls) {
+      if (call.endpointKey) bucket(call.endpointKey).clientCalls.push(call);
+    }
+  }
+  for (const route of serverRoutes) {
+    bucket(route.endpointKey).serverRoutes.push(route);
+  }
+
+  return { endpoints, serverRoutes, byEndpointKey };
 }
 
 // ============================================================

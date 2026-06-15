@@ -31,6 +31,7 @@ export type {
   FileIndex,
   ApiIndex,
   ApiCallLocation,
+  ServerRouteLocation,
   RouteIndex,
   RouteEntry,
 } from './symbolIndex.js';
