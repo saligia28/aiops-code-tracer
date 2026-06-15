@@ -83,8 +83,34 @@ describe('java e2e — spring sample', () => {
     expect(serverRoutes.map((r) => r.routePath).sort()).toEqual(['/users', '/users/{id}']);
     expect(serverRoutes.every((r) => !!r.handlerNodeId)).toBe(true);
 
+    // calls 主链：handler → 注入实现方法（high）→ Mapper 接口方法（medium）
+    // （getById 已在上方 defines 断言中声明，此处复用）
+    const implFindById = nodes.find(
+      (n) =>
+        n.type === 'function' && n.name === 'findById' && n.meta?.ownerType === 'com.demo.UserServiceImpl'
+    )!;
+    const callToImpl = edges.find(
+      (e) => e.type === 'calls' && e.from === getById?.id && e.to === implFindById.id
+    );
+    expect(callToImpl?.meta?.confidence).toBe('high');
+
+    const mapperSelect = nodes.find((n) => n.type === 'function' && n.name === 'selectById')!;
+    const implToMapper = edges.find(
+      (e) => e.type === 'calls' && e.from === implFindById.id && e.to === mapperSelect.id
+    );
+    expect(implToMapper?.meta?.confidence).toBe('medium');
+
+    // apiIndex：serverRoutes + 跨语言聚合键
+    expect(result.apiIndex.serverRoutes?.map((r) => r.endpointKey).sort()).toEqual([
+      'GET /users/{id}',
+      'POST /users',
+    ]);
+    expect(result.apiIndex.byEndpointKey?.['GET /users/{id}']?.serverRoutes).toHaveLength(1);
+
     // 统计
     expect(result.stats.totalNodes).toBeGreaterThan(0);
     expect(result.stats.failedFiles).toEqual([]);
+    expect(result.stats.totalRefs).toBeGreaterThan(0);
+    expect(result.stats.resolvedRefs).toBeGreaterThan(0);
   });
 });
