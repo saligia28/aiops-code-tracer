@@ -12,10 +12,45 @@
 import type { GraphEdge } from '@aiops/shared-types';
 import type { FileParseResult } from '../../extractors/types.js';
 import type { ParserContext, ResolveResult } from '../types.js';
+import type { JavaPendingRef } from './types.js';
 import { asJavaData, buildTypeRegistry, resolveTypeFqn } from './typeResolver.js';
 import type { TypeRegistry } from './typeResolver.js';
-import { buildInheritanceMaps } from './methodTable.js';
+import { buildInheritanceMaps, buildMethodTable } from './methodTable.js';
 import type { InheritanceMaps } from './methodTable.js';
+import { inferReceiverType, selectCallTargets } from './callResolver.js';
+import type { ReceiverScope } from './callResolver.js';
+
+type CallRef = Extract<JavaPendingRef, { kind: 'call' }>;
+
+/** 由所有节点建索引：方法节点→owner FQN、字段节点→{owner,name}、owner→字段声明类型 */
+interface NodeIndex {
+  methodOwnerByNode: Map<string, string>;
+  fieldInfoByNode: Map<string, { ownerFQN: string; fieldName: string }>;
+  fieldTypesByOwner: Map<string, Map<string, string>>;
+}
+
+function buildNodeIndex(ownResults: FileParseResult[]): NodeIndex {
+  const methodOwnerByNode = new Map<string, string>();
+  const fieldInfoByNode = new Map<string, { ownerFQN: string; fieldName: string }>();
+  const fieldTypesByOwner = new Map<string, Map<string, string>>();
+
+  for (const fr of ownResults) {
+    if (fr.parserId !== 'java') continue;
+    for (const node of fr.nodes) {
+      const owner = node.meta?.ownerType;
+      if (node.type === 'function' && node.meta?.kind === 'method' && owner) {
+        methodOwnerByNode.set(node.id, owner);
+      } else if (node.type === 'variable' && node.meta?.kind === 'field' && owner) {
+        fieldInfoByNode.set(node.id, { ownerFQN: owner, fieldName: node.name });
+        const m = fieldTypesByOwner.get(owner) ?? new Map<string, string>();
+        if (node.meta.fieldType) m.set(node.name, node.meta.fieldType);
+        fieldTypesByOwner.set(owner, m);
+      }
+    }
+  }
+
+  return { methodOwnerByNode, fieldInfoByNode, fieldTypesByOwner };
+}
 
 type Confidence = NonNullable<GraphEdge['meta']>['confidence'];
 
@@ -102,10 +137,24 @@ export function runPass2(
 ): ResolveResult {
   const registry = buildTypeRegistry(ownResults);
   const inheritance = buildInheritanceMaps(ownResults);
+  const methodTable = buildMethodTable(ownResults, inheritance);
+  const { methodOwnerByNode, fieldInfoByNode, fieldTypesByOwner } = buildNodeIndex(ownResults);
+
   const resolvedEdges: GraphEdge[] = [];
   let unresolvedCount = 0;
   let totalRefs = 0;
 
+  // 注入已解析的 bean：ownerFQN → (fieldName → bean FQN)，供 calls 推断 receiver
+  const beansByOwner = new Map<string, Map<string, string>>();
+  // calls 延后到 injects 全部解析后再处理（calls receiver 依赖 beansByOwner）
+  const callRefs: Array<{
+    ref: CallRef;
+    importTable: Record<string, string>;
+    filePackage: string;
+    localVarTypes: Record<string, string>;
+  }> = [];
+
+  // —— Pass2a: extends / implements / injects ——
   for (const fr of ownResults) {
     const data = asJavaData(fr);
     if (!data) continue;
@@ -113,12 +162,18 @@ export function runPass2(
     const filePackage = data.package;
 
     for (const ref of data.pendingRefs) {
-      // calls 在 Task 2.7 求解；此处先跳过，不计入 totalRefs（保持 resolved=total-unresolved 不变量）
-      if (ref.kind === 'call') continue;
+      if (ref.kind === 'call') {
+        callRefs.push({
+          ref,
+          importTable,
+          filePackage,
+          localVarTypes: data.typeEnv.localVarTypes[ref.fromMethodNodeId] ?? {},
+        });
+        continue;
+      }
       totalRefs++;
 
       if (ref.kind === 'inject') {
-        // 注入：声明类型 → 实现解析（接口→唯一实现/Qualifier/多实现；具体类直连）
         const declaredFqn = resolveTypeFqn(ref.declaredType, importTable, filePackage, registry);
         const res = declaredFqn
           ? resolveInject(declaredFqn, ref.qualifier, registry, inheritance)
@@ -136,6 +191,13 @@ export function runPass2(
               ...(ref.qualifier ? { beanQualifier: ref.qualifier } : {}),
             },
           });
+          // 记录字段→bean，供 calls receiver 推断
+          const fi = fieldInfoByNode.get(ref.fromFieldNodeId);
+          if (fi) {
+            const m = beansByOwner.get(fi.ownerFQN) ?? new Map<string, string>();
+            m.set(fi.fieldName, res.toFqn);
+            beansByOwner.set(fi.ownerFQN, m);
+          }
         } else {
           unresolvedCount++;
         }
@@ -157,6 +219,42 @@ export function runPass2(
       } else {
         unresolvedCount++;
       }
+    }
+  }
+
+  // —— Pass2b: calls（receiver 推断 + methodTable 匹配）——
+  for (const { ref, importTable, filePackage, localVarTypes } of callRefs) {
+    totalRefs++;
+    const ownerFQN = methodOwnerByNode.get(ref.fromMethodNodeId);
+    if (!ownerFQN) {
+      unresolvedCount++;
+      continue;
+    }
+    const scope: ReceiverScope = {
+      ownerFQN,
+      fieldDeclaredTypes: Object.fromEntries(fieldTypesByOwner.get(ownerFQN) ?? new Map()),
+      fieldResolvedBeans: Object.fromEntries(beansByOwner.get(ownerFQN) ?? new Map()),
+      localVarTypes,
+      importTable,
+      filePackage,
+      registry,
+    };
+    const receiverFqn = inferReceiverType(ref.receiverExpr, scope);
+    const targets = receiverFqn
+      ? selectCallTargets(receiverFqn, ref.methodName, ref.argCount, methodTable, registry)
+      : [];
+    if (targets.length === 0) {
+      unresolvedCount++;
+      continue;
+    }
+    for (const t of targets) {
+      resolvedEdges.push({
+        from: ref.fromMethodNodeId,
+        to: t.nodeId,
+        type: 'calls',
+        loc: ref.loc,
+        meta: { confidence: t.confidence, ...(t.reason ? { reason: t.reason } : {}) },
+      });
     }
   }
 
