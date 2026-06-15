@@ -363,9 +363,32 @@ function extractFields(
 }
 
 /**
+ * 解析构造器体内 `this.FIELD = PARAM` 赋值，返回 `形参名 → 字段名` 映射，
+ * 用于覆盖字段名 ≠ 形参名 的注入（如 `this.barService = bar`）。
+ */
+function parseCtorFieldAssignments(ctor: Node): Map<string, string> {
+  const paramToField = new Map<string, string>();
+  const body = ctor.childForFieldName('body');
+  if (!body) return paramToField;
+  for (const assign of body.descendantsOfType('assignment_expression')) {
+    const left = assign.childForFieldName('left');
+    const right = assign.childForFieldName('right');
+    if (!left || right?.type !== 'identifier') continue;
+    let fieldName: string | undefined;
+    if (left.type === 'field_access' && left.childForFieldName('object')?.type === 'this') {
+      fieldName = left.childForFieldName('field')?.text;
+    } else if (left.type === 'identifier') {
+      fieldName = left.text;
+    }
+    if (fieldName) paramToField.set(right.text, fieldName);
+  }
+  return paramToField;
+}
+
+/**
  * 构造注入：@Autowired/@Inject 构造器，或唯一构造器（Spring 4.3+ 隐式）的每个形参，
- * 若类内存在同名字段，则记一条 inject pendingRef（字段 → 形参声明类型），复用 Pass2 解析。
- * v1 按「形参名 == 字段名」匹配（覆盖 `this.x = x` 主流写法）；重命名赋值暂不解析。
+ * 连到其赋值目标字段（先按 `this.field=param` 赋值，再回退同名字段），
+ * 记一条 inject pendingRef（字段 → 形参声明类型），复用 Pass2 解析。
  */
 function extractConstructorInjections(
   root: Node,
@@ -399,12 +422,14 @@ function extractConstructorInjections(
       // 注入条件：注解构造器，或唯一构造器且有参数（Spring 4.3+ 隐式）
       if (!annotated && !(ctors.length === 1 && params.length > 0)) continue;
 
+      const paramToField = parseCtorFieldAssignments(ctor);
       for (const p of params) {
         const pName = p.childForFieldName('name')?.text;
-        const pType = rawType(p.childForFieldName('type')?.text ?? '');
+        const pType = unwrapInjectionType(p.childForFieldName('type')?.text ?? '');
         if (!pName || !pType) continue;
-        const fieldId = fields.get(pName);
-        if (!fieldId) continue; // 无同名字段 → 不连
+        // 先按 this.field=param 赋值定位字段，再回退同名字段
+        const fieldId = fields.get(paramToField.get(pName) ?? pName);
+        if (!fieldId) continue; // 无匹配字段 → 不连
         const qualifier = annotationArg(p, 'Qualifier') ?? annotationArg(p, 'Named');
         data.pendingRefs.push({
           kind: 'inject',

@@ -408,6 +408,26 @@ describe('java pass1 — constructor injection', () => {
     expect(injects(data)).toHaveLength(0);
   });
 
+  it('resolves this.field=param assignment when field name differs from param name', async () => {
+    const src = [
+      'package com.foo;',
+      '@Service',
+      'class Foo {',
+      '  private final Bar barService;',
+      '  Foo(Bar bar) { this.barService = bar; }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('Foo.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    const field = result.nodes.find((n) => n.type === 'variable' && n.name === 'barService')!;
+
+    const inj = injects(data);
+    expect(inj).toHaveLength(1);
+    expect(inj[0].fromFieldNodeId).toBe(field.id);
+    expect(inj[0].declaredType).toBe('Bar');
+  });
+
   it('captures @Qualifier on a constructor parameter', async () => {
     const src = [
       'package com.foo;',
