@@ -14,6 +14,7 @@ import type { GraphNode, GraphEdge } from '@aiops/shared-types';
 import type { FileParseResult } from '../../extractors/types.js';
 import type { ParserContext } from '../types.js';
 import type { JavaParserData } from './types.js';
+import { rawType } from './types.js';
 import { loadJavaParser } from './treeSitter.js';
 
 /** tree-sitter 0-based 行列 → 项目统一的 1-based "行:列" */
@@ -201,6 +202,105 @@ function extractTypes(
   return nodes;
 }
 
+type Visibility = NonNullable<NodeMeta['visibility']>;
+
+/** 由 modifiers 文本判定可见性（无显式修饰符 → package-private） */
+function visibilityOf(modifiers: Node | undefined): Visibility {
+  const text = modifiers?.text ?? '';
+  if (/\bpublic\b/.test(text)) return 'public';
+  if (/\bprivate\b/.test(text)) return 'private';
+  if (/\bprotected\b/.test(text)) return 'protected';
+  return 'package';
+}
+
+/** 取某注解的首个字符串参数值（去引号），如 @Qualifier("primary") → 'primary' */
+function annotationArg(decl: Node, annName: string): string | undefined {
+  const modifiers = decl.namedChildren.find((c) => c?.type === 'modifiers');
+  if (!modifiers) return undefined;
+  for (const m of modifiers.namedChildren) {
+    if (m?.type !== 'annotation') continue;
+    if (m.childForFieldName('name')?.text !== annName) continue;
+    const args = m.childForFieldName('arguments');
+    const lit = args?.descendantsOfType('string_literal')[0];
+    if (lit) return lit.text.replace(/^["']|["']$/g, '');
+  }
+  return undefined;
+}
+
+/** 最近的外层类型声明（class/interface/enum），用于归属字段/方法 */
+function enclosingTypeDecl(node: Node): Node | null {
+  let cur = node.parent;
+  while (cur) {
+    if (TYPE_DECL_KINDS.has(cur.type)) return cur;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+const INJECT_ANNOTATIONS = new Set(['@Autowired', '@Resource', '@Inject']);
+
+/**
+ * 提取字段：每个 variable_declarator 产一个 'variable' 节点（meta.kind='field'），
+ * 连 owner class/interface 的 defines 边；@Autowired/@Resource/@Inject 字段
+ * 额外记 inject pendingRef（带 @Qualifier 值）。填充 typeEnv.fieldTypes。
+ */
+function extractFields(
+  root: Node,
+  filePath: string,
+  packageName: string,
+  data: JavaParserData
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+
+  for (const fd of root.descendantsOfType('field_declaration')) {
+    const owner = enclosingTypeDecl(fd);
+    if (!owner) continue;
+    const ownerFQN = computeTypeFQN(owner, packageName);
+    const ownerNodeType = owner.type === 'interface_declaration' ? 'interface' : 'class';
+    const ownerId = `${ownerNodeType}:${filePath}:${ownerFQN}`;
+
+    const modifiers = fd.namedChildren.find((c) => c?.type === 'modifiers');
+    const annotations = extractAnnotations(fd);
+    const visibility = visibilityOf(modifiers);
+    const isStatic = /\bstatic\b/.test(modifiers?.text ?? '');
+    const declaredType = rawType(fd.childForFieldName('type')?.text ?? '');
+    const isInject = annotations.some((a) => INJECT_ANNOTATIONS.has(a));
+    const qualifier = isInject ? annotationArg(fd, 'Qualifier') : undefined;
+
+    for (const vd of fd.namedChildren) {
+      if (vd?.type !== 'variable_declarator') continue;
+      const nameNode = vd.childForFieldName('name');
+      if (!nameNode) continue;
+      const fieldName = nameNode.text;
+      const fieldId = `variable:${filePath}:${ownerFQN}#${fieldName}`;
+      const fieldLoc = loc(vd);
+
+      const meta: NodeMeta = { kind: 'field', ownerType: ownerFQN, visibility };
+      if (declaredType) meta.fieldType = declaredType;
+      if (isStatic) meta.isStatic = true;
+      if (annotations.length) meta.annotations = annotations;
+
+      nodes.push({ id: fieldId, type: 'variable', name: fieldName, filePath, loc: fieldLoc, meta });
+      edges.push({ from: ownerId, to: fieldId, type: 'defines', loc: fieldLoc });
+
+      if (declaredType) data.typeEnv.fieldTypes[fieldName] = declaredType;
+
+      if (isInject && declaredType) {
+        data.pendingRefs.push({
+          kind: 'inject',
+          fromFieldNodeId: fieldId,
+          declaredType,
+          ...(qualifier ? { qualifier } : {}),
+          loc: fieldLoc,
+        });
+      }
+    }
+  }
+
+  return { nodes, edges };
+}
+
 /**
  * 单文件 Pass1 解析入口。
  */
@@ -233,6 +333,10 @@ export async function runPass1(
   const packageName = extractPackage(root);
   nodes.push(...extractImports(root, filePath, parserData.typeEnv.importTable));
   nodes.push(...extractTypes(root, filePath, packageName, parserData));
+
+  const fields = extractFields(root, filePath, packageName, parserData);
+  nodes.push(...fields.nodes);
+  edges.push(...fields.edges);
 
   return { filePath, parserId: 'java', nodes, edges, unresolvedRefs: [], parserData };
 }

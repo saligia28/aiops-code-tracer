@@ -104,3 +104,66 @@ describe('java pass1 — class / interface / enum', () => {
     expect(inner?.id).toBe('class:Outer.java:com.foo.Outer.Inner');
   });
 });
+
+describe('java pass1 — field + injection', () => {
+  it('extracts @Autowired field with defines edge and inject pendingRef', async () => {
+    const src = [
+      'package com.foo;',
+      'public class UserController {',
+      '  @Autowired',
+      '  private UserService userService;',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('UserController.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+
+    const field = result.nodes.find((n) => n.type === 'variable' && n.name === 'userService');
+    expect(field?.id).toBe('variable:UserController.java:com.foo.UserController#userService');
+    expect(field?.meta?.kind).toBe('field');
+    expect(field?.meta?.fieldType).toBe('UserService');
+    expect(field?.meta?.visibility).toBe('private');
+    expect(field?.meta?.annotations).toEqual(['@Autowired']);
+    expect(field?.meta?.ownerType).toBe('com.foo.UserController');
+
+    const defines = result.edges.find((e) => e.type === 'defines' && e.to === field?.id);
+    expect(defines?.from).toBe('class:UserController.java:com.foo.UserController');
+
+    const inject = data.pendingRefs.find((r) => r.kind === 'inject');
+    expect(inject).toMatchObject({
+      kind: 'inject',
+      fromFieldNodeId: field?.id,
+      declaredType: 'UserService',
+    });
+
+    expect(data.typeEnv.fieldTypes['userService']).toBe('UserService');
+  });
+
+  it('captures @Qualifier and strips generics from field type', async () => {
+    const src = [
+      'package com.foo;',
+      'class C {',
+      '  @Autowired @Qualifier("primary")',
+      '  private List<Repo> repos;',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('C.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+
+    const field = result.nodes.find((n) => n.name === 'repos');
+    expect(field?.meta?.fieldType).toBe('List'); // 泛型被 rawType 剥离
+
+    const inject = data.pendingRefs.find((r) => r.kind === 'inject');
+    expect(inject).toMatchObject({ declaredType: 'List', qualifier: 'primary' });
+  });
+
+  it('does not create inject pendingRef for plain (non-annotated) field', async () => {
+    const src = ['package com.foo;', 'class C {', '  private int count;', '}'].join('\n');
+    const result = await runPass1('C.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    expect(data.pendingRefs.some((r) => r.kind === 'inject')).toBe(false);
+    const field = result.nodes.find((n) => n.name === 'count');
+    expect(field?.meta?.visibility).toBe('private');
+  });
+});
