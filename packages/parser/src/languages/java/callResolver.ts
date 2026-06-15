@@ -9,7 +9,7 @@
  */
 import type { TypeRegistry } from './typeResolver.js';
 import { resolveTypeFqn } from './typeResolver.js';
-import type { MethodTable } from './methodTable.js';
+import type { MethodTable, InheritanceMaps } from './methodTable.js';
 
 type Confidence = 'high' | 'medium' | 'low';
 
@@ -61,11 +61,24 @@ export interface CallTarget {
   reason?: string;
 }
 
+/** 在某类型的方法表里按方法名 + 实参数挑一个候选（arity 优先，否则首个） */
+function pickMethod(
+  ownerFqn: string,
+  methodName: string,
+  argCount: number,
+  methodTable: MethodTable
+): string | undefined {
+  const candidates = methodTable.get(ownerFqn)?.get(methodName);
+  if (!candidates || candidates.length === 0) return undefined;
+  const arityMatch = candidates.filter((c) => c.paramTypes.length === argCount);
+  return (arityMatch[0] ?? candidates[0]).nodeId;
+}
+
 /**
  * 在 methodTable 上为一次调用选目标方法：
- * - 按方法名取候选，再按实参数（argCount）过滤；无 arity 命中则退回全部候选。
- * - 唯一候选：confidence 取决于 receiver 是接口(medium)还是具体类(high)。
- * - 多候选（同 arity 重载难辨）：Top-N 条 low，reason='ambiguousOverload'。
+ * - receiver 为接口且有 >1 个实现：fan-out 到各实现同名方法（Top-N，low，multipleImplementations）。
+ * - 否则按方法名 + 实参数（argCount）取候选：唯一 → 接口 medium / 具体类 high；
+ *   多候选（同 arity 重载难辨）→ Top-N 条 low，ambiguousOverload。
  * - 无候选：返回空（调用方计 unresolved）。
  */
 export function selectCallTargets(
@@ -74,15 +87,31 @@ export function selectCallTargets(
   argCount: number,
   methodTable: MethodTable,
   registry: TypeRegistry,
+  inheritance?: InheritanceMaps,
   topN = 3
 ): CallTarget[] {
+  const isInterface = registry.fqnToNodeType.get(receiverFqn) === 'interface';
+
+  // 接口 + 多实现：fan-out 到各实现的同名方法
+  if (isInterface && inheritance) {
+    const impls = inheritance.implementsMap.get(receiverFqn) ?? [];
+    if (impls.length > 1) {
+      const targets: CallTarget[] = [];
+      for (const implFqn of impls.slice(0, topN)) {
+        const nodeId = pickMethod(implFqn, methodName, argCount, methodTable);
+        if (nodeId) targets.push({ nodeId, confidence: 'low', reason: 'multipleImplementations' });
+      }
+      if (targets.length > 0) return targets;
+      // 各实现都查不到该方法 → 退回接口自身方法（下方逻辑）
+    }
+  }
+
   const candidates = methodTable.get(receiverFqn)?.get(methodName);
   if (!candidates || candidates.length === 0) return [];
 
   const arityMatch = candidates.filter((c) => c.paramTypes.length === argCount);
   const pool = arityMatch.length > 0 ? arityMatch : candidates;
-  const baseConfidence: Confidence =
-    registry.fqnToNodeType.get(receiverFqn) === 'interface' ? 'medium' : 'high';
+  const baseConfidence: Confidence = isInterface ? 'medium' : 'high';
 
   if (pool.length === 1) {
     return [{ nodeId: pool[0].nodeId, confidence: baseConfidence }];

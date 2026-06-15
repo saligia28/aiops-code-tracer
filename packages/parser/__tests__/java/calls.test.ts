@@ -143,6 +143,46 @@ describe('java calls — end-to-end (runPass1 + runPass2)', () => {
     expect(r.unresolvedCount).toBeGreaterThan(0);
   });
 
+  it('fans out to Top-N implementations when receiver is an interface with multiple impls', async () => {
+    const i = await runPass1(
+      'com/foo/Svc.java',
+      'package com.foo;\npublic interface Svc { void go(); }',
+      ctx()
+    );
+    const a = await runPass1(
+      'com/foo/SvcA.java',
+      'package com.foo;\n@Service\nclass SvcA implements Svc { public void go() {} }',
+      ctx()
+    );
+    const b = await runPass1(
+      'com/foo/SvcB.java',
+      'package com.foo;\n@Service\nclass SvcB implements Svc { public void go() {} }',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/C.java',
+      [
+        'package com.foo;',
+        'class C {',
+        '  @Autowired private Svc svc;',
+        '  void run() { svc.go(); }',
+        '}',
+      ].join('\n'),
+      ctx()
+    );
+
+    const own = [i, a, b, c];
+    const r = runPass2(own, own, ctx());
+
+    const goA = a.nodes.find((n) => n.type === 'function' && n.meta?.ownerType === 'com.foo.SvcA')!.id;
+    const goB = b.nodes.find((n) => n.type === 'function' && n.meta?.ownerType === 'com.foo.SvcB')!.id;
+
+    const calls = r.resolvedEdges.filter((e) => e.type === 'calls' && e.from.includes('#run('));
+    expect(calls.map((e) => e.to).sort()).toEqual([goA, goB].sort());
+    expect(calls.every((e) => e.meta?.confidence === 'low')).toBe(true);
+    expect(calls.every((e) => e.meta?.reason === 'multipleImplementations')).toBe(true);
+  });
+
   it('selects the right overload by argument count', async () => {
     const repo = await runPass1(
       'com/foo/Repo.java',

@@ -260,7 +260,7 @@ export function runPass2(
     };
     const receiverFqn = inferReceiverType(ref.receiverExpr, scope);
     const targets = receiverFqn
-      ? selectCallTargets(receiverFqn, ref.methodName, ref.argCount, methodTable, registry)
+      ? selectCallTargets(receiverFqn, ref.methodName, ref.argCount, methodTable, registry, inheritance)
       : [];
     if (targets.length === 0) {
       unresolvedCount++;
