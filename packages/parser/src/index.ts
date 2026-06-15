@@ -25,6 +25,9 @@ export {
   buildApiIndex,
   buildRouteIndex,
 } from './symbolIndex.js';
+
+// 跨语言桥
+export { buildCrossLanguageEdges } from './crossLanguage.js';
 export type {
   SymbolIndex,
   SymbolLocation,

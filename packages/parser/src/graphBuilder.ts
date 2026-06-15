@@ -7,6 +7,7 @@ import { buildSymbolIndex, buildFileIndex, buildApiIndex, buildRouteIndex } from
 import type { SymbolIndex, FileIndex, ApiIndex, RouteIndex } from './symbolIndex.js';
 import { getParserForExtension, getEnabledParsers } from './languages/registry.js';
 import type { ParserContext } from './languages/types.js';
+import { buildCrossLanguageEdges } from './crossLanguage.js';
 
 // 向后兼容再导出：TS/Vue 的单文件解析与跨文件求解逻辑已迁入 languages/typescript。
 // 现有 graphBuilder 测试与 index.ts 旧导出经此入口，签名/语义不变。
@@ -31,6 +32,8 @@ export interface BuildStats {
   unresolvedRefs: number;
   totalRefs: number;
   resolveRate: string;
+  /** 跨语言桥边数（前端 apiCall → 后端 routeEntry） */
+  crossLanguageEdges: number;
   duration: number;
 }
 
@@ -151,6 +154,12 @@ export async function buildGraph(
   const apiIndex = buildApiIndex(allNodes, allEdges);
   const routeIndex = buildRouteIndex(allNodes, allEdges, config);
 
+  // 跨语言桥：按 endpointKey 配对前端 apiCall ↔ 后端 routeEntry（仅入图，不回灌索引）
+  const crossEdges = buildCrossLanguageEdges(apiIndex);
+  for (const edge of crossEdges) {
+    graph.addEdge(edge);
+  }
+
   const duration = Date.now() - start;
   const resolvedRefs = totalRefs - unresolvedCount;
 
@@ -170,6 +179,7 @@ export async function buildGraph(
       unresolvedRefs: unresolvedCount,
       totalRefs,
       resolveRate: totalRefs > 0 ? ((resolvedRefs / totalRefs) * 100).toFixed(1) + '%' : 'N/A',
+      crossLanguageEdges: crossEdges.length,
       duration,
     },
   };

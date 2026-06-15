@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import ts from 'typescript';
-import { parseFile, resolvePhase } from '../src/graphBuilder.js';
+import { parseFile, resolvePhase, buildGraph } from '../src/graphBuilder.js';
 import type { RepoConfig } from '@aiops/shared-types';
 import fs from 'fs';
 import path from 'path';
@@ -247,6 +247,46 @@ function confirmData(payload: any) {
       const toBatchVerify = resolveResult.resolvedEdges.find((edge) => edge.type === 'calls' && edge.to.includes(':batchVerify'));
       expect(toVerify).toBeDefined();
       expect(toBatchVerify).toBeDefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('跨语言桥：前端 apiCall 经 endpointKey 连到后端 routeEntry', async () => {
+    const { repoPath, cleanup } = createTempRepo({
+      'src/api.ts':
+        "import axios from 'axios';\nexport function getUser(id) {\n  return axios.get('/users/{id}');\n}\n",
+      'src/main/java/com/demo/UserController.java': [
+        'package com.demo;',
+        '@RestController',
+        '@RequestMapping("/users")',
+        'public class UserController {',
+        '  @GetMapping("/{id}")',
+        '  public String get(Long id) { return null; }',
+        '}',
+      ].join('\n'),
+    });
+    try {
+      const config: RepoConfig = { ...createConfig(repoPath), parsers: ['typescript', 'java'] };
+      const result = await buildGraph(
+        ['src/api.ts', 'src/main/java/com/demo/UserController.java'],
+        config
+      );
+
+      const nodes = result.graph.getAllNodes();
+      const edges = result.graph.getAllEdges();
+      const apiCall = nodes.find((n) => n.type === 'apiCall')!;
+      const route = nodes.find((n) => n.type === 'routeEntry')!;
+
+      const bridge = edges.find(
+        (e) =>
+          e.type === 'calls' &&
+          e.from === apiCall.id &&
+          e.to === route.id &&
+          e.meta?.reason === 'crossLanguageEndpoint'
+      );
+      expect(bridge).toBeDefined();
+      expect(result.stats.crossLanguageEdges).toBeGreaterThanOrEqual(1);
     } finally {
       cleanup();
     }
