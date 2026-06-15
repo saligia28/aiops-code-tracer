@@ -2296,6 +2296,9 @@ const FLOW_PATH_EDGE_TYPES = new Set<GraphEdge['type']>([
   'uses',
   'assigns',
   'defines',
+  // Java 主链：routeEntry -registersRoute-> handler -...-> field -injects-> 实现
+  'injects',
+  'registersRoute',
 ]);
 
 function rankApiTargetNodes(
