@@ -222,6 +222,25 @@ export function runPass2(
     }
   }
 
+  // —— class → bean 注入汇总边（去重；派生自字段注入，不计入 totalRefs）——
+  for (const [ownerFQN, fieldBeans] of beansByOwner) {
+    const fromId = registry.fqnToNode.get(ownerFQN);
+    if (!fromId) continue;
+    const seen = new Set<string>();
+    for (const beanFqn of fieldBeans.values()) {
+      if (seen.has(beanFqn)) continue;
+      seen.add(beanFqn);
+      const toId = registry.fqnToNode.get(beanFqn);
+      if (!toId || toId === fromId) continue;
+      resolvedEdges.push({
+        from: fromId,
+        to: toId,
+        type: 'injects',
+        meta: { confidence: 'medium', reason: 'aggregateInjection' },
+      });
+    }
+  }
+
   // —— Pass2b: calls（receiver 推断 + methodTable 匹配）——
   for (const { ref, importTable, filePackage, localVarTypes } of callRefs) {
     totalRefs++;

@@ -282,6 +282,40 @@ describe('java pass2 — qualifier/bean-name/abstract hardening', () => {
     expect(inj?.meta?.beanQualifier).toBe('svcB');
   });
 
+  it('emits deduped class→bean aggregate injection edges alongside field-level ones', async () => {
+    const a = await runPass1('com/foo/A.java', 'package com.foo;\n@Service\nclass A {}', ctx());
+    const b = await runPass1('com/foo/B.java', 'package com.foo;\n@Service\nclass B {}', ctx());
+    const ctrl = await runPass1(
+      'com/foo/Ctrl.java',
+      [
+        'package com.foo;',
+        'class Ctrl {',
+        '  @Autowired private A a;',
+        '  @Autowired private B b;',
+        '  @Autowired private A a2;', // 同类型第二字段 → 汇总应去重
+        '}',
+      ].join('\n'),
+      ctx()
+    );
+    const own = [a, b, ctrl];
+    const r = runPass2(own, own, ctx());
+
+    const aggregate = r.resolvedEdges.filter(
+      (e) =>
+        e.type === 'injects' &&
+        e.from === 'class:com/foo/Ctrl.java:com.foo.Ctrl' &&
+        e.meta?.reason === 'aggregateInjection'
+    );
+    expect(aggregate.map((e) => e.to).sort()).toEqual([
+      'class:com/foo/A.java:com.foo.A',
+      'class:com/foo/B.java:com.foo.B',
+    ]);
+    // 字段级 injects 仍在（from 为 variable 节点）
+    expect(r.resolvedEdges.some((e) => e.type === 'injects' && e.from.startsWith('variable:'))).toBe(
+      true
+    );
+  });
+
   it('does not select an abstract class as the unique implementation (no high edge to a non-instantiable bean)', async () => {
     const i = await runPass1('com/foo/Svc.java', 'package com.foo;\npublic interface Svc {}', ctx());
     const abs = await runPass1(
