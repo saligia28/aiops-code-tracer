@@ -1,24 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { RepoConfig } from '@aiops/shared-types';
 import { runPass1 } from '../../src/languages/java/pass1.js';
 import { runPass2 } from '../../src/languages/java/pass2.js';
-import type { ParserContext } from '../../src/languages/types.js';
-
-function ctx(): ParserContext {
-  const config: RepoConfig = {
-    repoName: 't',
-    repoPath: '/tmp',
-    scanPaths: ['src/main/java'],
-    excludePaths: [],
-    aliases: {},
-    autoImportDirs: [],
-    framework: 'java',
-    parsers: ['java'],
-    stateManagement: 'none',
-    scriptStyle: 'composition',
-  };
-  return { config };
-}
+import { ctx } from './helpers.js';
 
 describe('java pass2 — typeRegistry + extends/implements/injects', () => {
   it('resolves implements and declaration-level injects across files (same package)', async () => {

@@ -1,24 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { RepoConfig } from '@aiops/shared-types';
 import { runPass1 } from '../../src/languages/java/pass1.js';
 import type { JavaParserData } from '../../src/languages/java/types.js';
-import type { ParserContext } from '../../src/languages/types.js';
-
-function ctx(): ParserContext {
-  const config: RepoConfig = {
-    repoName: 't',
-    repoPath: '/tmp',
-    scanPaths: ['src/main/java'],
-    excludePaths: [],
-    aliases: {},
-    autoImportDirs: [],
-    framework: 'java',
-    parsers: ['java'],
-    stateManagement: 'none',
-    scriptStyle: 'composition',
-  };
-  return { config };
-}
+import { ctx } from './helpers.js';
 
 describe('java pass1 — package + imports', () => {
   it('builds importTable for normal / wildcard / static imports', async () => {
