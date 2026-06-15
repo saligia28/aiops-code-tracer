@@ -114,17 +114,46 @@ export interface RouteEntry {
   routePath: string;
   componentFilePath?: string;
   nodeId: string;
+  /** HTTP 方法（serverRoute），如 GET/POST */
+  httpMethod?: string;
+  /** 处理该路由的方法节点 id（serverRoute，经 registersRoute 边定位） */
+  handlerNodeId?: string;
+  /** 路由类型：服务端路由（后端 HTTP 端点）或客户端路由（前端） */
+  kind?: 'serverRoute' | 'clientRoute';
 }
 
 export interface RouteIndex {
   routes: RouteEntry[];
 }
 
+/**
+ * 路由索引（最小实现）：从 routeEntry 节点产出 serverRoute 条目，
+ * 经 registersRoute 边定位其处理方法。clientRoute 待后续迭代。
+ */
 export function buildRouteIndex(
-  _nodes: GraphNode[],
-  _edges: GraphEdge[],
+  nodes: GraphNode[],
+  edges: GraphEdge[],
   _config: RepoConfig
 ): RouteIndex {
-  // Week 1: 路由索引暂返回空，后续迭代实现
-  return { routes: [] };
+  // routeEntry id → handler 方法节点 id
+  const handlerByRoute = new Map<string, string>();
+  for (const edge of edges) {
+    if (edge.type === 'registersRoute') {
+      handlerByRoute.set(edge.from, edge.to);
+    }
+  }
+
+  const routes: RouteEntry[] = [];
+  for (const node of nodes) {
+    if (node.type !== 'routeEntry') continue;
+    routes.push({
+      routePath: node.meta?.apiEndpoint ?? node.name,
+      nodeId: node.id,
+      httpMethod: node.meta?.apiMethod,
+      handlerNodeId: handlerByRoute.get(node.id),
+      kind: 'serverRoute',
+    });
+  }
+
+  return { routes };
 }
