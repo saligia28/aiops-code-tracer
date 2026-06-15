@@ -122,7 +122,7 @@ describe('java pass1 — field + injection', () => {
     expect(data.typeEnv.fieldTypes['userService']).toBe('UserService');
   });
 
-  it('captures @Qualifier and strips generics from field type', async () => {
+  it('captures @Qualifier and unwraps the DI container to the inner bean type', async () => {
     const src = [
       'package com.foo;',
       'class C {',
@@ -135,10 +135,10 @@ describe('java pass1 — field + injection', () => {
     const data = result.parserData as JavaParserData;
 
     const field = result.nodes.find((n) => n.name === 'repos');
-    expect(field?.meta?.fieldType).toBe('List'); // 泛型被 rawType 剥离
+    expect(field?.meta?.fieldType).toBe('Repo'); // List<Repo> 解包为内层 bean 类型
 
     const inject = data.pendingRefs.find((r) => r.kind === 'inject');
-    expect(inject).toMatchObject({ declaredType: 'List', qualifier: 'primary' });
+    expect(inject).toMatchObject({ declaredType: 'Repo', qualifier: 'primary' });
   });
 
   it('does not create inject pendingRef for plain (non-annotated) field', async () => {
@@ -281,6 +281,38 @@ describe('java pass1 — spring routes', () => {
     const route = result.nodes.find((n) => n.type === 'routeEntry');
     expect(route?.meta?.apiMethod).toBe('POST');
     expect(route?.meta?.apiEndpoint).toBe('/api/save');
+  });
+});
+
+describe('java pass1 — generic DI container injection unwrap', () => {
+  const injects = (data: JavaParserData) =>
+    data.pendingRefs.filter(
+      (r): r is Extract<JavaParserData['pendingRefs'][number], { kind: 'inject' }> =>
+        r.kind === 'inject'
+    );
+
+  it('unwraps Provider<T> / Optional<T> to the inner bean type', async () => {
+    const src = [
+      'package com.foo;',
+      'class C {',
+      '  @Autowired private Provider<Svc> p;',
+      '  @Autowired private Optional<Repo> r;',
+      '}',
+    ].join('\n');
+    const result = await runPass1('C.java', src, ctx());
+    expect(
+      injects(result.parserData as JavaParserData)
+        .map((i) => i.declaredType)
+        .sort()
+    ).toEqual(['Repo', 'Svc']);
+  });
+
+  it('unwraps List<T> to the inner bean type', async () => {
+    const src = ['package com.foo;', 'class C { @Autowired private List<Svc> all; }'].join('\n');
+    const result = await runPass1('C.java', src, ctx());
+    const inj = injects(result.parserData as JavaParserData);
+    expect(inj).toHaveLength(1);
+    expect(inj[0].declaredType).toBe('Svc');
   });
 });
 

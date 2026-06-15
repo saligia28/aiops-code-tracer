@@ -271,6 +271,25 @@ function enclosingTypeDecl(node: Node): Node | null {
 
 const INJECT_ANNOTATIONS = new Set(['@Autowired', '@Resource', '@Inject']);
 
+/** 已知 DI 容器/集合包装类型 — 注入点取其内层 bean 类型 */
+const DI_WRAPPERS = new Set([
+  'Provider', 'ObjectProvider', 'Optional',
+  'List', 'Set', 'Collection', 'Iterable', 'ArrayList', 'HashSet', 'LinkedList',
+]);
+
+/**
+ * 注入字段类型归一：剥已知 DI 包装取内层 bean 类型
+ * （Provider<T>/Optional<T>/List<T>/T[] → T），其余走 rawType。
+ */
+function unwrapInjectionType(typeText: string): string {
+  const t = typeText.trim();
+  const arr = t.match(/^(.+?)\s*\[\]$/);
+  if (arr) return rawType(arr[1]);
+  const generic = t.match(/^([A-Za-z_$][\w$]*)\s*<(.+)>$/);
+  if (generic && DI_WRAPPERS.has(generic[1])) return rawType(generic[2]);
+  return rawType(t);
+}
+
 /**
  * 提取字段：每个 variable_declarator 产一个 'variable' 节点（meta.kind='field'），
  * 连 owner class/interface 的 defines 边；@Autowired/@Resource/@Inject 字段
@@ -298,10 +317,8 @@ function extractFields(
     const annotations = extractAnnotations(fd);
     const visibility = visibilityOf(modifiers);
     const isStatic = /\bstatic\b/.test(modifiers?.text ?? '');
-    // 已知 Phase-2 局限：泛型容器注入（Provider<T>/ObjectProvider<T>/Optional<T>/List<T>）
-    // 经 rawType 后只剩容器名（Provider/List…），Pass2 解析不到节点 → 该注入边被丢弃。
-    // 未来如需支持：在此剥离已知 DI 包装取内层类型（Collection<T> 则多目标）。
-    const declaredType = rawType(fd.childForFieldName('type')?.text ?? '');
+    // 注入字段类型：剥已知 DI 容器/集合包装取内层 bean 类型（Provider<T>/List<T>/T[] → T）
+    const declaredType = unwrapInjectionType(fd.childForFieldName('type')?.text ?? '');
     const isInject = annotations.some((a) => INJECT_ANNOTATIONS.has(a));
     // 注入限定符：@Qualifier("x") / @Resource(name="x") / @Named("x") 任一
     const qualifier = isInject
