@@ -187,7 +187,7 @@ function extractTypes(
       loc: loc(decl),
       ...(Object.keys(meta).length ? { meta } : {}),
     });
-    data.declaredTypes.push({ fqn, simpleName, nodeId });
+    data.declaredTypes.push({ fqn, simpleName, nodeId, nodeType });
 
     const declLoc = loc(decl);
     if (isInterface) {

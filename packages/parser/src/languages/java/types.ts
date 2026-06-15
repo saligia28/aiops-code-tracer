@@ -24,6 +24,7 @@ export interface JavaDeclaredType {
   fqn: string;        // 完全限定名，如 com.foo.UserServiceImpl
   simpleName: string; // 简单名，如 UserServiceImpl
   nodeId: string;     // 对应 class/interface 节点 id
+  nodeType: 'class' | 'interface'; // 区分类/接口（enum 归 class），供 Pass2 injects 实现解析
 }
 
 /**

@@ -4,7 +4,7 @@ import { runPass2 } from '../../src/languages/java/pass2.js';
 import { ctx } from './helpers.js';
 
 describe('java pass2 — typeRegistry + extends/implements/injects', () => {
-  it('resolves implements and declaration-level injects across files (same package)', async () => {
+  it('resolves implements and injects-to-implementation across files (same package)', async () => {
     const iface = await runPass1(
       'com/foo/UserService.java',
       'package com.foo;\npublic interface UserService {}',
@@ -37,13 +37,14 @@ describe('java pass2 — typeRegistry + extends/implements/injects', () => {
     });
     expect(implEdge?.meta?.confidence).toBe('high');
 
+    // Phase 2：唯一实现 → injects 指向实现类（high），declaredType 仍记录接口 FQN
     const injectEdge = result.resolvedEdges.find((e) => e.type === 'injects');
     expect(injectEdge).toMatchObject({
       from: 'variable:com/foo/UserController.java:com.foo.UserController#userService',
-      to: 'interface:com/foo/UserService.java:com.foo.UserService',
+      to: 'class:com/foo/UserServiceImpl.java:com.foo.UserServiceImpl',
     });
     expect(injectEdge?.meta?.declaredType).toBe('com.foo.UserService');
-    expect(injectEdge?.meta?.confidence).toBe('medium');
+    expect(injectEdge?.meta?.confidence).toBe('high');
   });
 
   it('resolves extends via import table (cross package)', async () => {
@@ -116,5 +117,114 @@ describe('java pass2 — typeRegistry + extends/implements/injects', () => {
 
     const injectEdge = result.resolvedEdges.find((e) => e.type === 'injects');
     expect(injectEdge?.meta?.beanQualifier).toBe('primary');
+  });
+});
+
+describe('java pass2 — injects upgraded to implementation resolution', () => {
+  it('resolves injects to the unique implementation (high), declaredType stays interface', async () => {
+    const i = await runPass1('com/foo/Svc.java', 'package com.foo;\npublic interface Svc {}', ctx());
+    const impl = await runPass1(
+      'com/foo/SvcImpl.java',
+      'package com.foo;\n@Service\nclass SvcImpl implements Svc {}',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/Ctrl.java',
+      'package com.foo;\nclass Ctrl { @Autowired private Svc svc; }',
+      ctx()
+    );
+    const own = [i, impl, c];
+    const r = runPass2(own, own, ctx());
+
+    const inj = r.resolvedEdges.find((e) => e.type === 'injects');
+    expect(inj?.to).toBe('class:com/foo/SvcImpl.java:com.foo.SvcImpl');
+    expect(inj?.meta?.confidence).toBe('high');
+    expect(inj?.meta?.declaredType).toBe('com.foo.Svc');
+  });
+
+  it('points to interface node with low confidence when multiple implementations are ambiguous', async () => {
+    const i = await runPass1('com/foo/Svc.java', 'package com.foo;\npublic interface Svc {}', ctx());
+    const a = await runPass1(
+      'com/foo/SvcA.java',
+      'package com.foo;\n@Service\nclass SvcA implements Svc {}',
+      ctx()
+    );
+    const b = await runPass1(
+      'com/foo/SvcB.java',
+      'package com.foo;\n@Service\nclass SvcB implements Svc {}',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/Ctrl.java',
+      'package com.foo;\nclass Ctrl { @Autowired private Svc svc; }',
+      ctx()
+    );
+    const own = [i, a, b, c];
+    const r = runPass2(own, own, ctx());
+
+    const inj = r.resolvedEdges.find((e) => e.type === 'injects');
+    expect(inj?.to).toBe('interface:com/foo/Svc.java:com.foo.Svc');
+    expect(inj?.meta?.confidence).toBe('low');
+    expect(inj?.meta?.reason).toBe('multipleImplementations');
+  });
+
+  it('uses @Qualifier to pick an implementation among many (medium)', async () => {
+    const i = await runPass1('com/foo/Svc.java', 'package com.foo;\npublic interface Svc {}', ctx());
+    const a = await runPass1(
+      'com/foo/SvcA.java',
+      'package com.foo;\n@Service\nclass SvcA implements Svc {}',
+      ctx()
+    );
+    const b = await runPass1(
+      'com/foo/SvcB.java',
+      'package com.foo;\n@Service\nclass SvcB implements Svc {}',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/Ctrl.java',
+      'package com.foo;\nclass Ctrl { @Autowired @Qualifier("svcB") private Svc svc; }',
+      ctx()
+    );
+    const own = [i, a, b, c];
+    const r = runPass2(own, own, ctx());
+
+    const inj = r.resolvedEdges.find((e) => e.type === 'injects');
+    expect(inj?.to).toBe('class:com/foo/SvcB.java:com.foo.SvcB');
+    expect(inj?.meta?.confidence).toBe('medium');
+    expect(inj?.meta?.beanQualifier).toBe('svcB');
+  });
+
+  it('points to a concrete-class injection target with high confidence', async () => {
+    const dep = await runPass1('com/foo/Dep.java', 'package com.foo;\n@Component\nclass Dep {}', ctx());
+    const c = await runPass1(
+      'com/foo/Ctrl.java',
+      'package com.foo;\nclass Ctrl { @Autowired private Dep dep; }',
+      ctx()
+    );
+    const own = [dep, c];
+    const r = runPass2(own, own, ctx());
+
+    const inj = r.resolvedEdges.find((e) => e.type === 'injects');
+    expect(inj?.to).toBe('class:com/foo/Dep.java:com.foo.Dep');
+    expect(inj?.meta?.confidence).toBe('high');
+  });
+
+  it('falls back to the interface node (medium) when an interface has no known implementation', async () => {
+    const mapper = await runPass1(
+      'com/foo/Mapper.java',
+      'package com.foo;\n@Mapper\npublic interface Mapper {}',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/Svc.java',
+      'package com.foo;\nclass Svc { @Autowired private Mapper mapper; }',
+      ctx()
+    );
+    const own = [mapper, c];
+    const r = runPass2(own, own, ctx());
+
+    const inj = r.resolvedEdges.find((e) => e.type === 'injects');
+    expect(inj?.to).toBe('interface:com/foo/Mapper.java:com.foo.Mapper');
+    expect(inj?.meta?.confidence).toBe('medium');
   });
 });

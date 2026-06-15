@@ -13,6 +13,8 @@ import { rawType } from './types.js';
 export interface TypeRegistry {
   fqnToNode: Map<string, string>;
   simpleToFqns: Map<string, string[]>;
+  /** FQN → 节点种类（class/interface），供 injects 区分具体类 vs 接口 */
+  fqnToNodeType: Map<string, 'class' | 'interface'>;
 }
 
 /** 取一个 FileParseResult 的 Java 中间态（非 java 解析结果返回 undefined） */
@@ -24,19 +26,21 @@ export function asJavaData(fr: FileParseResult): JavaParserData | undefined {
 export function buildTypeRegistry(results: FileParseResult[]): TypeRegistry {
   const fqnToNode = new Map<string, string>();
   const simpleToFqns = new Map<string, string[]>();
+  const fqnToNodeType = new Map<string, 'class' | 'interface'>();
 
   for (const fr of results) {
     const data = asJavaData(fr);
     if (!data) continue;
     for (const dt of data.declaredTypes) {
       fqnToNode.set(dt.fqn, dt.nodeId);
+      fqnToNodeType.set(dt.fqn, dt.nodeType);
       const arr = simpleToFqns.get(dt.simpleName) ?? [];
       arr.push(dt.fqn);
       simpleToFqns.set(dt.simpleName, arr);
     }
   }
 
-  return { fqnToNode, simpleToFqns };
+  return { fqnToNode, simpleToFqns, fqnToNodeType };
 }
 
 /**

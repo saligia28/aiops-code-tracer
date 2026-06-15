@@ -13,6 +13,72 @@ import type { GraphEdge } from '@aiops/shared-types';
 import type { FileParseResult } from '../../extractors/types.js';
 import type { ParserContext, ResolveResult } from '../types.js';
 import { asJavaData, buildTypeRegistry, resolveTypeFqn } from './typeResolver.js';
+import type { TypeRegistry } from './typeResolver.js';
+import { buildInheritanceMaps } from './methodTable.js';
+import type { InheritanceMaps } from './methodTable.js';
+
+type Confidence = NonNullable<GraphEdge['meta']>['confidence'];
+
+interface InjectResolution {
+  toFqn: string;
+  confidence: Confidence;
+  reason?: string;
+}
+
+/** FQN 的简单名（末段） */
+function simpleNameOf(fqn: string): string {
+  return fqn.split('.').pop() ?? fqn;
+}
+
+/** 首字母小写（Spring 默认 bean 名约定） */
+function lowerFirst(s: string): string {
+  return s ? s[0].toLowerCase() + s.slice(1) : s;
+}
+
+/** @Qualifier 值匹配某个实现（按简单名 / 默认 bean 名，忽略大小写） */
+function matchQualifier(impls: string[], qualifier: string): string | undefined {
+  const q = qualifier.toLowerCase();
+  for (const implFqn of impls) {
+    const simple = simpleNameOf(implFqn);
+    if (simple.toLowerCase() === q) return implFqn;
+    if (lowerFirst(simple) === qualifier) return implFqn;
+  }
+  return undefined;
+}
+
+/**
+ * 声明级注入 → 解析目标（Phase 2）：
+ * - 声明类型是接口：唯一实现 high / @Qualifier 命中 medium / 多实现难辨 → 接口节点 low(reason) / 无实现 → 接口节点 medium
+ * - 声明类型是具体类（含 enum）：该类节点 high
+ * 声明类型无对应节点（外部/未知）→ undefined（计 unresolved）。
+ */
+function resolveInject(
+  declaredFqn: string,
+  qualifier: string | undefined,
+  registry: TypeRegistry,
+  inheritance: InheritanceMaps
+): InjectResolution | undefined {
+  if (!registry.fqnToNode.has(declaredFqn)) return undefined;
+
+  const isInterface = registry.fqnToNodeType.get(declaredFqn) === 'interface';
+  if (!isInterface) {
+    return { toFqn: declaredFqn, confidence: 'high' };
+  }
+
+  const impls = inheritance.implementsMap.get(declaredFqn) ?? [];
+  if (impls.length === 1) {
+    return { toFqn: impls[0], confidence: 'high' };
+  }
+  if (impls.length > 1) {
+    if (qualifier) {
+      const matched = matchQualifier(impls, qualifier);
+      if (matched) return { toFqn: matched, confidence: 'medium' };
+    }
+    return { toFqn: declaredFqn, confidence: 'low', reason: 'multipleImplementations' };
+  }
+  // 接口但无已知实现：退回声明类型节点
+  return { toFqn: declaredFqn, confidence: 'medium' };
+}
 
 /**
  * Pass2 入口：消解 ownResults 的 pendingRefs。
@@ -24,6 +90,7 @@ export function runPass2(
   _ctx: ParserContext
 ): ResolveResult {
   const registry = buildTypeRegistry(ownResults);
+  const inheritance = buildInheritanceMaps(ownResults);
   const resolvedEdges: GraphEdge[] = [];
   let unresolvedCount = 0;
   let totalRefs = 0;
@@ -38,18 +105,21 @@ export function runPass2(
       totalRefs++;
 
       if (ref.kind === 'inject') {
-        // 声明级注入：字段 → 声明类型节点（不做接口→实现求解）
-        const targetFqn = resolveTypeFqn(ref.declaredType, importTable, filePackage, registry);
-        const toId = targetFqn ? registry.fqnToNode.get(targetFqn) : undefined;
-        if (toId) {
+        // 注入：声明类型 → 实现解析（接口→唯一实现/Qualifier/多实现；具体类直连）
+        const declaredFqn = resolveTypeFqn(ref.declaredType, importTable, filePackage, registry);
+        const res = declaredFqn
+          ? resolveInject(declaredFqn, ref.qualifier, registry, inheritance)
+          : undefined;
+        if (declaredFqn && res) {
           resolvedEdges.push({
             from: ref.fromFieldNodeId,
-            to: toId,
+            to: registry.fqnToNode.get(res.toFqn)!,
             type: 'injects',
             loc: ref.loc,
             meta: {
-              confidence: 'medium',
-              declaredType: targetFqn,
+              confidence: res.confidence,
+              declaredType: declaredFqn, // 永远记录声明类型 FQN（即便 to 指向实现类）
+              ...(res.reason ? { reason: res.reason } : {}),
               ...(ref.qualifier ? { beanQualifier: ref.qualifier } : {}),
             },
           });

@@ -60,12 +60,12 @@ describe('java e2e — spring sample', () => {
       true
     );
 
-    // injects: controller 字段 → UserService（声明级，含 declaredType FQN）
+    // injects: controller 字段 → UserService 的唯一实现 UserServiceImpl（Phase 2：解析到实现类，high）
     const controllerField = nodes.find((n) => n.type === 'variable' && n.name === 'userService');
     const injectEdge = edges.find((e) => e.type === 'injects' && e.from === controllerField?.id);
-    expect(injectEdge?.to).toBe(ifaceId);
+    expect(injectEdge?.to).toBe(implId);
     expect(injectEdge?.meta?.declaredType).toBe('com.demo.UserService');
-    expect(injectEdge?.meta?.confidence).toBe('medium');
+    expect(injectEdge?.meta?.confidence).toBe('high');
 
     // defines: 类定义其方法
     const getById = nodes.find((n) => n.type === 'function' && n.name === 'getById');
