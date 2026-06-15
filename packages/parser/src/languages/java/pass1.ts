@@ -14,7 +14,7 @@ import type { Node } from 'web-tree-sitter';
 import type { GraphNode, GraphEdge } from '@aiops/shared-types';
 import type { FileParseResult } from '../../extractors/types.js';
 import type { ParserContext } from '../types.js';
-import type { JavaParserData } from './types.js';
+import type { JavaParserData, JavaPendingRef } from './types.js';
 import { rawType } from './types.js';
 import { loadJavaParser } from './treeSitter.js';
 
@@ -455,6 +455,32 @@ function collectLocalVarTypes(decl: Node): Record<string, string> {
 }
 
 /**
+ * 收集方法/构造器体内的调用为 call pendingRef（Pass2 求解为 calls 边）。
+ * receiverExpr 取接收者原文（无接收者=''、this.x=>'this'、链式=整段表达式）。
+ * 不在此处推断 receiver 类型（Pass2 职责）。
+ */
+function collectCalls(decl: Node, methodNodeId: string): JavaPendingRef[] {
+  const body = decl.childForFieldName('body');
+  if (!body) return [];
+  const refs: JavaPendingRef[] = [];
+  for (const inv of body.descendantsOfType('method_invocation')) {
+    const nameNode = inv.childForFieldName('name');
+    if (!nameNode) continue;
+    const object = inv.childForFieldName('object');
+    const args = inv.childForFieldName('arguments');
+    refs.push({
+      kind: 'call',
+      fromMethodNodeId: methodNodeId,
+      receiverExpr: object?.text ?? '',
+      methodName: nameNode.text,
+      argCount: args ? args.namedChildren.filter(Boolean).length : 0,
+      loc: loc(inv),
+    });
+  }
+  return refs;
+}
+
+/**
  * 提取方法/构造器：每个产一个 'function' 节点（meta.kind='method'），id 含
  * 归一化签名 `name(p1,p2)` 以区分重载；连 owner 的 defines 边。
  * 方法级 Spring 映射注解额外产 routeEntry 节点 + registersRoute 边。
@@ -505,6 +531,8 @@ function extractMethods(
 
     const localVars = collectLocalVarTypes(decl);
     if (Object.keys(localVars).length) data.typeEnv.localVarTypes[methodId] = localVars;
+
+    data.pendingRefs.push(...collectCalls(decl, methodId));
 
     const mapping = methodMapping(decl);
     if (mapping) {

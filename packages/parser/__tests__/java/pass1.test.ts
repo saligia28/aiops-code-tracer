@@ -283,3 +283,33 @@ describe('java pass1 — spring routes', () => {
     expect(route?.meta?.apiEndpoint).toBe('/api/save');
   });
 });
+
+describe('java pass1 — method-body calls', () => {
+  it('collects method-body calls as pendingRefs(call) with receiver/name/argCount', async () => {
+    const src = [
+      'package com.foo;',
+      'class C {',
+      '  @Autowired Svc svc;',
+      '  void m() { svc.go(1); this.help(); bare(); }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('C.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    const m = result.nodes.find((n) => n.type === 'function' && n.name === 'm')!;
+
+    const calls = data.pendingRefs.filter(
+      (r): r is Extract<JavaParserData['pendingRefs'][number], { kind: 'call' }> => r.kind === 'call'
+    );
+
+    expect(calls.map((c) => c.methodName).sort()).toEqual(['bare', 'go', 'help']);
+
+    const byName = (name: string) => calls.find((c) => c.methodName === name)!;
+    expect(byName('go').receiverExpr).toBe('svc');
+    expect(byName('go').argCount).toBe(1);
+    expect(byName('go').fromMethodNodeId).toBe(m.id);
+    expect(byName('help').receiverExpr).toBe('this');
+    expect(byName('bare').receiverExpr).toBe('');
+    expect(byName('bare').argCount).toBe(0);
+  });
+});

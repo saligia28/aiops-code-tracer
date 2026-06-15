@@ -113,6 +113,8 @@ export function runPass2(
     const filePackage = data.package;
 
     for (const ref of data.pendingRefs) {
+      // calls 在 Task 2.7 求解；此处先跳过，不计入 totalRefs（保持 resolved=total-unresolved 不变量）
+      if (ref.kind === 'call') continue;
       totalRefs++;
 
       if (ref.kind === 'inject') {

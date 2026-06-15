@@ -13,7 +13,15 @@
  */
 export type JavaPendingRef =
   | { kind: 'extends' | 'implements'; fromTypeFQN: string; targetTypeName: string; loc: string }
-  | { kind: 'inject'; fromFieldNodeId: string; declaredType: string; qualifier?: string; loc: string };
+  | { kind: 'inject'; fromFieldNodeId: string; declaredType: string; qualifier?: string; loc: string }
+  | {
+      kind: 'call';
+      fromMethodNodeId: string;
+      receiverExpr: string; // 接收者原文（''=无接收者，'this'=本类，字段/局部名，或链式表达式）
+      methodName: string;
+      argCount: number;
+      loc: string;
+    };
 
 /**
  * 本文件声明的类型 — 供 Pass2 建 typeRegistry（FQN→节点）。
