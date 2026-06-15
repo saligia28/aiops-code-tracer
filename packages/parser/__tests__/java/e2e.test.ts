@@ -113,4 +113,55 @@ describe('java e2e — spring sample', () => {
     expect(result.stats.totalRefs).toBeGreaterThan(0);
     expect(result.stats.resolvedRefs).toBeGreaterThan(0);
   });
+
+  it('bridges the full cross-language chain: apiCall → routeEntry → handler → service → impl → mapper', async () => {
+    const config: RepoConfig = {
+      ...javaConfig(),
+      scanPaths: ['src/main/java', 'web/src'],
+      parsers: ['typescript', 'java'],
+    };
+    const files = await collectFiles(config);
+    const result = await buildGraph(files, config);
+    const nodes = result.graph.getAllNodes();
+    const edges = result.graph.getAllEdges();
+
+    const fn = (name: string, owner?: string) =>
+      nodes.find(
+        (n) => n.type === 'function' && n.name === name && (!owner || n.meta?.ownerType === owner)
+      )!;
+    const hasCall = (from: string, to: string, conf?: string) =>
+      edges.some(
+        (e) =>
+          e.type === 'calls' && e.from === from && e.to === to && (!conf || e.meta?.confidence === conf)
+      );
+
+    const apiCall = nodes.find((n) => n.type === 'apiCall')!;
+    const route = nodes.find(
+      (n) => n.type === 'routeEntry' && n.meta?.apiEndpoint === '/users/{id}'
+    )!;
+    const getById = fn('getById');
+    const findByIdImpl = fn('findById', 'com.demo.UserServiceImpl');
+    const selectById = fn('selectById');
+
+    // 跨语言桥 + 后端主链全程贯通
+    expect(
+      edges.some(
+        (e) =>
+          e.type === 'calls' &&
+          e.from === apiCall.id &&
+          e.to === route.id &&
+          e.meta?.reason === 'crossLanguageEndpoint'
+      )
+    ).toBe(true);
+    expect(edges.some((e) => e.type === 'registersRoute' && e.from === route.id && e.to === getById.id)).toBe(
+      true
+    );
+    expect(hasCall(getById.id, findByIdImpl.id, 'high')).toBe(true);
+    expect(hasCall(findByIdImpl.id, selectById.id, 'medium')).toBe(true);
+
+    // class→bean 汇总边存在
+    expect(edges.some((e) => e.type === 'injects' && e.meta?.reason === 'aggregateInjection')).toBe(true);
+    expect(result.stats.crossLanguageEdges).toBeGreaterThanOrEqual(1);
+    expect(result.stats.failedFiles).toEqual([]);
+  });
 });
