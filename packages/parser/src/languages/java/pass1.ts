@@ -421,6 +421,40 @@ function joinPath(base: string, path: string): string {
 }
 
 /**
+ * 收集方法/构造器的局部类型环境：形参 + 方法体局部变量声明（raw 类型）。
+ * 供 Pass2 calls 求解推断 receiver 类型。
+ * 注：lambda/匿名类内的局部声明会一并归到外层方法（Phase 2 暂不细分作用域）。
+ */
+function collectLocalVarTypes(decl: Node): Record<string, string> {
+  const vars: Record<string, string> = {};
+
+  const params = decl.childForFieldName('parameters');
+  if (params) {
+    for (const p of params.namedChildren) {
+      if (p?.type !== 'formal_parameter' && p?.type !== 'spread_parameter') continue;
+      const name = p.childForFieldName('name')?.text;
+      const type = rawType(p.childForFieldName('type')?.text ?? '');
+      if (name && type) vars[name] = type;
+    }
+  }
+
+  const body = decl.childForFieldName('body');
+  if (body) {
+    for (const ld of body.descendantsOfType('local_variable_declaration')) {
+      const type = rawType(ld.childForFieldName('type')?.text ?? '');
+      if (!type) continue;
+      for (const vd of ld.namedChildren) {
+        if (vd?.type !== 'variable_declarator') continue;
+        const name = vd.childForFieldName('name')?.text;
+        if (name) vars[name] = type;
+      }
+    }
+  }
+
+  return vars;
+}
+
+/**
  * 提取方法/构造器：每个产一个 'function' 节点（meta.kind='method'），id 含
  * 归一化签名 `name(p1,p2)` 以区分重载；连 owner 的 defines 边。
  * 方法级 Spring 映射注解额外产 routeEntry 节点 + registersRoute 边。
@@ -429,7 +463,8 @@ function joinPath(base: string, path: string): string {
 function extractMethods(
   root: Node,
   filePath: string,
-  packageName: string
+  packageName: string,
+  data: JavaParserData
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -467,6 +502,9 @@ function extractMethods(
 
     nodes.push({ id: methodId, type: 'function', name, filePath, loc: declLoc, meta });
     edges.push({ from: ownerId, to: methodId, type: 'defines', loc: declLoc });
+
+    const localVars = collectLocalVarTypes(decl);
+    if (Object.keys(localVars).length) data.typeEnv.localVarTypes[methodId] = localVars;
 
     const mapping = methodMapping(decl);
     if (mapping) {
@@ -525,7 +563,7 @@ export async function runPass1(
   nodes.push(...fields.nodes);
   edges.push(...fields.edges);
 
-  const methods = extractMethods(root, filePath, packageName);
+  const methods = extractMethods(root, filePath, packageName, parserData);
   nodes.push(...methods.nodes);
   edges.push(...methods.edges);
 

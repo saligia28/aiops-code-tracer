@@ -234,6 +234,39 @@ describe('java pass1 — spring routes', () => {
     ).toBe(true);
   });
 
+  it('fills typeEnv.localVarTypes scoped by methodNodeId (params + local declarations)', async () => {
+    const src = [
+      'package com.foo;',
+      'class C {',
+      '  void m(UserService s) { User u = build(); int n = 0; }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('C.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    const m = result.nodes.find((n) => n.type === 'function' && n.name === 'm')!;
+
+    expect(data.typeEnv.localVarTypes[m.id]).toMatchObject({ s: 'UserService', u: 'User', n: 'int' });
+  });
+
+  it('scopes same-named locals separately per method', async () => {
+    const src = [
+      'package com.foo;',
+      'class C {',
+      '  void a() { Foo x = f(); }',
+      '  void b() { Bar x = g(); }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('C.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    const a = result.nodes.find((n) => n.name === 'a')!;
+    const b = result.nodes.find((n) => n.name === 'b')!;
+
+    expect(data.typeEnv.localVarTypes[a.id]?.x).toBe('Foo');
+    expect(data.typeEnv.localVarTypes[b.id]?.x).toBe('Bar');
+  });
+
   it('supports @RequestMapping(method=RequestMethod.POST) at method level', async () => {
     const src = [
       'package com.foo;',
