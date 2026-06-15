@@ -43,6 +43,42 @@ function extractPackage(root: Node): string {
 }
 
 /**
+ * 解析 import 声明：填充 importTable（供 Pass2 FQN 补全）并产出 import 节点。
+ *
+ * 文本解析而非依赖 grammar 细节，覆盖四种形态：
+ * - 普通      `import com.bar.A;`        → importTable['A'] = 'com.bar.A'
+ * - wildcard  `import com.baz.*;`        → importTable['com.baz.*'] = 'com.baz.*'（原样，Pass2 识别 .* 后缀）
+ * - static    `import static com.q.U.f;` → importTable['f'] = 'com.q.U.f'
+ * - static *  `import static com.q.U.*;` → importTable['com.q.U.*'] = 'com.q.U.*'
+ */
+function extractImports(root: Node, filePath: string, importTable: Record<string, string>): GraphNode[] {
+  const nodes: GraphNode[] = [];
+  for (const decl of root.namedChildren) {
+    if (decl?.type !== 'import_declaration') continue;
+    const body = decl.text.replace(/^import\s+/, '').replace(/;\s*$/, '').trim();
+    const isStatic = /^static\b/.test(body);
+    const qualified = body.replace(/^static\s+/, '').trim();
+    const simpleName = qualified.split('.').pop() ?? qualified;
+
+    if (qualified.endsWith('.*')) {
+      importTable[qualified] = qualified;
+    } else {
+      importTable[simpleName] = qualified;
+    }
+
+    nodes.push({
+      id: `import:${filePath}:${qualified}`,
+      type: 'import',
+      name: simpleName,
+      filePath,
+      loc: loc(decl),
+      ...(isStatic ? { meta: { isStatic: true } } : {}),
+    });
+  }
+  return nodes;
+}
+
+/**
  * 单文件 Pass1 解析入口。
  */
 export async function runPass1(
@@ -72,6 +108,7 @@ export async function runPass1(
   const edges: GraphEdge[] = [];
 
   const packageName = extractPackage(root);
+  nodes.push(...extractImports(root, filePath, parserData.typeEnv.importTable));
 
   for (const cd of root.descendantsOfType('class_declaration')) {
     const nameNode = cd.childForFieldName('name');
