@@ -146,11 +146,24 @@ function typeNamesIn(container: Node | undefined): string[] {
   return typeNodes.filter((t): t is Node => !!t).map((t) => t.text);
 }
 
+/** Spring stereotype 注解（用于显式 bean 名提取） */
+const STEREOTYPE_ANNOTATIONS = ['RestController', 'Controller', 'Service', 'Repository', 'Component'];
+
+/** 显式 bean 名：取首个带字符串参数的 stereotype 注解值（如 @Service("x") → 'x'） */
+function extractBeanName(decl: Node): string | undefined {
+  for (const ann of STEREOTYPE_ANNOTATIONS) {
+    const v = annotationArg(decl, ann);
+    if (v) return v;
+  }
+  return undefined;
+}
+
 /**
  * 提取 class / interface / enum 声明：
  * - class/enum → 'class' 节点（enum 带 meta.kind='enum'）；interface → 'interface' 节点
  * - 注解、Spring stereotype、package 写入 meta
  * - extends/implements 记为 JavaPendingRef（Pass2 消解）
+ * - 显式 bean 名 / abstract 标记记入 declaredTypes（供 Pass2 injects 实现解析）
  */
 function extractTypes(
   root: Node,
@@ -171,6 +184,10 @@ function extractTypes(
     const isInterface = decl.type === 'interface_declaration';
     const isEnum = decl.type === 'enum_declaration';
     const nodeType = isInterface ? 'interface' : 'class';
+    const beanName = isInterface ? undefined : extractBeanName(decl);
+    const isAbstract =
+      !isInterface &&
+      /\babstract\b/.test(decl.namedChildren.find((c) => c?.type === 'modifiers')?.text ?? '');
 
     const meta: NodeMeta = {};
     if (packageName) meta.package = packageName;
@@ -187,7 +204,14 @@ function extractTypes(
       loc: loc(decl),
       ...(Object.keys(meta).length ? { meta } : {}),
     });
-    data.declaredTypes.push({ fqn, simpleName, nodeId, nodeType });
+    data.declaredTypes.push({
+      fqn,
+      simpleName,
+      nodeId,
+      nodeType,
+      ...(beanName ? { beanName } : {}),
+      ...(isAbstract ? { isAbstract: true } : {}),
+    });
 
     const declLoc = loc(decl);
     if (isInterface) {
@@ -272,9 +296,15 @@ function extractFields(
     const annotations = extractAnnotations(fd);
     const visibility = visibilityOf(modifiers);
     const isStatic = /\bstatic\b/.test(modifiers?.text ?? '');
+    // 已知 Phase-2 局限：泛型容器注入（Provider<T>/ObjectProvider<T>/Optional<T>/List<T>）
+    // 经 rawType 后只剩容器名（Provider/List…），Pass2 解析不到节点 → 该注入边被丢弃。
+    // 未来如需支持：在此剥离已知 DI 包装取内层类型（Collection<T> 则多目标）。
     const declaredType = rawType(fd.childForFieldName('type')?.text ?? '');
     const isInject = annotations.some((a) => INJECT_ANNOTATIONS.has(a));
-    const qualifier = isInject ? annotationArg(fd, 'Qualifier') : undefined;
+    // 注入限定符：@Qualifier("x") / @Resource(name="x") / @Named("x") 任一
+    const qualifier = isInject
+      ? annotationArg(fd, 'Qualifier') ?? annotationArg(fd, 'Resource') ?? annotationArg(fd, 'Named')
+      : undefined;
 
     for (const vd of fd.namedChildren) {
       if (vd?.type !== 'variable_declarator') continue;

@@ -228,3 +228,78 @@ describe('java pass2 — injects upgraded to implementation resolution', () => {
     expect(inj?.meta?.confidence).toBe('medium');
   });
 });
+
+describe('java pass2 — qualifier/bean-name/abstract hardening', () => {
+  it('@Qualifier matches an explicit @Service("name") bean name, not just the class name', async () => {
+    const i = await runPass1('com/foo/Svc.java', 'package com.foo;\npublic interface Svc {}', ctx());
+    const a = await runPass1(
+      'com/foo/AlphaService.java',
+      'package com.foo;\n@Service("primary")\nclass AlphaService implements Svc {}',
+      ctx()
+    );
+    const b = await runPass1(
+      'com/foo/BetaService.java',
+      'package com.foo;\n@Service("secondary")\nclass BetaService implements Svc {}',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/Ctrl.java',
+      'package com.foo;\nclass Ctrl { @Autowired @Qualifier("primary") private Svc svc; }',
+      ctx()
+    );
+    const own = [i, a, b, c];
+    const r = runPass2(own, own, ctx());
+
+    const inj = r.resolvedEdges.find((e) => e.type === 'injects');
+    expect(inj?.to).toBe('class:com/foo/AlphaService.java:com.foo.AlphaService');
+    expect(inj?.meta?.confidence).toBe('medium');
+    expect(inj?.meta?.beanQualifier).toBe('primary');
+  });
+
+  it('@Resource(name="...") disambiguates by (default) bean name', async () => {
+    const i = await runPass1('com/foo/Svc.java', 'package com.foo;\npublic interface Svc {}', ctx());
+    const a = await runPass1(
+      'com/foo/SvcA.java',
+      'package com.foo;\n@Service\nclass SvcA implements Svc {}',
+      ctx()
+    );
+    const b = await runPass1(
+      'com/foo/SvcB.java',
+      'package com.foo;\n@Service\nclass SvcB implements Svc {}',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/Ctrl.java',
+      'package com.foo;\nclass Ctrl { @Resource(name = "svcB") private Svc svc; }',
+      ctx()
+    );
+    const own = [i, a, b, c];
+    const r = runPass2(own, own, ctx());
+
+    const inj = r.resolvedEdges.find((e) => e.type === 'injects');
+    expect(inj?.to).toBe('class:com/foo/SvcB.java:com.foo.SvcB');
+    expect(inj?.meta?.confidence).toBe('medium');
+    expect(inj?.meta?.beanQualifier).toBe('svcB');
+  });
+
+  it('does not select an abstract class as the unique implementation (no high edge to a non-instantiable bean)', async () => {
+    const i = await runPass1('com/foo/Svc.java', 'package com.foo;\npublic interface Svc {}', ctx());
+    const abs = await runPass1(
+      'com/foo/AbstractSvc.java',
+      'package com.foo;\npublic abstract class AbstractSvc implements Svc {}',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/Ctrl.java',
+      'package com.foo;\nclass Ctrl { @Autowired private Svc svc; }',
+      ctx()
+    );
+    const own = [i, abs, c];
+    const r = runPass2(own, own, ctx());
+
+    const inj = r.resolvedEdges.find((e) => e.type === 'injects');
+    // 唯一“实现”是抽象类（不可实例化）→ 不报 high 指向它，退回接口节点 medium
+    expect(inj?.to).toBe('interface:com/foo/Svc.java:com.foo.Svc');
+    expect(inj?.meta?.confidence).toBe('medium');
+  });
+});

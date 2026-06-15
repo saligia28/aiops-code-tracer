@@ -25,6 +25,10 @@ export interface JavaDeclaredType {
   simpleName: string; // 简单名，如 UserServiceImpl
   nodeId: string;     // 对应 class/interface 节点 id
   nodeType: 'class' | 'interface'; // 区分类/接口（enum 归 class），供 Pass2 injects 实现解析
+  /** 显式 Spring bean 名（来自 @Service("x")/@Component("x") 等的字符串参数）；供 @Qualifier 精确匹配 */
+  beanName?: string;
+  /** 是否为抽象类（不可实例化，不应作为唯一注入实现） */
+  isAbstract?: boolean;
 }
 
 /**

@@ -35,8 +35,16 @@ function lowerFirst(s: string): string {
   return s ? s[0].toLowerCase() + s.slice(1) : s;
 }
 
-/** @Qualifier 值匹配某个实现（按简单名 / 默认 bean 名，忽略大小写） */
-function matchQualifier(impls: string[], qualifier: string): string | undefined {
+/**
+ * 限定符（@Qualifier / @Resource(name) / @Named）值匹配某个实现：
+ * 优先匹配显式 bean 名（@Service("x") 等），否则回退到默认 bean 名约定（类简单名 / 首字母小写）。
+ */
+function matchQualifier(impls: string[], qualifier: string, registry: TypeRegistry): string | undefined {
+  // 1) 显式 bean 名精确匹配（Spring bean 名大小写敏感）
+  for (const implFqn of impls) {
+    if (registry.fqnToBeanName.get(implFqn) === qualifier) return implFqn;
+  }
+  // 2) 默认 bean 名约定：类简单名（忽略大小写）/ 首字母小写
   const q = qualifier.toLowerCase();
   for (const implFqn of impls) {
     const simple = simpleNameOf(implFqn);
@@ -65,18 +73,21 @@ function resolveInject(
     return { toFqn: declaredFqn, confidence: 'high' };
   }
 
-  const impls = inheritance.implementsMap.get(declaredFqn) ?? [];
+  // 抽象类不可实例化，不作为注入实现候选（避免把 high 边指向非实例化 bean）
+  const impls = (inheritance.implementsMap.get(declaredFqn) ?? []).filter(
+    (fqn) => !registry.fqnToIsAbstract.get(fqn)
+  );
   if (impls.length === 1) {
     return { toFqn: impls[0], confidence: 'high' };
   }
   if (impls.length > 1) {
     if (qualifier) {
-      const matched = matchQualifier(impls, qualifier);
+      const matched = matchQualifier(impls, qualifier, registry);
       if (matched) return { toFqn: matched, confidence: 'medium' };
     }
     return { toFqn: declaredFqn, confidence: 'low', reason: 'multipleImplementations' };
   }
-  // 接口但无已知实现：退回声明类型节点
+  // 接口但无（具体）实现：退回声明类型节点
   return { toFqn: declaredFqn, confidence: 'medium' };
 }
 

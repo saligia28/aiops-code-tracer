@@ -15,6 +15,10 @@ export interface TypeRegistry {
   simpleToFqns: Map<string, string[]>;
   /** FQN → 节点种类（class/interface），供 injects 区分具体类 vs 接口 */
   fqnToNodeType: Map<string, 'class' | 'interface'>;
+  /** FQN → 显式 Spring bean 名（@Service("x") 等），供 @Qualifier 精确匹配 */
+  fqnToBeanName: Map<string, string>;
+  /** FQN → 是否抽象类（不可实例化，不作唯一注入实现） */
+  fqnToIsAbstract: Map<string, boolean>;
 }
 
 /** 取一个 FileParseResult 的 Java 中间态（非 java 解析结果返回 undefined） */
@@ -27,6 +31,8 @@ export function buildTypeRegistry(results: FileParseResult[]): TypeRegistry {
   const fqnToNode = new Map<string, string>();
   const simpleToFqns = new Map<string, string[]>();
   const fqnToNodeType = new Map<string, 'class' | 'interface'>();
+  const fqnToBeanName = new Map<string, string>();
+  const fqnToIsAbstract = new Map<string, boolean>();
 
   for (const fr of results) {
     const data = asJavaData(fr);
@@ -34,13 +40,15 @@ export function buildTypeRegistry(results: FileParseResult[]): TypeRegistry {
     for (const dt of data.declaredTypes) {
       fqnToNode.set(dt.fqn, dt.nodeId);
       fqnToNodeType.set(dt.fqn, dt.nodeType);
+      if (dt.beanName) fqnToBeanName.set(dt.fqn, dt.beanName);
+      if (dt.isAbstract) fqnToIsAbstract.set(dt.fqn, true);
       const arr = simpleToFqns.get(dt.simpleName) ?? [];
       arr.push(dt.fqn);
       simpleToFqns.set(dt.simpleName, arr);
     }
   }
 
-  return { fqnToNode, simpleToFqns, fqnToNodeType };
+  return { fqnToNode, simpleToFqns, fqnToNodeType, fqnToBeanName, fqnToIsAbstract };
 }
 
 /**
