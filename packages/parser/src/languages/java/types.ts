@@ -16,9 +16,24 @@ export type JavaPendingRef =
   | { kind: 'inject'; fromFieldNodeId: string; declaredType: string; qualifier?: string; loc: string };
 
 /**
+ * 本文件声明的类型 — 供 Pass2 建 typeRegistry（FQN→节点）。
+ *
+ * 在中间态携带 fqn↔nodeId，避免 Pass2 从不透明的 node.id 里反解 FQN（约束 2）。
+ */
+export interface JavaDeclaredType {
+  fqn: string;        // 完全限定名，如 com.foo.UserServiceImpl
+  simpleName: string; // 简单名，如 UserServiceImpl
+  nodeId: string;     // 对应 class/interface 节点 id
+}
+
+/**
  * Java 单文件解析携带的中间数据
  */
 export interface JavaParserData {
+  /** 本文件的 package（默认包为空串），供 Pass2 同包消解 */
+  package: string;
+  /** 本文件声明的类型（class/interface/enum），供 Pass2 建 typeRegistry */
+  declaredTypes: JavaDeclaredType[];
   pendingRefs: JavaPendingRef[];
   typeEnv: {
     importTable: Record<string, string>;          // 短名 → FQN

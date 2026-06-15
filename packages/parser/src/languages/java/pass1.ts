@@ -29,9 +29,14 @@ function buildFileNode(filePath: string): GraphNode {
   return { id: `file:${filePath}:${fileName}`, type: 'file', name: fileName, filePath, loc: '1:1' };
 }
 
-/** 空的中间态（pendingRefs/typeEnv 由后续 task 填充） */
+/** 空的中间态（各字段在解析过程中填充） */
 function emptyParserData(): JavaParserData {
-  return { pendingRefs: [], typeEnv: { importTable: {}, fieldTypes: {}, localVarTypes: {} } };
+  return {
+    package: '',
+    declaredTypes: [],
+    pendingRefs: [],
+    typeEnv: { importTable: {}, fieldTypes: {}, localVarTypes: {} },
+  };
 }
 
 /** 取 package 声明的包名；无 package 声明（默认包）返回空串 */
@@ -173,14 +178,16 @@ function extractTypes(
     if (stereotype) meta.springStereotype = stereotype;
     if (isEnum) meta.kind = 'enum';
 
+    const nodeId = `${nodeType}:${filePath}:${fqn}`;
     nodes.push({
-      id: `${nodeType}:${filePath}:${fqn}`,
+      id: nodeId,
       type: nodeType,
       name: simpleName,
       filePath,
       loc: loc(decl),
       ...(Object.keys(meta).length ? { meta } : {}),
     });
+    data.declaredTypes.push({ fqn, simpleName, nodeId });
 
     const declLoc = loc(decl);
     if (isInterface) {
@@ -480,6 +487,7 @@ export async function runPass1(
   const edges: GraphEdge[] = [];
 
   const packageName = extractPackage(root);
+  parserData.package = packageName;
   nodes.push(...extractImports(root, filePath, parserData.typeEnv.importTable));
   nodes.push(...extractTypes(root, filePath, packageName, parserData));
 

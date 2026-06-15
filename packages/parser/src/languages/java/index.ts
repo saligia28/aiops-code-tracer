@@ -6,6 +6,7 @@
 import type { FileParseResult } from '../../extractors/types.js';
 import type { LanguageParser, ParserContext, ResolveResult } from '../types.js';
 import { runPass1 } from './pass1.js';
+import { runPass2 } from './pass2.js';
 
 export const JavaLanguageParser: LanguageParser = {
   id: 'java',
@@ -14,11 +15,10 @@ export const JavaLanguageParser: LanguageParser = {
     return runPass1(filePath, content, ctx);
   },
   resolve(
-    _ownResults: FileParseResult[],
-    _allResults: FileParseResult[],
-    _ctx: ParserContext
+    ownResults: FileParseResult[],
+    allResults: FileParseResult[],
+    ctx: ParserContext
   ): ResolveResult {
-    // Pass2（typeRegistry + extends/implements/injects 声明级）在 Task 1.17 实现。
-    return { resolvedEdges: [], unresolvedCount: 0, totalRefs: 0 };
+    return runPass2(ownResults, allResults, ctx);
   },
 };
