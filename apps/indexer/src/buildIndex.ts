@@ -1,6 +1,6 @@
 import path from 'path';
 import type { RepoConfig, ProjectFramework } from '@aiops/shared-types';
-import { presetFor } from '@aiops/parser';
+import { collectFiles, presetFor, scanExtensionsFor } from '@aiops/parser';
 import { runPipeline } from './pipeline.js';
 
 interface BuildOptions {
@@ -35,6 +35,19 @@ export async function buildIndex(options: BuildOptions): Promise<void> {
   const absoluteOutputDir = path.isAbsolute(outputDir)
     ? outputDir
     : path.resolve(process.cwd(), outputDir);
+
+  if (!config.parsers || config.parsers.length === 0) {
+    console.error('[错误] 未启用任何解析器（framework 未正确映射到 parser）');
+    throw new Error('NO_PARSER_ENABLED');
+  }
+
+  const preflightFiles = await collectFiles(config);
+  if (preflightFiles.length === 0) {
+    console.error(
+      `[错误] 未匹配到任何可解析文件，请检查 scanPaths(${config.scanPaths.join(', ')}) 与扩展名(${scanExtensionsFor(config.parsers).join(', ')})`,
+    );
+    return;
+  }
 
   const stats = await runPipeline(config, absoluteOutputDir, (progress) => {
     switch (progress.phase) {

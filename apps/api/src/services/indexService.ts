@@ -3,7 +3,7 @@ import path from 'path';
 import type { FastifyBaseLogger } from 'fastify';
 import { GraphStore } from '@aiops/graph-core';
 import type { CodeGraph, RepoConfig, ProjectFramework } from '@aiops/shared-types';
-import { collectFiles, buildGraph, presetFor } from '@aiops/parser';
+import { collectFiles, buildGraph, presetFor, scanExtensionsFor } from '@aiops/parser';
 import type { SymbolIndex, BuildResult } from '@aiops/parser';
 import {
   DATA_DIR,
@@ -241,6 +241,17 @@ export async function executeIndexBuild(options: {
   const { repoPath, repoName, scanPaths, framework, mode } = options;
   const config = buildRepoConfig(repoPath, repoName, scanPaths, framework ? { framework } : undefined, log);
 
+  if (!config.parsers || config.parsers.length === 0) {
+    patchIndexTaskState({
+      status: 'error',
+      phase: 'error',
+      message: '未启用任何解析器（framework 未正确映射到 parser，请检查项目 framework 配置）',
+      finishedAt: new Date().toISOString(),
+      error: 'NO_PARSER_ENABLED',
+    });
+    return;
+  }
+
   patchIndexTaskState({
     status: 'building',
     mode,
@@ -265,6 +276,30 @@ export async function executeIndexBuild(options: {
 
   try {
     const files = await collectFiles(config);
+
+    if (files.length === 0) {
+      const message = `未匹配到任何可解析文件，请检查 scanPaths(${config.scanPaths.join(', ')}) 与扩展名(${scanExtensionsFor(config.parsers).join(', ')})`;
+      patchIndexTaskState({
+        status: 'error',
+        phase: 'error',
+        progress: 5,
+        message,
+        finishedAt: new Date().toISOString(),
+        error: 'NO_FILES_MATCHED',
+      });
+      await sendAlert(
+        `索引任务失败 (${mode === 'incremental' ? '增量' : '全量'})`,
+        [
+          `仓库: ${repoName}`,
+          `路径: ${config.repoPath}`,
+          `错误: ${message}`,
+        ],
+        'error',
+        log
+      );
+      return;
+    }
+
     patchIndexTaskState({
       phase: 'collect',
       progress: 5,
