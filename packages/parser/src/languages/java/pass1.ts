@@ -6,7 +6,8 @@
  * 用各文件的 pendingRefs + typeEnv 连出 extends/implements/injects 边。
  *
  * 当前覆盖：package、import、class/interface/enum（含注解/stereotype/
- * extends/implements）。后续 task 渐进补全 field/method/route。
+ * extends/implements）、field（含注入点）、method（重载安全签名）、
+ * Spring route（routeEntry + registersRoute）。
  */
 import path from 'path';
 import type { Node } from 'web-tree-sitter';
@@ -326,9 +327,66 @@ function paramTypesOf(decl: Node): string[] {
   return types;
 }
 
+/** Spring 方法级映射注解 → HTTP 方法 */
+const METHOD_MAPPING: Record<string, string> = {
+  GetMapping: 'GET',
+  PostMapping: 'POST',
+  PutMapping: 'PUT',
+  DeleteMapping: 'DELETE',
+  PatchMapping: 'PATCH',
+};
+
+/** 在声明节点的 modifiers 中找首个 Spring 映射注解（@*Mapping / @RequestMapping） */
+function mappingAnnotation(decl: Node): Node | null {
+  const modifiers = decl.namedChildren.find((c) => c?.type === 'modifiers');
+  if (!modifiers) return null;
+  for (const m of modifiers.namedChildren) {
+    if (m?.type !== 'marker_annotation' && m?.type !== 'annotation') continue;
+    const name = m.childForFieldName('name')?.text ?? '';
+    if (name === 'RequestMapping' || name in METHOD_MAPPING) return m;
+  }
+  return null;
+}
+
+/** 取映射注解的路径（首个字符串字面量，去引号；无则空串） */
+function annotationPath(ann: Node): string {
+  const lit = ann.descendantsOfType('string_literal')[0];
+  return lit ? lit.text.replace(/^["']|["']$/g, '') : '';
+}
+
+/** 取 @RequestMapping(method = RequestMethod.X) 中的 HTTP 方法名 */
+function annotationMethod(ann: Node): string | undefined {
+  const match = ann.text.match(/RequestMethod\s*\.\s*(\w+)/);
+  return match ? match[1].toUpperCase() : undefined;
+}
+
+/** 类级基路径（来自类上的 @RequestMapping/@*Mapping），无则空串 */
+function basePathOf(typeDecl: Node): string {
+  const ann = mappingAnnotation(typeDecl);
+  return ann ? annotationPath(ann) : '';
+}
+
+/** 方法级映射 → {httpMethod, path}；非路由方法返回 null */
+function methodMapping(decl: Node): { httpMethod: string; path: string } | null {
+  const ann = mappingAnnotation(decl);
+  if (!ann) return null;
+  const name = ann.childForFieldName('name')?.text ?? '';
+  if (name === 'RequestMapping') {
+    return { httpMethod: annotationMethod(ann) ?? 'GET', path: annotationPath(ann) };
+  }
+  return { httpMethod: METHOD_MAPPING[name] ?? 'GET', path: annotationPath(ann) };
+}
+
+/** 合成并规范化路由路径（折叠重复/尾斜杠，保留 {id} 占位符） */
+function joinPath(base: string, path: string): string {
+  const parts = `${base}/${path}`.split('/').filter(Boolean);
+  return `/${parts.join('/')}`;
+}
+
 /**
  * 提取方法/构造器：每个产一个 'function' 节点（meta.kind='method'），id 含
  * 归一化签名 `name(p1,p2)` 以区分重载；连 owner 的 defines 边。
+ * 方法级 Spring 映射注解额外产 routeEntry 节点 + registersRoute 边。
  * 不解析方法体调用（Phase 2）。
  */
 function extractMethods(
@@ -372,6 +430,21 @@ function extractMethods(
 
     nodes.push({ id: methodId, type: 'function', name, filePath, loc: declLoc, meta });
     edges.push({ from: ownerId, to: methodId, type: 'defines', loc: declLoc });
+
+    const mapping = methodMapping(decl);
+    if (mapping) {
+      const endpoint = joinPath(basePathOf(owner), mapping.path);
+      const routeId = `routeEntry:${filePath}:${mapping.httpMethod} ${endpoint}`;
+      nodes.push({
+        id: routeId,
+        type: 'routeEntry',
+        name: `${mapping.httpMethod} ${endpoint}`,
+        filePath,
+        loc: declLoc,
+        meta: { apiEndpoint: endpoint, apiMethod: mapping.httpMethod },
+      });
+      edges.push({ from: routeId, to: methodId, type: 'registersRoute', loc: declLoc });
+    }
   }
 
   return { nodes, edges };

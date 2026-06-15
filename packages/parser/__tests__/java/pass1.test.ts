@@ -216,3 +216,54 @@ describe('java pass1 — methods', () => {
     expect(noArgs?.meta?.returnType).toBe('void');
   });
 });
+
+describe('java pass1 — spring routes', () => {
+  it('composes class base path + method mapping into routeEntry + registersRoute', async () => {
+    const src = [
+      'package com.foo;',
+      '@RestController',
+      '@RequestMapping("/users")',
+      'public class UserController {',
+      '  @GetMapping("/{id}")',
+      '  public User get(Long id) { return null; }',
+      '  @PostMapping',
+      '  public void create() {}',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('UserController.java', src, ctx());
+
+    const routes = result.nodes.filter((n) => n.type === 'routeEntry');
+    expect(routes).toHaveLength(2);
+
+    const getRoute = routes.find((r) => r.meta?.apiMethod === 'GET');
+    expect(getRoute?.meta?.apiEndpoint).toBe('/users/{id}');
+
+    const postRoute = routes.find((r) => r.meta?.apiMethod === 'POST');
+    expect(postRoute?.meta?.apiEndpoint).toBe('/users');
+
+    const getMethod = result.nodes.find((n) => n.type === 'function' && n.name === 'get');
+    expect(
+      result.edges.some(
+        (e) =>
+          e.type === 'registersRoute' && e.from === getRoute?.id && e.to === getMethod?.id
+      )
+    ).toBe(true);
+  });
+
+  it('supports @RequestMapping(method=RequestMethod.POST) at method level', async () => {
+    const src = [
+      'package com.foo;',
+      '@RequestMapping("/api")',
+      'class C {',
+      '  @RequestMapping(value = "/save", method = RequestMethod.POST)',
+      '  void save() {}',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('C.java', src, ctx());
+    const route = result.nodes.find((n) => n.type === 'routeEntry');
+    expect(route?.meta?.apiMethod).toBe('POST');
+    expect(route?.meta?.apiEndpoint).toBe('/api/save');
+  });
+});
