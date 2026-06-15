@@ -167,3 +167,52 @@ describe('java pass1 — field + injection', () => {
     expect(field?.meta?.visibility).toBe('private');
   });
 });
+
+describe('java pass1 — methods', () => {
+  it('emits overload-safe method ids with signature/returnType/paramTypes + defines', async () => {
+    const src = [
+      'package com.foo;',
+      'public class UserService {',
+      '  public User findById(Long id) { return null; }',
+      '  public User findById(String s) { return null; }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('UserService.java', src, ctx());
+
+    const methods = result.nodes.filter((n) => n.type === 'function' && n.name === 'findById');
+    expect(methods).toHaveLength(2);
+    expect(methods.map((m) => m.id).sort()).toEqual([
+      'function:UserService.java:com.foo.UserService#findById(java.lang.Long)',
+      'function:UserService.java:com.foo.UserService#findById(java.lang.String)',
+    ]);
+
+    const byLong = methods.find((m) => m.id.includes('Long'));
+    expect(byLong?.meta?.kind).toBe('method');
+    expect(byLong?.meta?.returnType).toBe('User');
+    expect(byLong?.meta?.paramTypes).toEqual(['java.lang.Long']);
+    expect(byLong?.meta?.visibility).toBe('public');
+    expect(byLong?.meta?.signature).toBe('findById(java.lang.Long)');
+
+    expect(
+      result.edges.some(
+        (e) =>
+          e.type === 'defines' &&
+          e.from === 'class:UserService.java:com.foo.UserService' &&
+          e.to === byLong?.id
+      )
+    ).toBe(true);
+  });
+
+  it('handles constructors and zero-arg methods', async () => {
+    const src = ['package com.foo;', 'class C {', '  C() {}', '  void noArgs() {}', '}'].join('\n');
+    const result = await runPass1('C.java', src, ctx());
+
+    const ctor = result.nodes.find((n) => n.type === 'function' && n.name === 'C');
+    expect(ctor?.id).toBe('function:C.java:com.foo.C#C()');
+
+    const noArgs = result.nodes.find((n) => n.name === 'noArgs');
+    expect(noArgs?.id).toBe('function:C.java:com.foo.C#noArgs()');
+    expect(noArgs?.meta?.returnType).toBe('void');
+  });
+});

@@ -301,6 +301,82 @@ function extractFields(
   return { nodes, edges };
 }
 
+/** 常见 java.lang 隐式类型 — 用于方法签名 FQN 归一化（保证重载 ID 稳定可读） */
+const JAVA_LANG_TYPES = new Set([
+  'String', 'Long', 'Integer', 'Boolean', 'Object', 'Double', 'Float', 'Short',
+  'Byte', 'Character', 'Number', 'Void', 'CharSequence', 'Class', 'Iterable',
+  'Runnable', 'Thread', 'Exception', 'RuntimeException', 'Throwable',
+]);
+
+/** 参数类型归一化：剥泛型/数组后，java.lang 隐式类型补全 FQN，其余保留简单名 */
+function normalizeParamType(raw: string): string {
+  const r = rawType(raw);
+  return JAVA_LANG_TYPES.has(r) ? `java.lang.${r}` : r;
+}
+
+/** 取方法/构造器形参类型列表（归一化） */
+function paramTypesOf(decl: Node): string[] {
+  const params = decl.childForFieldName('parameters');
+  if (!params) return [];
+  const types: string[] = [];
+  for (const p of params.namedChildren) {
+    if (p?.type !== 'formal_parameter' && p?.type !== 'spread_parameter') continue;
+    types.push(normalizeParamType(p.childForFieldName('type')?.text ?? ''));
+  }
+  return types;
+}
+
+/**
+ * 提取方法/构造器：每个产一个 'function' 节点（meta.kind='method'），id 含
+ * 归一化签名 `name(p1,p2)` 以区分重载；连 owner 的 defines 边。
+ * 不解析方法体调用（Phase 2）。
+ */
+function extractMethods(
+  root: Node,
+  filePath: string,
+  packageName: string
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+
+  for (const decl of root.descendantsOfType(['method_declaration', 'constructor_declaration'])) {
+    const owner = enclosingTypeDecl(decl);
+    if (!owner) continue;
+    const ownerFQN = computeTypeFQN(owner, packageName);
+    const ownerNodeType = owner.type === 'interface_declaration' ? 'interface' : 'class';
+    const ownerId = `${ownerNodeType}:${filePath}:${ownerFQN}`;
+
+    const nameNode = decl.childForFieldName('name');
+    if (!nameNode) continue;
+    const name = nameNode.text;
+    const paramTypes = paramTypesOf(decl);
+    const signature = `${name}(${paramTypes.join(',')})`;
+    const methodId = `function:${filePath}:${ownerFQN}#${signature}`;
+    const declLoc = loc(decl);
+
+    const modifiers = decl.namedChildren.find((c) => c?.type === 'modifiers');
+    const annotations = extractAnnotations(decl);
+    const isConstructor = decl.type === 'constructor_declaration';
+    const returnType = isConstructor ? '' : rawType(decl.childForFieldName('type')?.text ?? '');
+
+    const meta: NodeMeta = {
+      kind: 'method',
+      ownerType: ownerFQN,
+      visibility: visibilityOf(modifiers),
+      signature,
+      paramTypes,
+    };
+    if (returnType) meta.returnType = returnType;
+    if (/\bstatic\b/.test(modifiers?.text ?? '')) meta.isStatic = true;
+    if (annotations.length) meta.annotations = annotations;
+
+    nodes.push({ id: methodId, type: 'function', name, filePath, loc: declLoc, meta });
+    edges.push({ from: ownerId, to: methodId, type: 'defines', loc: declLoc });
+  }
+
+  return { nodes, edges };
+}
+
 /**
  * 单文件 Pass1 解析入口。
  */
@@ -337,6 +413,10 @@ export async function runPass1(
   const fields = extractFields(root, filePath, packageName, parserData);
   nodes.push(...fields.nodes);
   edges.push(...fields.edges);
+
+  const methods = extractMethods(root, filePath, packageName);
+  nodes.push(...methods.nodes);
+  edges.push(...methods.edges);
 
   return { filePath, parserId: 'java', nodes, edges, unresolvedRefs: [], parserData };
 }
