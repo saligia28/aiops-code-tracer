@@ -5,8 +5,8 @@
  * 跨文件消解所需的中间态（JavaParserData）。Pass2（Task 1.17）负责
  * 用各文件的 pendingRefs + typeEnv 连出 extends/implements/injects 边。
  *
- * 当前覆盖：package、class。后续 task 渐进补全 import/interface/enum/
- * field/method/route。
+ * 当前覆盖：package、import、class/interface/enum（含注解/stereotype/
+ * extends/implements）。后续 task 渐进补全 field/method/route。
  */
 import path from 'path';
 import type { Node } from 'web-tree-sitter';
@@ -78,6 +78,129 @@ function extractImports(root: Node, filePath: string, importTable: Record<string
   return nodes;
 }
 
+type NodeMeta = NonNullable<GraphNode['meta']>;
+type SpringStereotype = NonNullable<NodeMeta['springStereotype']>;
+
+/** 从声明节点的 modifiers 中提取注解名（带 @，不含参数），如 ['@Service', '@RequestMapping'] */
+function extractAnnotations(decl: Node): string[] {
+  const modifiers = decl.namedChildren.find((c) => c?.type === 'modifiers');
+  if (!modifiers) return [];
+  const anns: string[] = [];
+  for (const m of modifiers.namedChildren) {
+    if (m?.type === 'marker_annotation' || m?.type === 'annotation') {
+      const nameNode = m.childForFieldName('name');
+      if (nameNode) anns.push(`@${nameNode.text}`);
+    }
+  }
+  return anns;
+}
+
+/** 由注解推断 Spring stereotype（取首个命中） */
+function inferStereotype(annotations: string[]): SpringStereotype | undefined {
+  for (const a of annotations) {
+    if (a === '@RestController' || a === '@Controller') return 'controller';
+    if (a === '@Service') return 'service';
+    if (a === '@Repository' || a === '@Mapper') return 'repository';
+    if (a === '@Component') return 'component';
+  }
+  return undefined;
+}
+
+/** 类型声明节点集合（class/interface/enum 三类共用判定） */
+const TYPE_DECL_KINDS = new Set([
+  'class_declaration',
+  'interface_declaration',
+  'enum_declaration',
+]);
+
+/** 计算类型 FQN：package + 由外到内的声明名链（嵌套类 → Outer.Inner） */
+function computeTypeFQN(decl: Node, packageName: string): string {
+  const names: string[] = [];
+  let cur: Node | null = decl;
+  while (cur) {
+    if (TYPE_DECL_KINDS.has(cur.type)) {
+      const n = cur.childForFieldName('name');
+      if (n) names.unshift(n.text);
+    }
+    cur = cur.parent;
+  }
+  const simple = names.join('.');
+  return packageName ? `${packageName}.${simple}` : simple;
+}
+
+/**
+ * 从 superclass / super_interfaces / extends_interfaces 容器中取目标类型原文本。
+ * superclass 直接挂 type 子节点；super_interfaces/extends_interfaces 内含 type_list。
+ */
+function typeNamesIn(container: Node | undefined): string[] {
+  if (!container) return [];
+  const typeList = container.namedChildren.find((c) => c?.type === 'type_list');
+  const typeNodes = typeList ? typeList.namedChildren : container.namedChildren;
+  return typeNodes.filter((t): t is Node => !!t).map((t) => t.text);
+}
+
+/**
+ * 提取 class / interface / enum 声明：
+ * - class/enum → 'class' 节点（enum 带 meta.kind='enum'）；interface → 'interface' 节点
+ * - 注解、Spring stereotype、package 写入 meta
+ * - extends/implements 记为 JavaPendingRef（Pass2 消解）
+ */
+function extractTypes(
+  root: Node,
+  filePath: string,
+  packageName: string,
+  data: JavaParserData
+): GraphNode[] {
+  const nodes: GraphNode[] = [];
+  for (const decl of root.descendantsOfType([...TYPE_DECL_KINDS])) {
+    const nameNode = decl.childForFieldName('name');
+    if (!nameNode) continue;
+
+    const simpleName = nameNode.text;
+    const fqn = computeTypeFQN(decl, packageName);
+    const annotations = extractAnnotations(decl);
+    const stereotype = inferStereotype(annotations);
+
+    const isInterface = decl.type === 'interface_declaration';
+    const isEnum = decl.type === 'enum_declaration';
+    const nodeType = isInterface ? 'interface' : 'class';
+
+    const meta: NodeMeta = {};
+    if (packageName) meta.package = packageName;
+    if (annotations.length) meta.annotations = annotations;
+    if (stereotype) meta.springStereotype = stereotype;
+    if (isEnum) meta.kind = 'enum';
+
+    nodes.push({
+      id: `${nodeType}:${filePath}:${fqn}`,
+      type: nodeType,
+      name: simpleName,
+      filePath,
+      loc: loc(decl),
+      ...(Object.keys(meta).length ? { meta } : {}),
+    });
+
+    const declLoc = loc(decl);
+    if (isInterface) {
+      // interface 可 extends 多个父接口
+      const ext = decl.namedChildren.find((c) => c?.type === 'extends_interfaces');
+      for (const tn of typeNamesIn(ext)) {
+        data.pendingRefs.push({ kind: 'extends', fromTypeFQN: fqn, targetTypeName: tn, loc: declLoc });
+      }
+    } else {
+      const superclass = decl.namedChildren.find((c) => c?.type === 'superclass');
+      for (const tn of typeNamesIn(superclass)) {
+        data.pendingRefs.push({ kind: 'extends', fromTypeFQN: fqn, targetTypeName: tn, loc: declLoc });
+      }
+      const superInterfaces = decl.namedChildren.find((c) => c?.type === 'super_interfaces');
+      for (const tn of typeNamesIn(superInterfaces)) {
+        data.pendingRefs.push({ kind: 'implements', fromTypeFQN: fqn, targetTypeName: tn, loc: declLoc });
+      }
+    }
+  }
+  return nodes;
+}
+
 /**
  * 单文件 Pass1 解析入口。
  */
@@ -109,21 +232,7 @@ export async function runPass1(
 
   const packageName = extractPackage(root);
   nodes.push(...extractImports(root, filePath, parserData.typeEnv.importTable));
-
-  for (const cd of root.descendantsOfType('class_declaration')) {
-    const nameNode = cd.childForFieldName('name');
-    if (!nameNode) continue;
-    const className = nameNode.text;
-    const fqn = packageName ? `${packageName}.${className}` : className;
-    nodes.push({
-      id: `class:${filePath}:${fqn}`,
-      type: 'class',
-      name: className,
-      filePath,
-      loc: loc(cd),
-      ...(packageName ? { meta: { package: packageName } } : {}),
-    });
-  }
+  nodes.push(...extractTypes(root, filePath, packageName, parserData));
 
   return { filePath, parserId: 'java', nodes, edges, unresolvedRefs: [], parserData };
 }
