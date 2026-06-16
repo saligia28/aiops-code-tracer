@@ -7,6 +7,7 @@
  * 输入是各文件 Pass1 的 FileParseResult[]；类型名解析复用 typeResolver。
  */
 import type { FileParseResult } from '../../extractors/types.js';
+import type { TypeRegistry } from './typeResolver.js';
 import { asJavaData, buildTypeRegistry, resolveTypeFqn } from './typeResolver.js';
 
 export interface InheritanceMaps {
@@ -37,9 +38,12 @@ function pushUnique(map: Map<string, string[]>, key: string, value: string): voi
 /**
  * 由各文件的 extends/implements pendingRefs 建继承关系图。
  * 目标类型名经 typeResolver 消解为 FQN；解析不到的关系跳过。
+ * `registry` 可由调用方传入复用（避免在同一 resolve 内重复 buildTypeRegistry）。
  */
-export function buildInheritanceMaps(results: FileParseResult[]): InheritanceMaps {
-  const registry = buildTypeRegistry(results);
+export function buildInheritanceMaps(
+  results: FileParseResult[],
+  registry: TypeRegistry = buildTypeRegistry(results)
+): InheritanceMaps {
   const extendsMap = new Map<string, string[]>();
   const implementsMap = new Map<string, string[]>();
 

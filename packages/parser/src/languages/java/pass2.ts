@@ -136,7 +136,7 @@ export function runPass2(
   _ctx: ParserContext
 ): ResolveResult {
   const registry = buildTypeRegistry(ownResults);
-  const inheritance = buildInheritanceMaps(ownResults);
+  const inheritance = buildInheritanceMaps(ownResults, registry); // 复用 registry，避免重复构建
   const methodTable = buildMethodTable(ownResults, inheritance);
   const { methodOwnerByNode, fieldInfoByNode, fieldTypesByOwner } = buildNodeIndex(ownResults);
 
