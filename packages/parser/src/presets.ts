@@ -14,7 +14,8 @@ export interface LanguagePreset {
 const DEFAULT_PRESET: LanguagePreset = { parsers: ['typescript'], scanPaths: ['src'], exclude: [] };
 
 const PRESETS: Partial<Record<ProjectFramework, LanguagePreset>> = {
-  java: { parsers: ['java'], scanPaths: ['src/main/java'], exclude: ['src/test/**'] },
+  // 整仓扫描 + 排除 target/测试源：兼容单模块（src/main/java）与多模块（<module>/src/main/java）Maven/Gradle 布局。
+  java: { parsers: ['java'], scanPaths: ['.'], exclude: ['**/target/**', '**/build/**', '**/src/test/**'] },
 };
 
 export function presetFor(fw: ProjectFramework): LanguagePreset {

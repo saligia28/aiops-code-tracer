@@ -372,7 +372,8 @@ const form = reactive({
 // 各框架的默认扫描路径，需与后端 preset（@aiops/parser presets.ts）保持一致；
 // web 不依赖 @aiops/parser，故在此内联一份最小映射。
 const FRAMEWORK_DEFAULT_SCAN_PATHS: Partial<Record<ProjectFramework, string>> = {
-  java: 'src/main/java',
+  // 整仓扫描，兼容单模块与多模块（<module>/src/main/java）布局；与后端 preset 一致
+  java: '.',
 };
 
 function defaultScanPathsFor(fw: ProjectFramework): string {
