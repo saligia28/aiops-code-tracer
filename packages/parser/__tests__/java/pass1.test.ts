@@ -135,7 +135,8 @@ describe('java pass1 — field + injection', () => {
     const data = result.parserData as JavaParserData;
 
     const field = result.nodes.find((n) => n.name === 'repos');
-    expect(field?.meta?.fieldType).toBe('Repo'); // List<Repo> 解包为内层 bean 类型
+    // 字段真实类型保留容器（List）；只有注入点的 declaredType 解包为内层 bean
+    expect(field?.meta?.fieldType).toBe('List');
 
     const inject = data.pendingRefs.find((r) => r.kind === 'inject');
     expect(inject).toMatchObject({ declaredType: 'Repo', qualifier: 'primary' });
@@ -313,6 +314,14 @@ describe('java pass1 — generic DI container injection unwrap', () => {
     const inj = injects(result.parserData as JavaParserData);
     expect(inj).toHaveLength(1);
     expect(inj[0].declaredType).toBe('Svc');
+  });
+
+  it('keeps the real container type as a non-injected field type (no receiver-inference corruption)', async () => {
+    const src = ['package com.foo;', 'class C { private List<UserDto> items; }'].join('\n');
+    const result = await runPass1('C.java', src, ctx());
+    const field = result.nodes.find((n) => n.type === 'variable' && n.name === 'items');
+    // 非注入字段：fieldType 应为真实声明类型 List（而非内层 UserDto），否则 items.add() 的 receiver 被误判
+    expect(field?.meta?.fieldType).toBe('List');
   });
 });
 

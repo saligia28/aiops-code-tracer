@@ -317,8 +317,11 @@ function extractFields(
     const annotations = extractAnnotations(fd);
     const visibility = visibilityOf(modifiers);
     const isStatic = /\bstatic\b/.test(modifiers?.text ?? '');
-    // 注入字段类型：剥已知 DI 容器/集合包装取内层 bean 类型（Provider<T>/List<T>/T[] → T）
-    const declaredType = unwrapInjectionType(fd.childForFieldName('type')?.text ?? '');
+    const typeText = fd.childForFieldName('type')?.text ?? '';
+    // 字段真实声明类型（容器保留），用于 meta + receiver 推断
+    const fieldType = rawType(typeText);
+    // 注入点类型：剥已知 DI 容器/集合包装取内层 bean（Provider<T>/List<T>/T[] → T）
+    const injectType = unwrapInjectionType(typeText);
     const isInject = annotations.some((a) => INJECT_ANNOTATIONS.has(a));
     // 注入限定符：@Qualifier("x") / @Resource(name="x") / @Named("x") 任一
     const qualifier = isInject
@@ -334,7 +337,7 @@ function extractFields(
       const fieldLoc = loc(vd);
 
       const meta: NodeMeta = { kind: 'field', ownerType: ownerFQN, visibility };
-      if (declaredType) meta.fieldType = declaredType;
+      if (fieldType) meta.fieldType = fieldType;
       if (isStatic) meta.isStatic = true;
       if (annotations.length) meta.annotations = annotations;
 
@@ -345,13 +348,13 @@ function extractFields(
       ownerFields.set(fieldName, fieldId);
       fieldsByOwner.set(ownerFQN, ownerFields);
 
-      if (declaredType) data.typeEnv.fieldTypes[fieldName] = declaredType;
+      if (fieldType) data.typeEnv.fieldTypes[fieldName] = fieldType;
 
-      if (isInject && declaredType) {
+      if (isInject && injectType) {
         data.pendingRefs.push({
           kind: 'inject',
           fromFieldNodeId: fieldId,
-          declaredType,
+          declaredType: injectType,
           ...(qualifier ? { qualifier } : {}),
           loc: fieldLoc,
         });
