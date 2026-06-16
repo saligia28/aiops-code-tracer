@@ -437,6 +437,26 @@ describe('java pass1 — constructor injection', () => {
     expect(inj[0].declaredType).toBe('Bar');
   });
 
+  it('ignores bare local reassignment and keeps same-name field injection', async () => {
+    const src = [
+      'package com.foo;',
+      '@Service',
+      'class Foo {',
+      '  private final Bar bar;',
+      '  Foo(Bar bar) { this.bar = bar; Bar local; local = bar; }',
+      '}',
+    ].join('\n');
+
+    const result = await runPass1('Foo.java', src, ctx());
+    const data = result.parserData as JavaParserData;
+    const field = result.nodes.find((n) => n.type === 'variable' && n.name === 'bar')!;
+
+    const inj = injects(data);
+    expect(inj).toHaveLength(1);
+    expect(inj[0].fromFieldNodeId).toBe(field.id);
+    expect(inj[0].declaredType).toBe('Bar');
+  });
+
   it('captures @Qualifier on a constructor parameter', async () => {
     const src = [
       'package com.foo;',

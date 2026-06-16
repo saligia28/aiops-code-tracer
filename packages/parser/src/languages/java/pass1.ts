@@ -368,8 +368,10 @@ function extractFields(
 /**
  * 解析构造器体内 `this.FIELD = PARAM` 赋值，返回 `形参名 → 字段名` 映射，
  * 用于覆盖字段名 ≠ 形参名 的注入（如 `this.barService = bar`）。
+ * 裸标识符左值（`x = param`）仅当 `x` 确为本类字段时才计入，避免把局部变量
+ * 重赋值（`local = param`）误当成字段赋值而错路由/抑制注入。
  */
-function parseCtorFieldAssignments(ctor: Node): Map<string, string> {
+function parseCtorFieldAssignments(ctor: Node, fieldNames: Map<string, string>): Map<string, string> {
   const paramToField = new Map<string, string>();
   const body = ctor.childForFieldName('body');
   if (!body) return paramToField;
@@ -380,7 +382,7 @@ function parseCtorFieldAssignments(ctor: Node): Map<string, string> {
     let fieldName: string | undefined;
     if (left.type === 'field_access' && left.childForFieldName('object')?.type === 'this') {
       fieldName = left.childForFieldName('field')?.text;
-    } else if (left.type === 'identifier') {
+    } else if (left.type === 'identifier' && fieldNames.has(left.text)) {
       fieldName = left.text;
     }
     if (fieldName) paramToField.set(right.text, fieldName);
@@ -425,7 +427,7 @@ function extractConstructorInjections(
       // 注入条件：注解构造器，或唯一构造器且有参数（Spring 4.3+ 隐式）
       if (!annotated && !(ctors.length === 1 && params.length > 0)) continue;
 
-      const paramToField = parseCtorFieldAssignments(ctor);
+      const paramToField = parseCtorFieldAssignments(ctor, fields);
       for (const p of params) {
         const pName = p.childForFieldName('name')?.text;
         const pType = unwrapInjectionType(p.childForFieldName('type')?.text ?? '');
