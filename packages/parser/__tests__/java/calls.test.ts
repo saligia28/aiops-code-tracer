@@ -183,6 +183,44 @@ describe('java calls — end-to-end (runPass1 + runPass2)', () => {
     expect(calls.every((e) => e.meta?.reason === 'multipleImplementations')).toBe(true);
   });
 
+  it('fan-out skips abstract implementations (no calls edge to a non-instantiable bean)', async () => {
+    const i = await runPass1(
+      'com/foo/Svc.java',
+      'package com.foo;\npublic interface Svc { void go(); }',
+      ctx()
+    );
+    const abs = await runPass1(
+      'com/foo/AbstractSvc.java',
+      'package com.foo;\npublic abstract class AbstractSvc implements Svc { public void go() {} }',
+      ctx()
+    );
+    const a = await runPass1(
+      'com/foo/SvcA.java',
+      'package com.foo;\n@Service\nclass SvcA implements Svc { public void go() {} }',
+      ctx()
+    );
+    const b = await runPass1(
+      'com/foo/SvcB.java',
+      'package com.foo;\n@Service\nclass SvcB implements Svc { public void go() {} }',
+      ctx()
+    );
+    const c = await runPass1(
+      'com/foo/C.java',
+      'package com.foo;\nclass C { @Autowired private Svc svc; void run() { svc.go(); } }',
+      ctx()
+    );
+
+    const own = [i, abs, a, b, c];
+    const r = runPass2(own, own, ctx());
+
+    const absGo = abs.nodes.find(
+      (n) => n.type === 'function' && n.meta?.ownerType === 'com.foo.AbstractSvc'
+    )!.id;
+    const calls = r.resolvedEdges.filter((e) => e.type === 'calls' && e.from.includes('#run('));
+    expect(calls.map((e) => e.to)).not.toContain(absGo);
+    expect(calls).toHaveLength(2); // 仅两个具体实现
+  });
+
   it('selects the right overload by argument count', async () => {
     const repo = await runPass1(
       'com/foo/Repo.java',

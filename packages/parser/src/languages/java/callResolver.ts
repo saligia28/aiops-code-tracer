@@ -92,9 +92,11 @@ export function selectCallTargets(
 ): CallTarget[] {
   const isInterface = registry.fqnToNodeType.get(receiverFqn) === 'interface';
 
-  // 接口 + 多实现：fan-out 到各实现的同名方法
+  // 接口 + 多实现：fan-out 到各（具体）实现的同名方法（抽象类不可实例化，剔除）
   if (isInterface && inheritance) {
-    const impls = inheritance.implementsMap.get(receiverFqn) ?? [];
+    const impls = (inheritance.implementsMap.get(receiverFqn) ?? []).filter(
+      (fqn) => !registry.fqnToIsAbstract.get(fqn)
+    );
     if (impls.length > 1) {
       const targets: CallTarget[] = [];
       for (const implFqn of impls.slice(0, topN)) {
