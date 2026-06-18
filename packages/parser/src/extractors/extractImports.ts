@@ -24,6 +24,10 @@ export function extractImports(
   const unresolvedRefs: UnresolvedRef[] = [];
   const importMap = new Map<string, { sourcePath: string; originalName: string }>();
 
+  // 同一文件内可能多次 import 同一模块（如路由/树配置里同一组件被多处懒加载）。
+  // 这类 import 节点 ID 不含位置，会重复 → 去重，避免重复节点/边与 ID 冲突告警。
+  const seenImportIds = new Set<string>();
+
   const fileNodeId = `file:${ctx.filePath}:${ctx.filePath.split('/').pop()}`;
 
   function processImportDeclaration(node: ts.ImportDeclaration) {
@@ -38,6 +42,8 @@ export function extractImports(
     if (!importClause) {
       // side-effect import: import './polyfill'
       const importNodeId = `import:${ctx.filePath}:${rawSource}`;
+      if (seenImportIds.has(importNodeId)) return;
+      seenImportIds.add(importNodeId);
       nodes.push({
         id: importNodeId,
         type: 'import',
@@ -133,6 +139,8 @@ export function extractImports(
     const resolvedSource = resolveRelativePath(rawSource, ctx.filePath, ctx.config);
     const loc = getLoc(sourceFile, node.getStart());
     const importNodeId = `import:${ctx.filePath}:dynamic:${rawSource}`;
+    if (seenImportIds.has(importNodeId)) return;
+    seenImportIds.add(importNodeId);
     nodes.push({
       id: importNodeId,
       type: 'import',
@@ -160,6 +168,8 @@ export function extractImports(
     const resolvedSource = resolveRelativePath(rawSource, ctx.filePath, ctx.config);
     const loc = getLoc(sourceFile, node.getStart());
     const importNodeId = `import:${ctx.filePath}:${rawSource}`;
+    if (seenImportIds.has(importNodeId)) return;
+    seenImportIds.add(importNodeId);
     nodes.push({
       id: importNodeId,
       type: 'import',

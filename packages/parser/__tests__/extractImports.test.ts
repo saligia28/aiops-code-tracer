@@ -93,4 +93,57 @@ describe('extractImports', () => {
     expect(result.nodes[0].name).toBe('myRef');
     expect(result.importMap.get('myRef')).toEqual({ sourcePath: 'vue', originalName: 'ref' });
   });
+
+  it('同一文件多次动态导入同一模块应去重为单一节点', () => {
+    // 路由/树配置里同一组件被多处懒加载 → 之前会产生 ID 冲突
+    const code = `
+      const a = () => import('@/views/flowBom/List.vue');
+      const b = () => import('@/views/flowBom/List.vue');
+    `;
+    const { sourceFile, ctx } = createContext(code);
+    const result = extractImports(sourceFile, ctx);
+
+    const dynamicNodes = result.nodes.filter((n) => n.name.startsWith('dynamic('));
+    expect(dynamicNodes.length).toBe(1);
+    const ids = result.nodes.map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length); // 无重复 ID
+    // 对应的 file→import 边也只剩一条
+    expect(result.edges.filter((e) => e.to === dynamicNodes[0].id).length).toBe(1);
+  });
+
+  it('不同模块的动态导入仍各自成节点（不过度去重）', () => {
+    const code = `
+      const a = () => import('@/views/A.vue');
+      const b = () => import('@/views/B.vue');
+    `;
+    const { sourceFile, ctx } = createContext(code);
+    const result = extractImports(sourceFile, ctx);
+
+    const dynamicNodes = result.nodes.filter((n) => n.name.startsWith('dynamic('));
+    expect(dynamicNodes.length).toBe(2);
+  });
+
+  it('同一文件多次 require 同一模块应去重为单一节点', () => {
+    const code = `
+      const a = require('./shared');
+      const b = require('./shared');
+    `;
+    const { sourceFile, ctx } = createContext(code);
+    const result = extractImports(sourceFile, ctx);
+
+    expect(result.nodes.length).toBe(1);
+    expect(result.nodes[0].name).toBe('./shared');
+  });
+
+  it('同一文件多次副作用导入同一模块应去重为单一节点', () => {
+    const code = `
+      import './polyfill';
+      import './polyfill';
+    `;
+    const { sourceFile, ctx } = createContext(code);
+    const result = extractImports(sourceFile, ctx);
+
+    expect(result.nodes.length).toBe(1);
+    expect(result.nodes[0].name).toBe('./polyfill');
+  });
 });
