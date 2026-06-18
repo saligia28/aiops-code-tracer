@@ -13,6 +13,11 @@ const MAX_TURNS = AGENT_MAX_TURNS
 const TOTAL_TIMEOUT_MS = AGENT_TOTAL_TIMEOUT_MS
 const SINGLE_LLM_TIMEOUT_MS = AGENT_SINGLE_LLM_TIMEOUT_MS
 
+/** 同一 (工具名+参数) 最多原样返回几次结果，超过即注入提示而非重复喂回 */
+const REPEAT_CALL_LIMIT = 2
+/** 连续多少轮「全部是重复调用」即判定卡死，强制收尾 */
+const STALL_TURN_LIMIT = 2
+
 // ============================================================
 // Agent ReAct 循环
 // ============================================================
@@ -45,6 +50,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
 
   // 请求级工具结果缓存：key = "工具名:参数JSON"
   const toolCache = new Map<string, string>()
+  // 重复调用计数：key = "工具名:参数JSON" → 调用次数，用于检测死循环
+  const toolCallCounts = new Map<string, number>()
+  // 连续「整轮都是重复调用」的次数
+  let stalledTurns = 0
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // 超时检查
@@ -108,10 +117,18 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
             args = {}
           }
 
-          // 检查缓存
           const cacheKey = `${tc.name}:${tc.arguments}`
-          let toolResult: string
+          const callCount = (toolCallCounts.get(cacheKey) ?? 0) + 1
+          toolCallCounts.set(cacheKey, callCount)
 
+          // 死循环防护：同一调用重复过多次时，不再喂回原结果，
+          // 改注入纠偏提示，打断「相同参数 → 相同结果 → 相同思考」的闭环
+          if (callCount > REPEAT_CALL_LIMIT) {
+            return { tc, args, toolResult: buildRepeatHint(tc.name, args), isRepeat: true }
+          }
+
+          // 检查缓存
+          let toolResult: string
           const cached = toolCache.get(cacheKey)
           if (cached !== undefined) {
             toolResult = cached
@@ -120,7 +137,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
             toolCache.set(cacheKey, toolResult)
           }
 
-          return { tc, args, toolResult }
+          return { tc, args, toolResult, isRepeat: false }
         }),
       )
 
@@ -141,6 +158,15 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
           content: toolResult,
           tool_call_id: tc.id,
         })
+      }
+
+      // 死循环检测：本轮工具调用是否「全部是重复调用」
+      // 连续 STALL_TURN_LIMIT 轮无新进展 → 强制收尾，逼模型基于已有信息作答
+      const allRepeat = toolResults.length > 0 && toolResults.every(r => r.isRepeat)
+      stalledTurns = allRepeat ? stalledTurns + 1 : 0
+      if (stalledTurns >= STALL_TURN_LIMIT) {
+        await forceFinalAnswer(messages, question, llm, onEvent)
+        return
       }
 
       continue // 继续下一轮 LLM 调用
@@ -173,9 +199,64 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
 // ============================================================
 
 /**
+ * 构造重复调用的纠偏提示：当模型以相同参数反复调用同一工具时，
+ * 用这段文本替代真实结果，明确告知「已读过」并引导改用更精确的手段或直接作答。
+ */
+function buildRepeatHint(toolName: string, args: Record<string, unknown>): string {
+  const target =
+    (args.filePath as string) || (args.pattern as string) || (args.name as string) || ''
+  return (
+    `【系统提示】你已多次以相同参数调用 ${toolName}${target ? `（${target}）` : ''}，该结果此前已返回，请勿重复读取相同内容。\n` +
+    '若仍需更多上下文，请改用 search_in_file 按方法名/关键词精确定位，或换不同的文件/范围；' +
+    '若已能回答，请立即基于已掌握的信息给出最终回答，不要再调用任何工具。'
+  )
+}
+
+/**
+ * 强制收尾：检测到死循环时，禁用工具再调一次 LLM，逼模型基于现有信息输出文字答案。
+ */
+async function forceFinalAnswer(
+  messages: ChatMessage[],
+  question: string,
+  llm: AgentLoopOptions['llm'],
+  onEvent: (event: AgentEvent) => void,
+): Promise<void> {
+  messages.push({
+    role: 'user',
+    content:
+      '【系统指令】检测到工具被重复调用且未取得新进展。请立即停止调用任何工具，' +
+      '基于以上已收集的信息用中文给出最终回答；若证据不足，请明确说明缺少哪部分信息。',
+  })
+  try {
+    // 传入空 tools 数组 → 模型无法再发起工具调用，必须输出文字答案
+    const finalResult = await callChatCompletionWithTools(messages, [], {
+      provider: llm.provider,
+      model: llm.model,
+      baseUrl: llm.baseUrl,
+      apiKey: llm.apiKey,
+      timeoutMs: SINGLE_LLM_TIMEOUT_MS,
+      maxTokens: llm.maxTokens,
+    })
+    const answer =
+      finalResult.content?.trim() ||
+      '抱歉，在有限的探索步骤内未能收集到足够信息给出完整回答。建议缩小问题范围或指明具体文件后重试。'
+    onEvent({ type: 'answer_delta', data: { delta: answer } })
+    onEvent({ type: 'done', data: { answer, followUp: generateFollowUp(question) } })
+  } catch (err) {
+    onEvent({
+      type: 'error',
+      data: { error: `强制收尾失败: ${err instanceof Error ? err.message : String(err)}` },
+    })
+  }
+}
+
+/**
  * 渐进式压缩消息列表：
- * - 20K 字符：轻度压缩（tool 结果截断到 500 字）
- * - 40K 字符：重度压缩（tool 结果截断到 150 字 + 清除早期 reasoning_content）
+ * - 20K 字符：轻度压缩（折叠较早的 tool 结果，阈值 500 字）
+ * - 40K 字符：重度压缩（阈值降至 150 字 + 清除早期 reasoning_content）
+ *
+ * 关键：折叠时保留首行（含文件路径/读取范围）并用「已读取」措辞，
+ * 而非「已压缩/已截断」——避免诱导模型误判内容缺失而反复重读（死循环根因）。
  */
 function compressMessages(messages: ChatMessage[]): void {
   const estimateChars = () =>
@@ -192,15 +273,18 @@ function compressMessages(messages: ChatMessage[]): void {
   const isHeavy = totalChars >= 40_000
   const toolTruncateLimit = isHeavy ? 150 : 500
 
-  // 从第 3 条消息开始（跳过 system + 第一条 user），保留最近 4 条
-  for (let i = 2; i < messages.length - 4; i++) {
-    // 压缩 tool 结果
-    if (messages[i].role === 'tool' && messages[i].content && messages[i].content!.length > toolTruncateLimit) {
-      messages[i].content = messages[i].content!.slice(0, toolTruncateLimit) + '\n... (已压缩)'
+  // 从第 3 条消息开始（跳过 system + 第一条 user），保留最近 6 条不折叠
+  for (let i = 2; i < messages.length - 6; i++) {
+    const msg = messages[i]
+    // 折叠较早的 tool 结果：保留首行（文件路径/范围/匹配概要），正文换成「已读取」面包屑
+    if (msg.role === 'tool' && msg.content && msg.content.length > toolTruncateLimit) {
+      const firstLine = msg.content.split('\n', 1)[0]
+      msg.content =
+        `${firstLine}\n（此处内容此前已读取，为节省上下文已省略；如需该文件的具体细节，请用 search_in_file 按关键词精确定位，切勿整段重读）`
     }
     // 重度压缩时清除早期 reasoning_content
-    if (isHeavy && messages[i].role === 'assistant' && messages[i].reasoning_content) {
-      messages[i].reasoning_content = null
+    if (isHeavy && msg.role === 'assistant' && msg.reasoning_content) {
+      msg.reasoning_content = null
     }
   }
 }

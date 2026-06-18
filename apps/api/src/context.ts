@@ -39,8 +39,8 @@ const parsePositiveIntEnv = (value: string | undefined, fallback: number): numbe
   const parsed = Number(value || '');
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 };
-export const AGENT_MAX_TURNS = parsePositiveIntEnv(process.env.AGENT_MAX_TURNS, 200);
-export const AGENT_TOTAL_TIMEOUT_MS = parsePositiveIntEnv(process.env.AGENT_TOTAL_TIMEOUT_MS, 20 * 60 * 1000);
+export const AGENT_MAX_TURNS = parsePositiveIntEnv(process.env.AGENT_MAX_TURNS, 100);
+export const AGENT_TOTAL_TIMEOUT_MS = parsePositiveIntEnv(process.env.AGENT_TOTAL_TIMEOUT_MS, 10 * 60 * 1000);
 export const AGENT_SINGLE_LLM_TIMEOUT_MS = parsePositiveIntEnv(process.env.AGENT_SINGLE_LLM_TIMEOUT_MS, 120_000);
 export const INTRANET_OLLAMA_TIMEOUT_MS = Number(process.env.INTRANET_OLLAMA_TIMEOUT_MS || '') || LLM_TIMEOUT_MS * 2;
 export const INTRANET_OLLAMA_BASE_URL = (process.env.INTRANET_OLLAMA_BASE_URL?.trim() ?? '').replace(/\/+$/, '');

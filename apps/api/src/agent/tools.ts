@@ -252,6 +252,11 @@ function hasCommand(cmd: string): boolean {
 }
 
 // ---- read_file ----
+// read_file 给更高的内容预算（比通用 3000 大），减少大方法被迫分块、反复重读的概率
+const READ_FILE_MAX_CHARS = 6000;
+// 超过该行数视为「大文件」，仅展示片段时追加「改用精确定位」的引导
+const LARGE_FILE_LINES = 600;
+
 function toolReadFile(repoPath: string, filePath: string, startLine?: number, lineCount?: number): string {
   if (!repoPath || !filePath) return '缺少参数: filePath';
 
@@ -267,9 +272,19 @@ function toolReadFile(repoPath: string, filePath: string, startLine?: number, li
   // lineCount 为 0 → 读全文；未传 → 默认 200
   const count = lineCount === 0 ? lines.length : (lineCount ?? 200);
   const slice = lines.slice(start, start + count);
-  const header = `[${filePath}] 共 ${lines.length} 行，显示 ${start + 1}-${start + slice.length}:\n`;
+  const end = start + slice.length;
+  const header = `[${filePath}] 共 ${lines.length} 行，显示 ${start + 1}-${end}:\n`;
   const numbered = slice.map((line, i) => `${start + i + 1}: ${line}`).join('\n');
-  return truncate(header + numbered);
+
+  // 大文件且仅展示了片段时，引导用 search_in_file 精确定位，避免逐段翻阅导致来回重读
+  let hint = '';
+  if (lines.length > LARGE_FILE_LINES && end < lines.length) {
+    hint =
+      `\n\n提示：该文件较大（共 ${lines.length} 行），当前仅展示片段。` +
+      '若要理解某个方法/分支逻辑，建议用 search_in_file 按方法名或关键词精确定位，避免逐段翻阅。';
+  }
+
+  return truncate(header + numbered, READ_FILE_MAX_CHARS) + hint;
 }
 
 // ---- search_in_file ----
