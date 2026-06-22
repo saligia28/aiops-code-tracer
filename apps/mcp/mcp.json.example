@@ -3,7 +3,10 @@
     "code-analyzer": {
       "command": "node",
       "args": ["/ABSOLUTE/PATH/TO/aiops-code-tracer/apps/mcp/dist/index.js"],
-      "env": { "ANALYZER_BASE_URL": "http://localhost:4201" }
+      "env": {
+        "ANALYZER_BASE_URL": "http://127.0.0.1:4201",
+        "ANALYZER_PASSWORD": ""
+      }
     }
   }
 }

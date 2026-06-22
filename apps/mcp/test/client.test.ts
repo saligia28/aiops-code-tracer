@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { analyzerGet, AnalyzerError } from '../src/client.js';
+import { analyzerGet, AnalyzerError, __resetAuthForTests } from '../src/client.js';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  __resetAuthForTests();
+});
 
 function stubFetch(impl: typeof fetch) {
   vi.stubGlobal('fetch', vi.fn(impl));
@@ -38,5 +42,53 @@ describe('analyzerGet', () => {
   it('maps 400 to a params error', async () => {
     stubFetch(async () => new Response(JSON.stringify({ error: 'INVALID_PARAMS', message: '缺少 q' }), { status: 400 }));
     await analyzerGet('/api/search').catch((e) => expect(e.message).toContain('参数'));
+  });
+
+  it('with ANALYZER_PASSWORD, logs in on 401 then retries with the cookie', async () => {
+    vi.stubEnv('ANALYZER_PASSWORD', 'pw');
+    const calls: Array<{ url: string; cookie?: string }> = [];
+    stubFetch(async (input, init) => {
+      const url = String(input);
+      const cookie = (init as RequestInit | undefined)?.headers
+        ? ((init as RequestInit).headers as Record<string, string>).cookie
+        : undefined;
+      calls.push({ url, cookie });
+      if (url.includes('/api/auth/login')) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'set-cookie': 'auth_token=TOKEN123; Path=/; HttpOnly' },
+        });
+      }
+      if (cookie === 'auth_token=TOKEN123') {
+        return new Response(JSON.stringify({ ok: 1 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ message: '未授权，请先登录' }), { status: 401 });
+    });
+    await expect(analyzerGet('/api/repos')).resolves.toEqual({ ok: 1 });
+    expect(calls.some((c) => c.url.includes('/api/auth/login'))).toBe(true);
+    expect(calls.some((c) => c.cookie === 'auth_token=TOKEN123')).toBe(true);
+  });
+
+  it('401 without ANALYZER_PASSWORD → actionable error mentioning ANALYZER_PASSWORD', async () => {
+    vi.stubEnv('ANALYZER_PASSWORD', '');
+    stubFetch(async () => new Response(JSON.stringify({ message: '未授权' }), { status: 401 }));
+    await analyzerGet('/api/repos').catch((e) => {
+      expect(e).toBeInstanceOf(AnalyzerError);
+      expect(e.message).toContain('ANALYZER_PASSWORD');
+    });
+  });
+
+  it('wrong password → login fails with a clear error', async () => {
+    vi.stubEnv('ANALYZER_PASSWORD', 'wrong');
+    stubFetch(async (input) => {
+      if (String(input).includes('/api/auth/login')) {
+        return new Response(JSON.stringify({ message: '密码错误' }), { status: 401 });
+      }
+      return new Response(JSON.stringify({ message: '未授权' }), { status: 401 });
+    });
+    await analyzerGet('/api/repos').catch((e) => {
+      expect(e).toBeInstanceOf(AnalyzerError);
+      expect(e.message).toContain('密码不正确');
+    });
   });
 });

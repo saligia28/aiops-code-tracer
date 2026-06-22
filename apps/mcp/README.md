@@ -21,7 +21,7 @@
 
 2. **已在 Web 界面完成索引并选中目标仓库。** MCP 查询的始终是"当前已加载的仓库"，工具调用本身**不接受仓库路径参数**。
 
-3. **`AUTH_PASSWORD` 为空（本地默认）。** 若设置了该环境变量，API 会要求鉴权，MCP 调用将出错。当前版本不支持鉴权场景。
+3. **鉴权（可选）。** 若 API 设置了 `AUTH_PASSWORD`，需在 MCP 配置的 `env` 里同步设置 `ANALYZER_PASSWORD`；MCP 会在收到 401 时自动登录并重试。未设置 `AUTH_PASSWORD` 时留空即可。
 
 ---
 
@@ -66,11 +66,16 @@ pnpm --filter @aiops/mcp build
     "code-analyzer": {
       "command": "node",
       "args": ["/your/actual/path/to/aiops-code-tracer/apps/mcp/dist/index.js"],
-      "env": { "ANALYZER_BASE_URL": "http://localhost:4201" }
+      "env": {
+        "ANALYZER_BASE_URL": "http://127.0.0.1:4201",
+        "ANALYZER_PASSWORD": ""
+      }
     }
   }
 }
 ```
+
+> **端口说明：** `ANALYZER_BASE_URL` 必须与 API 实际监听端口一致——不一定是 4201（例如仓库 `.env` 设置了 `API_PORT=4301` 则用 `http://127.0.0.1:4301`）。推荐使用 `127.0.0.1` 而非 `localhost`，以避免某些系统上 IPv6 解析导致连接失败。
 
 ### 3. 确认 API 与仓库已就绪
 
@@ -89,6 +94,7 @@ pnpm --filter @aiops/mcp build
 |------|--------|------|
 | `ANALYZER_BASE_URL` | `http://localhost:4201` | 分析 API 的地址 |
 | `ANALYZER_TIMEOUT_MS` | `30000` | 单次 HTTP 请求超时（毫秒） |
+| `ANALYZER_PASSWORD` | （空） | 当 API 开启了 `AUTH_PASSWORD` 鉴权时，设置为相同的登录密码。MCP 会在收到 401 时自动登录拿 cookie 并重试。未开启鉴权时留空即可。 |
 
 ---
 
@@ -96,5 +102,5 @@ pnpm --filter @aiops/mcp build
 
 - **单图谱共享：** MCP 与 Web 界面共用同一个"当前仓库"——在网页上切换仓库会同时影响 MCP 查询的对象。
 - **非实时：** 查询结果反映"上次索引时"的代码结构；修改代码后需重新构建索引才会更新。
-- **仅支持本地无鉴权：** 假设本地部署且 `AUTH_PASSWORD` 为空，不支持远程或鉴权场景。
+- **鉴权：** 现已支持（设置 `ANALYZER_PASSWORD` 即可自动登录）；仍不支持远程 HTTPS 或其他高级认证场景。
 - **范围外功能（后续增强）：** 重建索引、跨仓库参数、LLM 问答等均不在当前版本内。
