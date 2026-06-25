@@ -1,4 +1,5 @@
 import type { LlmProvider } from '@aiops/shared-types';
+import { stripLoneSurrogates } from '../textSafety.js';
 
 // ============================================================
 // 消息类型（支持 tool calling）
@@ -188,12 +189,14 @@ function buildApiMessages(messages: ChatMessage[]): Array<Record<string, unknown
   });
 }
 
+/**
+ * 规范化发往 LLM 的文本：移除落单的 UTF-16 代理项，保证请求体一定是合法 JSON。
+ * 触发场景：tools.ts 的 truncate() 按字符截断含 📁/📄 的工具结果时劈断代理对。
+ * 详见 {@link stripLoneSurrogates}。
+ */
 export function sanitizeMessageText(text: string | null | undefined): string | null | undefined {
   if (typeof text !== 'string' || text.length === 0) return text;
-  return text.replace(/(\\+)([xu])/g, (full, slashes: string, marker: string) => {
-    if (slashes.length % 2 === 0) return full;
-    return `${slashes}\\${marker}`;
-  });
+  return stripLoneSurrogates(text);
 }
 
 /**

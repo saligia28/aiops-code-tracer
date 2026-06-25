@@ -20,6 +20,7 @@ import {
   type CodeLocation,
 } from '../../context.js';
 import { callChatCompletion, canUseLlm } from '../llmService.js';
+import { stripLoneSurrogates } from '../../textSafety.js';
 import { parseLine, estimateTokens, escapeRegex, NODE_TYPE_SCORE, tokenizeForRecall } from './textUtils.js';
 import { findFunctionBoundary } from './codeScan.js';
 import { isApiListQuestion, isPaginationQuestion, isComponentFeatureQuestion, isFlowQuestion, isPageStructureQuestion, isUiConditionQuestion, extractPagePhrase, extractLikelyScope, extractQuestionCoreTerms } from './questionAnalysis.js';
@@ -351,7 +352,8 @@ function truncateToTokenLimit(context: string, maxTokens: number): string {
     if (estimateTokens(candidate) > maxTokens) break;
     result = candidate;
   }
-  return result || context.slice(0, maxTokens * 3);
+  // 兜底按字符截断可能劈断 emoji 代理对，清洗落单代理项保证后续 JSON 合法
+  return result || stripLoneSurrogates(context.slice(0, maxTokens * 3));
 }
 
 
