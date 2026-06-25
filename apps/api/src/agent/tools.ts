@@ -134,9 +134,16 @@ export function getOpenAITools(): Array<{
 
 const MAX_RESULT_CHARS = 3000;
 
-function truncate(text: string, limit = MAX_RESULT_CHARS): string {
+export function truncate(text: string, limit = MAX_RESULT_CHARS): string {
   if (text.length <= limit) return text;
-  return text.slice(0, limit) + `\n... (已截断，共 ${text.length} 字符)`;
+  let end = limit;
+  // 避免把代理对（📁/📄 等 emoji/星体面字符）从中间切断：若边界恰好落在高位代理上则回退一位。
+  // 否则会留下落单代理项，导致严格的 LLM JSON 解析器（如 DeepSeek）以 400 拒绝请求。
+  if (end > 0) {
+    const code = text.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  }
+  return text.slice(0, end) + `\n... (已截断，共 ${text.length} 字符)`;
 }
 
 /** 执行指定工具 */

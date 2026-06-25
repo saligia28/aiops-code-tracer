@@ -18,6 +18,7 @@ import {
   llmRuntimeState,
   getDefaultApiBaseUrl,
 } from '../context.js';
+import { stripLoneSurrogates } from '../textSafety.js';
 
 let _log: FastifyBaseLogger | undefined;
 
@@ -194,7 +195,8 @@ export async function callApiCompatibleChatCompletion(
         model,
         temperature: 0.2,
         max_tokens: LLM_MAX_TOKENS,
-        messages,
+        // 清洗落单代理项，避免严格 JSON 解析器（DeepSeek 等）因半截 emoji 报 400
+        messages: messages.map((m) => ({ ...m, content: stripLoneSurrogates(m.content) })),
       }),
       signal: controller.signal,
     });
@@ -239,7 +241,8 @@ export async function callOllamaChatCompletion(messages: Array<{ role: 'system' 
         model,
         stream: false,
         options: { temperature: 0.2, num_predict: LLM_MAX_TOKENS },
-        messages,
+        // 清洗落单代理项，避免严格 JSON 解析器因半截 emoji 报 400
+        messages: messages.map((m) => ({ ...m, content: stripLoneSurrogates(m.content) })),
       }),
       signal: controller.signal,
     });
