@@ -1,0 +1,425 @@
+/* 玻璃拟态弹窗 / 表单 / 目录浏览器 共享样式。
+   从 TopProjectSelector.vue 的全局 <style> 块原样抽出（非 scoped=全局，行为不变）。
+   被 ProjectCreateDialog / ProjectDeleteDialog / DirectoryBrowser 复用。 */
+/* ====== Glass Dialog 主题 ====== */
+@keyframes glass-breathe {
+  0%, 100% { border-color: rgba(79, 110, 247, 0.2); box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10), 0 0 0 0 rgba(79, 110, 247, 0); }
+  50%      { border-color: rgba(79, 110, 247, 0.45); box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10), 0 0 16px 2px rgba(79, 110, 247, 0.08); }
+}
+
+@keyframes glass-breathe-danger {
+  0%, 100% { border-color: rgba(245, 108, 108, 0.2); box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10), 0 0 0 0 rgba(245, 108, 108, 0); }
+  50%      { border-color: rgba(245, 108, 108, 0.45); box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10), 0 0 16px 2px rgba(245, 108, 108, 0.08); }
+}
+
+.glass-dialog.el-dialog {
+  border-radius: 16px;
+  border: 1.5px solid rgba(79, 110, 247, 0.2);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(20px);
+  overflow: hidden;
+  animation: glass-breathe 3s ease-in-out infinite;
+}
+
+.glass-dialog.glass-dialog-danger.el-dialog {
+  animation: glass-breathe-danger 3s ease-in-out infinite;
+}
+
+.glass-dialog .el-dialog__header {
+  padding: 0;
+  margin: 0;
+}
+
+.glass-dialog .el-dialog__body {
+  padding: 0 28px 20px;
+  color: #2b2f3a;
+}
+
+.glass-dialog .el-dialog__footer {
+  padding: 4px 28px 24px;
+}
+
+/* ---- header ---- */
+.glass-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 28px 16px;
+}
+
+.glass-dialog-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a1d26;
+  letter-spacing: -0.01em;
+}
+
+.glass-dialog-close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid transparent;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.03);
+  color: #909399;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.glass-dialog-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: #e0e4ee;
+  color: #2b2f3a;
+}
+
+/* ---- footer ---- */
+.glass-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ---- 通用 glass 按钮 ---- */
+.glass-btn {
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1.5px solid transparent;
+  line-height: 1.4;
+}
+
+.glass-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.glass-btn-primary {
+  background: #4f6ef7;
+  color: #fff;
+  border-color: #4f6ef7;
+}
+
+.glass-btn-primary:hover:not(:disabled) {
+  background: #3d5bdf;
+  border-color: #3d5bdf;
+}
+
+.glass-btn-danger {
+  background: #f56c6c;
+  color: #fff;
+  border-color: #f56c6c;
+}
+
+.glass-btn-danger:hover:not(:disabled) {
+  background: #e04848;
+  border-color: #e04848;
+}
+
+.glass-btn-ghost {
+  background: transparent;
+  color: #606266;
+  border-color: #dcdfe6;
+}
+
+.glass-btn-ghost:hover:not(:disabled) {
+  color: #4f6ef7;
+  border-color: rgba(79, 110, 247, 0.4);
+  background: rgba(79, 110, 247, 0.04);
+}
+
+.glass-btn-outline {
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  color: #4f6ef7;
+  border: 1.5px solid rgba(79, 110, 247, 0.4);
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.glass-btn-outline:hover {
+  background: rgba(79, 110, 247, 0.06);
+  border-color: #4f6ef7;
+}
+
+/* ---- glass 表单 ---- */
+.glass-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.glass-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.glass-label-text {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #4a4e5a;
+}
+
+.glass-label-text em {
+  color: #f56c6c;
+  font-style: normal;
+}
+
+.glass-label-hint {
+  font-weight: 400;
+  color: #b0b4c0;
+}
+
+.glass-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1.5px solid #e0e4ee;
+  border-radius: 8px;
+  background: rgba(245, 247, 250, 0.6);
+  font-size: 13px;
+  color: #2b2f3a;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.glass-input::placeholder {
+  color: #b0b4c0;
+}
+
+.glass-input:focus {
+  border-color: rgba(79, 110, 247, 0.5);
+  box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.08);
+}
+
+.glass-input[readonly] {
+  cursor: pointer;
+}
+
+.glass-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23909399' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+
+.glass-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.glass-input-row .glass-input {
+  flex: 1;
+}
+
+/* ---- glass checkbox ---- */
+.glass-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: #606266;
+}
+
+.glass-checkbox input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: #4f6ef7;
+  cursor: pointer;
+}
+
+/* ---- body text ---- */
+.glass-dialog-body-text {
+  font-size: 13.5px;
+  color: #2b2f3a;
+  line-height: 1.6;
+  margin: 0 0 14px;
+}
+
+/* ---- 删除风险提示 ---- */
+.delete-risks {
+  padding: 12px 14px;
+  background: rgba(245, 108, 108, 0.05);
+  border: 1px solid rgba(245, 108, 108, 0.15);
+  border-radius: 10px;
+}
+
+.risk-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #e04848;
+  margin-bottom: 6px;
+}
+
+.risk-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: #606266;
+  line-height: 1.8;
+}
+
+/* ---- 目录浏览器 ---- */
+.browser-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: rgba(245, 247, 250, 0.8);
+  border-radius: 8px;
+  min-height: 34px;
+}
+
+.breadcrumb-seg {
+  border: none;
+  background: none;
+  color: #4f6ef7;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.breadcrumb-seg:hover {
+  background: rgba(79, 110, 247, 0.1);
+}
+
+.breadcrumb-seg::after {
+  content: '/';
+  color: #c0c4cc;
+  margin-left: 2px;
+}
+
+.breadcrumb-seg:last-child {
+  color: #2b2f3a;
+  font-weight: 600;
+}
+
+.breadcrumb-seg:last-child::after {
+  display: none;
+}
+
+.browser-badges {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.browser-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.browser-badge.git {
+  background: rgba(245, 108, 108, 0.1);
+  color: #f56c6c;
+}
+
+.browser-badge.pkg {
+  background: rgba(103, 194, 58, 0.1);
+  color: #67c23a;
+}
+
+.browser-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+  min-height: 120px;
+  border: 1.5px solid #e8ebf2;
+  border-radius: 10px;
+  padding: 6px;
+  background: rgba(250, 251, 253, 0.6);
+}
+
+.browser-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  color: #2b2f3a;
+  transition: background 0.12s;
+}
+
+.browser-item:hover {
+  background: rgba(79, 110, 247, 0.06);
+}
+
+.browser-item.parent {
+  color: #909399;
+  font-weight: 600;
+}
+
+.dir-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.dir-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-empty {
+  font-size: 12px;
+  color: #c0c4cc;
+  text-align: center;
+  padding: 24px 0;
+}
+
+.browser-footer {
+  flex-direction: row;
+  justify-content: space-between;
+}
+
+.browser-selected {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: #606266;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ---- 遮罩层 ---- */
+.el-overlay {
+  backdrop-filter: blur(4px);
+  background: rgba(15, 23, 42, 0.22) !important;
+}

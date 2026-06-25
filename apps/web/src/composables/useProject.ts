@@ -27,6 +27,27 @@ export interface ProjectInfo extends ProjectRecord {
   lastBuildTime?: string;
 }
 
+// 框架选项与中文标签：项目下拉（TopProjectSelector）与新建表单（ProjectCreateDialog）共用，
+// 集中在此避免两处重复定义。
+export const FRAMEWORK_OPTIONS: { value: ProjectFramework; label: string }[] = [
+  { value: 'vue3', label: 'Vue 3' },
+  { value: 'vue2', label: 'Vue 2' },
+  { value: 'react', label: 'React' },
+  { value: 'nextjs', label: 'Next.js' },
+  { value: 'angular', label: 'Angular' },
+  { value: 'svelte', label: 'Svelte' },
+  { value: 'typescript', label: 'TypeScript' },
+  { value: 'javascript', label: 'JavaScript' },
+  { value: 'java', label: 'Java' },
+  { value: 'python', label: 'Python' },
+  { value: 'go', label: 'Go' },
+  { value: 'other', label: '其他' },
+];
+
+export function frameworkLabel(fw: string): string {
+  return FRAMEWORK_OPTIONS.find((o) => o.value === fw)?.label ?? fw;
+}
+
 const STORAGE_KEY = 'aiops-current-project';
 
 const currentProjectId = ref<string>(localStorage.getItem(STORAGE_KEY) ?? '');
