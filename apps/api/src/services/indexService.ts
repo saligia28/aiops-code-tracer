@@ -25,6 +25,7 @@ import {
   setRecallIndex,
   setFileRecallIndex,
   setFactIndex,
+  setDocIndex,
   setPageAnchors,
   type IndexTaskState,
 } from '../context.js';
@@ -179,6 +180,7 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
       setRecallIndex(null);
       setFileRecallIndex(null);
       setFactIndex(null);
+      setDocIndex(null);
       setFileNodeMap(new Map());
       setPageAnchors([]);
       return false;
@@ -224,6 +226,7 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
     setRecallIndex(null);
     setFileRecallIndex(null);
     setFactIndex(null);
+    setDocIndex(null);
     setFileNodeMap(new Map());
     setPageAnchors([]);
     log?.error(`加载图谱失败: ${err}`);

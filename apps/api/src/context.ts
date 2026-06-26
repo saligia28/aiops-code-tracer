@@ -48,6 +48,18 @@ export const INTRANET_OLLAMA_MODELS_RAW = process.env.INTRANET_OLLAMA_MODELS?.tr
 export const INTRANET_OLLAMA_DEFAULT_MODEL_ENV = process.env.INTRANET_OLLAMA_DEFAULT_MODEL?.trim() ?? '';
 
 // ============================================================
+// 文档知识库 / Embedding 常量（文档证据通道）
+// ============================================================
+
+export const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER?.trim().toLowerCase() ?? 'bailian');
+export const EMBEDDING_API_KEY = process.env.EMBEDDING_API_KEY?.trim() ?? '';
+export const EMBEDDING_BASE_URL = (process.env.EMBEDDING_BASE_URL?.trim() ?? '').replace(/\/+$/, '');
+export const EMBEDDING_MODEL_ENV = process.env.EMBEDDING_MODEL?.trim() ?? '';
+export const EMBEDDING_TIMEOUT_MS = Number(process.env.EMBEDDING_TIMEOUT_MS || '') || 30000;
+/** 文档语料目录（留空则文档证据通道关闭，问答行为与现状一致） */
+export const DOCS_PATH = process.env.DOCS_PATH?.trim() ?? '';
+
+// ============================================================
 // 认证常量
 // ============================================================
 
@@ -111,6 +123,33 @@ export interface CodeFact {
 export interface FactIndex {
   repoName: string;
   facts: CodeFact[];
+}
+
+// 文档证据通道：文档块 + 文档索引（运行时内存态，类比 RecallIndex / FactIndex）
+export interface DocChunk {
+  id: string;
+  title: string;
+  section?: string;
+  /** 文件路径 / Confluence URL / 外部知识库 doc id */
+  source: string;
+  text: string;
+  /** 词法召回用（复用 tokenizeForRecall） */
+  terms: string[];
+  /** 稠密向量 */
+  embedding: number[];
+  /** 入库时间，用于新鲜度判断 */
+  indexedAt?: string;
+}
+
+export interface DocIndex {
+  repoName: string;
+  /** 生成 embedding 的模型；换模型需重建索引 */
+  model: string;
+  /** 向量维度 */
+  dim: number;
+  /** 文档级 TF-IDF（词法那一路） */
+  idf: Map<string, number>;
+  chunks: DocChunk[];
 }
 
 export interface PageAnchor {
@@ -200,6 +239,7 @@ export let indexTaskState: IndexTaskState = {
 export let recallIndex: RecallIndex | null = null;
 export let fileRecallIndex: FileRecallIndex | null = null;
 export let factIndex: FactIndex | null = null;
+export let docIndex: DocIndex | null = null;
 export let fileNodeMap = new Map<string, GraphNode[]>();
 export let pageAnchors: PageAnchor[] = [];
 
@@ -256,6 +296,23 @@ export function getDefaultApiModel(provider: LlmProvider): string {
   return 'deepseek-v4-flash';
 }
 
+export function getDefaultEmbeddingBaseUrl(provider: string): string {
+  if (provider === 'openai') return 'https://api.openai.com/v1';
+  if (provider === 'bailian') return 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+  if (provider === 'local' || provider === 'ollama') return 'http://127.0.0.1:11434/v1';
+  return '';
+}
+
+export function getDefaultEmbeddingModel(provider: string): string {
+  if (provider === 'openai') return 'text-embedding-3-small';
+  if (provider === 'bailian') return 'text-embedding-v3';
+  if (provider === 'local' || provider === 'ollama') return 'bge-m3';
+  return '';
+}
+
+export const DEFAULT_EMBEDDING_BASE_URL = EMBEDDING_BASE_URL || getDefaultEmbeddingBaseUrl(EMBEDDING_PROVIDER);
+export const DEFAULT_EMBEDDING_MODEL = EMBEDDING_MODEL_ENV || getDefaultEmbeddingModel(EMBEDDING_PROVIDER);
+
 export const DEFAULT_API_PROVIDER = normalizeLlmProvider(process.env.LLM_PROVIDER?.trim() ?? 'deepseek');
 export const DEFAULT_API_MODEL = process.env.LLM_MODEL?.trim() || getDefaultApiModel(DEFAULT_API_PROVIDER);
 export const DEFAULT_API_BASE_URL = process.env.LLM_BASE_URL?.trim() || getDefaultApiBaseUrl(DEFAULT_API_PROVIDER);
@@ -293,6 +350,7 @@ export function setIndexTaskState(value: IndexTaskState): void { indexTaskState 
 export function setRecallIndex(value: RecallIndex | null): void { recallIndex = value; }
 export function setFileRecallIndex(value: FileRecallIndex | null): void { fileRecallIndex = value; }
 export function setFactIndex(value: FactIndex | null): void { factIndex = value; }
+export function setDocIndex(value: DocIndex | null): void { docIndex = value; }
 export function setFileNodeMap(value: Map<string, GraphNode[]>): void { fileNodeMap = value; }
 export function setPageAnchors(value: PageAnchor[]): void { pageAnchors = value; }
 

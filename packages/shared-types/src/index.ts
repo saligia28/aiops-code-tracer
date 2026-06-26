@@ -215,9 +215,28 @@ export interface Evidence {
   label: string;
 }
 
+/**
+ * 文档证据 —— 与 Evidence（代码事实）刻意分开的平行类型。
+ * 来源是文档知识库（PRD / 设计文档 / 接口约定 等），用于解释"为什么这么做"。
+ * 与代码冲突时一律以代码为准；引用时需注明来源，并据 indexedAt 提示可能过时。
+ */
+export interface DocEvidence {
+  docId: string;
+  title: string;
+  section?: string;
+  /** 文件路径 / Confluence URL / 外部知识库 doc id */
+  source: string;
+  snippet: string;
+  score: number;
+  /** 该文档块入库时间，用于新鲜度判断 */
+  indexedAt?: string;
+}
+
 export interface AskResponse {
   answer: string;
   evidence: Evidence[];
+  /** 文档说法（独立通道，与 evidence 分开渲染）；未启用文档知识库时缺省 */
+  docEvidence?: DocEvidence[];
   graph: { nodes: GraphNode[]; edges: GraphEdge[] };
   intent: IntentType;
   confidence: number;
