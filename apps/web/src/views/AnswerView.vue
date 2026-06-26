@@ -7,6 +7,17 @@
           <path d="M19 12H5M12 19l-7-7 7-7" />
         </svg>
       </button>
+      <button
+        class="sidebar-toggle"
+        :class="{ 'is-collapsed': sidebarCollapsed }"
+        :title="sidebarCollapsed ? '展开会话栏' : '收起会话栏'"
+        @click="sidebarCollapsed = !sidebarCollapsed"
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <line x1="9" y1="4" x2="9" y2="20" />
+        </svg>
+      </button>
       <div class="brand" @click="$router.push('/')">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5">
           <circle cx="12" cy="12" r="10" />
@@ -29,6 +40,127 @@
       </div>
     </header>
 
+    <!-- 主体：左侧会话栏 + 右侧对话/输入列 -->
+    <div class="body-shell">
+      <!-- 移动端遮罩：展开时点击空白处收起 -->
+      <div
+        v-if="!sidebarCollapsed"
+        class="sidebar-backdrop"
+        @click="sidebarCollapsed = true"
+      />
+
+      <!-- 左侧会话 + 记忆侧栏 -->
+      <aside class="session-sidebar" :class="{ 'is-collapsed': sidebarCollapsed }">
+        <!-- 会话列表（上半部） -->
+        <div class="sidebar-section conversations-section">
+          <button class="new-chat-btn" @click="startNewConversation">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            <span>新建会话</span>
+          </button>
+
+          <el-scrollbar class="conversations-scroll">
+            <div v-if="conversationsLoading" class="sidebar-status">加载中...</div>
+            <div v-else-if="conversations.length === 0" class="sidebar-empty">
+              暂无会话，提问后自动创建
+            </div>
+            <ul v-else class="conversation-list">
+              <li
+                v-for="c in conversations"
+                :key="c.id"
+                class="conversation-item"
+                :class="{ active: c.id === activeConversationId }"
+                @click="switchConversation(c.id)"
+              >
+                <div class="conv-main">
+                  <span class="conv-title">{{ conversationLabel(c) }}</span>
+                  <span class="conv-time">{{ relativeTime(c.updatedAt) }}</span>
+                </div>
+                <div class="conv-actions">
+                  <button
+                    class="conv-action-btn"
+                    title="重命名"
+                    @click.stop="renameConversationPrompt(c)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                      <path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
+                  <el-popconfirm
+                    title="确定删除该会话？"
+                    confirm-button-text="删除"
+                    cancel-button-text="取消"
+                    confirm-button-type="danger"
+                    width="200"
+                    @confirm="removeConversation(c)"
+                  >
+                    <template #reference>
+                      <button class="conv-action-btn conv-delete" title="删除" @click.stop>
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      </button>
+                    </template>
+                  </el-popconfirm>
+                </div>
+              </li>
+            </ul>
+          </el-scrollbar>
+        </div>
+
+        <!-- 记忆面板（下半部，可折叠） -->
+        <div class="sidebar-section memory-section" :class="{ 'is-folded': memoryFolded }">
+          <div class="memory-header" @click="memoryFolded = !memoryFolded">
+            <svg
+              viewBox="0 0 24 24" width="14" height="14"
+              fill="none" stroke="currentColor" stroke-width="2"
+              class="chevron-icon" :class="{ 'chevron-open': !memoryFolded }"
+            >
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+            <span class="memory-title">项目记忆</span>
+            <span class="memory-count" v-if="memories.length > 0">{{ memories.length }}</span>
+          </div>
+          <el-scrollbar v-show="!memoryFolded" class="memory-scroll">
+            <div v-if="memoriesLoading" class="sidebar-status">加载中...</div>
+            <div v-else-if="memories.length === 0" class="sidebar-empty">
+              暂无记忆，问答后会自动沉淀
+            </div>
+            <ul v-else class="memory-list">
+              <li v-for="m in memories" :key="m.id" class="memory-item">
+                <div class="memory-content">{{ m.content }}</div>
+                <div class="memory-meta">
+                  <span class="memory-time">{{ relativeTime(m.createdAt) }}</span>
+                  <el-popconfirm
+                    title="删除这条记忆？"
+                    confirm-button-text="删除"
+                    cancel-button-text="取消"
+                    confirm-button-type="danger"
+                    width="180"
+                    @confirm="removeMemory(m)"
+                  >
+                    <template #reference>
+                      <button class="memory-delete" title="删除" @click.stop>
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      </button>
+                    </template>
+                  </el-popconfirm>
+                </div>
+              </li>
+            </ul>
+          </el-scrollbar>
+        </div>
+      </aside>
+
+      <!-- 右侧对话 + 输入列 -->
+      <div class="main-col">
     <!-- 对话区域 -->
     <main class="conversation" ref="conversationRef">
       <div v-for="(turn, idx) in history" :key="idx" class="turn">
@@ -174,22 +306,47 @@
         </button>
       </div>
     </footer>
+      </div>
+      <!-- /main-col -->
+    </div>
+    <!-- /body-shell -->
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, watch, computed, nextTick, onMounted, reactive } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import http from '@/lib/http';
 import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
+import { useProject } from '@/composables/useProject';
+import {
+  useConversation,
+  relativeTime,
+  type Conversation,
+  type Memory,
+} from '@/composables/useConversation';
 import { consumePendingQuestion } from '@/composables/usePendingQuestion';
 
 const ASK_TIMEOUT_MS = 150000; // 150 秒
 
 const { currentRepo } = useCurrentRepo();
+const { currentProjectId } = useProject();
+const {
+  activeConversationId,
+  setActiveConversation,
+  clearActiveConversation,
+  restoreConversation,
+  loadConversation,
+  listConversations,
+  renameConversation,
+  deleteConversation,
+  listMemories,
+  deleteMemory,
+} = useConversation();
 
 type AnswerMode = 'rag' | 'agent';
 
@@ -233,6 +390,123 @@ const currentAbortController = ref<AbortController | null>(null);
 function handleAbort() {
   currentAbortController.value?.abort();
   currentAbortController.value = null;
+}
+
+// ---- 左侧栏：会话列表 + 记忆面板 ----
+const sidebarCollapsed = ref(false);
+const memoryFolded = ref(false);
+
+const conversations = ref<Conversation[]>([]);
+const conversationsLoading = ref(false);
+const memories = ref<Memory[]>([]);
+const memoriesLoading = ref(false);
+
+function conversationLabel(c: Conversation): string {
+  const title = c.title?.trim();
+  return title || '未命名会话';
+}
+
+async function refreshConversations() {
+  conversationsLoading.value = true;
+  try {
+    conversations.value = await listConversations();
+  } catch {
+    // 列表拉取失败静默：不阻断问答主流程
+  } finally {
+    conversationsLoading.value = false;
+  }
+}
+
+async function refreshMemories() {
+  memoriesLoading.value = true;
+  try {
+    memories.value = await listMemories();
+  } catch {
+    // 同上，静默失败
+  } finally {
+    memoriesLoading.value = false;
+  }
+}
+
+// 新建会话：复用切项目时的清空逻辑（活动会话 id 置空 + 清空 history），起一条干净新会话。
+function startNewConversation() {
+  if (isAnyLoading.value) handleAbort();
+  clearActiveConversation();
+  history.value = [];
+  if (window.innerWidth <= 768) sidebarCollapsed.value = true;
+}
+
+// 切换会话：GET 该会话消息 → messagesToTurns 还原 → 填进 history 并设为活动会话。
+async function switchConversation(id: string) {
+  if (id === activeConversationId.value) {
+    if (window.innerWidth <= 768) sidebarCollapsed.value = true;
+    return;
+  }
+  if (isAnyLoading.value) handleAbort();
+  try {
+    const { turns } = await loadConversation(id, renderMarkdown);
+    history.value = turns.map((t) => reactive(t));
+    setActiveConversation(id);
+    if (window.innerWidth <= 768) sidebarCollapsed.value = true;
+    await scrollToBottom();
+  } catch {
+    ElMessage.error('加载会话失败');
+  }
+}
+
+// 重命名：弹 prompt → PATCH → 局部更新列表。
+async function renameConversationPrompt(c: Conversation) {
+  let title: string;
+  try {
+    const res = await ElMessageBox.prompt('请输入新的会话名称', '重命名会话', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: c.title ?? '',
+      inputPlaceholder: '会话名称',
+    });
+    title = (res.value ?? '').trim();
+  } catch {
+    return; // 取消
+  }
+  if (!title || title === c.title) return;
+  try {
+    const updated = await renameConversation(c.id, title);
+    const idx = conversations.value.findIndex((x) => x.id === c.id);
+    if (idx !== -1) conversations.value[idx] = updated;
+    else await refreshConversations();
+  } catch {
+    ElMessage.error('重命名失败');
+  }
+}
+
+// 删除：DELETE → 若删的是当前活动会话则清空 history + 活动 id → 刷新列表。
+async function removeConversation(c: Conversation) {
+  try {
+    await deleteConversation(c.id);
+    if (c.id === activeConversationId.value) {
+      clearActiveConversation();
+      history.value = [];
+    }
+    await refreshConversations();
+  } catch {
+    ElMessage.error('删除会话失败');
+  }
+}
+
+async function removeMemory(m: Memory) {
+  try {
+    await deleteMemory(m.id);
+    memories.value = memories.value.filter((x) => x.id !== m.id);
+  } catch {
+    ElMessage.error('删除记忆失败');
+  }
+}
+
+// 本轮提问拿到 conversationId 后刷新会话列表：新会话首次出现、或已存在会话 updated_at
+// 变化导致重排/标题更新，都需要重新拉取一次以保持顺序与标题同步。
+function syncConversationList(conversationId: string | null | undefined) {
+  if (!conversationId) return;
+  void refreshConversations();
 }
 
 // 配置 marked + highlight.js
@@ -279,13 +553,20 @@ async function fetchAnswer(q: string) {
   currentAbortController.value = ctrl;
 
   try {
-    const res = await http.post('/api/ask', { question: q }, {
+    const res = await http.post('/api/ask', {
+      question: q,
+      conversationId: activeConversationId.value,
+    }, {
       timeout: ASK_TIMEOUT_MS,
       signal: ctrl.signal,
     });
     turn.answer = res.data.answer || '未能生成回答';
     turn.renderedAnswer = renderMarkdown(turn.answer);
     turn.followUp = res.data.followUp || [];
+    if (res.data.conversationId) {
+      setActiveConversation(res.data.conversationId);
+      syncConversationList(res.data.conversationId);
+    }
   } catch (err: unknown) {
     if ((err as { name?: string })?.name === 'CanceledError' || ctrl.signal.aborted) {
       turn.aborted = true;
@@ -297,6 +578,9 @@ async function fetchAnswer(q: string) {
     turn.loading = false;
     currentAbortController.value = null;
     await scrollToBottom();
+    // 一轮结束后同步会话列表（标题/排序）与记忆（问答可能沉淀新记忆）。
+    void refreshConversations();
+    void refreshMemories();
   }
 }
 
@@ -326,7 +610,7 @@ async function fetchAgentAnswer(q: string) {
     const resp = await fetch('/api/agent/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q }),
+      body: JSON.stringify({ question: q, conversationId: activeConversationId.value }),
       credentials: 'include',
       signal: ctrl.signal,
     });
@@ -369,6 +653,13 @@ async function fetchAgentAnswer(q: string) {
           };
 
           switch (event.type) {
+            case 'conversation':
+              if (event.data.conversationId) {
+                setActiveConversation(event.data.conversationId as string);
+                syncConversationList(event.data.conversationId as string);
+              }
+              break;
+
             case 'thinking':
               turn.steps!.push({
                 type: 'thinking',
@@ -425,6 +716,9 @@ async function fetchAgentAnswer(q: string) {
     turn.loading = false;
     currentAbortController.value = null;
     await scrollToBottom();
+    // 一轮结束后同步会话列表（标题/排序）与记忆（问答可能沉淀新记忆）。
+    void refreshConversations();
+    void refreshMemories();
   }
 }
 
@@ -463,26 +757,39 @@ function askFollowUp(q: string) {
   }
 }
 
-// 切换仓库后插入系统分隔消息
+// 显式切项目 = 开一条新会话：清空活动会话 id 并清空 history（旧会话已在后端留库）。
+// 同时刷新侧栏会话列表与项目记忆（两者均随当前项目变化）。
 watch(currentRepo, (newRepo, oldRepo) => {
-  if (oldRepo && newRepo && newRepo !== oldRepo && history.value.length > 0) {
-    history.value.push(reactive({
-      question: '', answer: '', renderedAnswer: '', followUp: [],
-      loading: false, error: '', elapsed: 0,
-      isSystemDivider: true,
-      systemText: `已切换到仓库：${newRepo}`,
-    }));
-    scrollToBottom();
+  if (oldRepo && newRepo && newRepo !== oldRepo) {
+    clearActiveConversation();
+    history.value = [];
+    void refreshConversations();
+    void refreshMemories();
   }
 });
 
-onMounted(() => {
+onMounted(async () => {
+  // 窄屏默认收起侧栏（移动端友好），宽屏默认展开。
+  if (window.innerWidth <= 768) sidebarCollapsed.value = true;
+  // 进入页面即加载侧栏数据（会话列表 + 项目记忆）。
+  void refreshConversations();
+  void refreshMemories();
+
   const query = { ...route.query };
   if ('q' in query) {
     delete query.q;
     void router.replace({ name: 'Answer', query, hash: route.hash });
   }
 
+  // 先恢复活动会话（刷新/重进）：若会话归属项目与当前项目不一致则视为无效、起空会话。
+  const { conversation, turns } = await restoreConversation(renderMarkdown);
+  if (conversation && conversation.projectId === currentProjectId.value) {
+    history.value = turns.map((t) => reactive(t));
+  } else if (conversation) {
+    clearActiveConversation();
+  }
+
+  // 再处理首页带来的新问题，追加到已恢复的 history 之后。
   const pendingQuestion = consumePendingQuestion();
   if (pendingQuestion) {
     if (mode.value === 'agent') {
@@ -492,6 +799,7 @@ onMounted(() => {
     }
   }
 
+  await scrollToBottom();
   inputRef.value?.focus();
 });
 </script>
