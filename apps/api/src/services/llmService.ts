@@ -173,7 +173,7 @@ export function updateLlmRuntimeConfig(input: { mode?: string; model?: string })
 }
 
 export async function callApiCompatibleChatCompletion(
-  messages: Array<{ role: 'system' | 'user'; content: string }>,
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   provider: LlmProvider,
   model: string,
   baseUrl: string
@@ -224,7 +224,7 @@ export async function callApiCompatibleChatCompletion(
   }
 }
 
-export async function callOllamaChatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<string | null> {
+export async function callOllamaChatCompletion(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string | null> {
   const baseUrl = INTRANET_OLLAMA_BASE_URL;
   const model = getCurrentLlmModel();
   if (!baseUrl || !model) return null;
@@ -262,7 +262,7 @@ export async function callOllamaChatCompletion(messages: Array<{ role: 'system' 
   }
 }
 
-export async function callChatCompletion(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<string | null> {
+export async function callChatCompletion(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string | null> {
   if (!canUseLlm()) return null;
   if (llmRuntimeState.mode === 'intranet') {
     const ollamaResult = await callOllamaChatCompletion(messages);

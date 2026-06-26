@@ -11,6 +11,7 @@ import {
 import { registerAuth } from './auth.js';
 import { setLlmServiceLogger } from './services/llmService.js';
 import { loadGraph, patchIndexTaskState, migrateExistingGraphData } from './services/indexService.js';
+import { initDb } from './db/sqlite.js';
 
 // 路由
 import { registerHealth } from './routes/health.js';
@@ -24,6 +25,8 @@ import { registerIndexOps } from './routes/indexOps.js';
 import { registerGraph } from './routes/graph.js';
 import { registerTraceError } from './routes/traceError.js';
 import { registerAgent } from './routes/agent.js';
+import { registerConversations } from './routes/conversations.js';
+import { registerMemories } from './routes/memories.js';
 
 // ============================================================
 // 创建应用 & 注册插件
@@ -37,6 +40,9 @@ await app.register(websocket);
 
 // 将 logger 注入需要它的 service
 setLlmServiceLogger(app.log);
+
+// 初始化对话持久化数据库（建表/迁移）
+initDb();
 
 // ============================================================
 // 认证 & 路由注册
@@ -54,6 +60,8 @@ registerIndexOps(app);
 registerGraph(app);
 registerTraceError(app);
 registerAgent(app);
+registerConversations(app);
+registerMemories(app);
 
 // ============================================================
 // WebSocket 进度推送

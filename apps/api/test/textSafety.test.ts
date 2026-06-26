@@ -5,11 +5,9 @@
  * 时会把代理对劈成两半，留下落单代理项；DeepSeek 报 400
  * "unexpected end of hex escape: messages[N].content"。详见 sanitizeMessageText / truncate 注释。
  *
- * 运行：node --import tsx --test apps/api/test/textSafety.test.ts
- * （apps/api 暂无测试框架，本文件刻意放在 src/ 之外，避免进入 tsconfig typecheck 范围。）
+ * 运行：pnpm --filter @aiops/api test
  */
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { test, expect } from 'vitest';
 import { sanitizeMessageText } from '../src/agent/llmWithTools.ts';
 import { truncate } from '../src/agent/tools.ts';
 import { stripLoneSurrogates } from '../src/textSafety.ts';
@@ -22,7 +20,7 @@ const dirTree = Array.from({ length: 200 }, (_, i) => `📁 dir${i}\n  📄 File
 
 test('truncate 不会把代理对从中间切断（源头防御）', () => {
   for (let limit = 30; limit < 160; limit++) {
-    assert.ok(!hasLoneSurrogate(truncate(dirTree, limit)), `truncate@${limit} 产生了落单代理项`);
+    expect(!hasLoneSurrogate(truncate(dirTree, limit)), `truncate@${limit} 产生了落单代理项`).toBe(true);
   }
 });
 
@@ -30,29 +28,29 @@ test('sanitizeMessageText 清除落单代理项（边界兜底）', () => {
   // 即便上游用裸 slice 把代理对劈断，边界兜底也必须救回
   for (let limit = 30; limit < 160; limit++) {
     const safe = sanitizeMessageText(dirTree.slice(0, limit)) as string;
-    assert.ok(!hasLoneSurrogate(safe), `limit=${limit} 仍含落单代理项`);
+    expect(!hasLoneSurrogate(safe), `limit=${limit} 仍含落单代理项`).toBe(true);
   }
   const broken = 'abc\uD83Ddef'; // 落单高位代理
-  assert.ok(hasLoneSurrogate(broken));
-  assert.ok(!hasLoneSurrogate(sanitizeMessageText(broken) as string));
+  expect(hasLoneSurrogate(broken)).toBe(true);
+  expect(!hasLoneSurrogate(sanitizeMessageText(broken) as string)).toBe(true);
 });
 
 test('成对 emoji / 中文 / 普通文本不被改动', () => {
-  assert.equal(sanitizeMessageText('📁📄 中文 abc \\u4e00 path\\to'), '📁📄 中文 abc \\u4e00 path\\to');
+  expect(sanitizeMessageText('📁📄 中文 abc \\u4e00 path\\to')).toBe('📁📄 中文 abc \\u4e00 path\\to');
 });
 
 test('stripLoneSurrogates（agent 与 RAG 共用的底层工具）', () => {
   // 高位/低位落单代理都要被清掉；成对的不动
-  assert.ok(!hasLoneSurrogate(stripLoneSurrogates('x\uD83Dy')));
-  assert.ok(!hasLoneSurrogate(stripLoneSurrogates('x\uDCC1y')));
-  assert.equal(stripLoneSurrogates('📁📄 中文 abc'), '📁📄 中文 abc');
+  expect(!hasLoneSurrogate(stripLoneSurrogates('x\uD83Dy'))).toBe(true);
+  expect(!hasLoneSurrogate(stripLoneSurrogates('x\uDCC1y'))).toBe(true);
+  expect(stripLoneSurrogates('📁📄 中文 abc')).toBe('📁📄 中文 abc');
   // RAG 兜底场景：按字符 slice 代码上下文后必须合法
   const ctx = Array.from({ length: 100 }, (_, i) => `--- f${i}.ts ---\nconst x${i} = '📄';`).join('\n');
-  for (let n = 20; n < 120; n++) assert.ok(!hasLoneSurrogate(stripLoneSurrogates(ctx.slice(0, n))));
+  for (let n = 20; n < 120; n++) expect(!hasLoneSurrogate(stripLoneSurrogates(ctx.slice(0, n)))).toBe(true);
 });
 
 test('null / undefined / 空串原样返回', () => {
-  assert.equal(sanitizeMessageText(null), null);
-  assert.equal(sanitizeMessageText(undefined), undefined);
-  assert.equal(sanitizeMessageText(''), '');
+  expect(sanitizeMessageText(null)).toBe(null);
+  expect(sanitizeMessageText(undefined)).toBe(undefined);
+  expect(sanitizeMessageText('')).toBe('');
 });

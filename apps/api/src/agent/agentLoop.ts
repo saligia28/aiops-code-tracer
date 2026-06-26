@@ -24,6 +24,8 @@ const STALL_TURN_LIMIT = 2
 
 export interface AgentLoopOptions {
   question: string
+  /** 跨轮历史（自然语言问答，注入到 system 与当前 user 之间） */
+  history?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
   graphStore: GraphStore | null
   repoPath: string
   onEvent: (event: AgentEvent) => void
@@ -43,6 +45,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
   const tools: ToolDefinition[] = getOpenAITools()
   const messages: ChatMessage[] = [
     { role: 'system', content: AGENT_SYSTEM_PROMPT },
+    ...(opts.history ?? []).map((h) => ({ role: h.role, content: h.content }) as ChatMessage),
     { role: 'user', content: question },
   ]
 

@@ -1,18 +1,36 @@
 import type { FastifyInstance } from 'fastify';
 import type { AgentEvent } from '@aiops/shared-types';
-import { graphStore, currentRepoPath, LLM_API_KEY, LLM_MAX_TOKENS } from '../context.js';
+import { graphStore, currentRepoPath, resolveActiveProjectId, LLM_API_KEY, LLM_MAX_TOKENS } from '../context.js';
 import { agentLoop } from '../agent/index.js';
 import { getCurrentLlmProvider, getCurrentLlmModel, getCurrentLlmBaseUrl } from '../services/llmService.js';
+import { createConversation, getConversation, appendMessage, buildLlmHistory } from '../db/conversationStore.js';
+import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js';
 
 export function registerAgent(app: FastifyInstance): void {
   app.post('/api/agent/ask', async (request, reply) => {
-    const { question } = request.body as { question?: string };
+    const { question, conversationId } = request.body as { question?: string; conversationId?: string };
     if (!question?.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' });
     }
 
     if (!graphStore) {
       return reply.code(503).send({ error: 'GRAPH_NOT_LOADED', message: '图谱未加载，请先运行索引构建' });
+    }
+
+    const q = question.trim();
+
+    // 解析/创建会话，落库用户消息，取多轮历史（失败不阻断问答）
+    const projectId = resolveActiveProjectId();
+    const memoryBlock = retrieveMemoryBlock(projectId, q);
+    let convId: string | null = null;
+    let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
+    try {
+      const conv = (conversationId ? getConversation(conversationId) : null) ?? createConversation(projectId, q.slice(0, 40));
+      convId = conv.id;
+      history = buildLlmHistory(convId, 1500);
+      appendMessage(convId, { role: 'user', content: q, mode: 'agent' });
+    } catch (err) {
+      app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // SSE 响应头
@@ -23,13 +41,34 @@ export function registerAgent(app: FastifyInstance): void {
       'X-Accel-Buffering': 'no',
     });
 
+    // 首事件回带会话 id，供前端落活动会话
+    if (convId) {
+      reply.raw.write(`data: ${JSON.stringify({ type: 'conversation', data: { conversationId: convId } })}\n\n`);
+    }
+
+    // 累积 agent 轨迹与最终答案，用于落库
+    const steps: Array<Record<string, unknown>> = [];
+    let finalAnswer = '';
+    let finalFollowUp: string[] = [];
+
     const sendEvent = (event: AgentEvent) => {
+      if (event.type === 'thinking') {
+        steps.push({ type: 'thinking', thought: event.data.thought });
+      } else if (event.type === 'tool_call') {
+        steps.push({ type: 'tool_call', toolName: event.data.toolName, toolArgs: event.data.toolArgs });
+      } else if (event.type === 'tool_result') {
+        steps.push({ type: 'tool_result', toolResult: event.data.toolResult });
+      } else if (event.type === 'done') {
+        finalAnswer = event.data.answer ?? finalAnswer;
+        finalFollowUp = event.data.followUp ?? finalFollowUp;
+      }
       reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
 
     try {
       await agentLoop({
-        question: question.trim(),
+        question: q,
+        history: memoryBlock ? [{ role: 'system' as const, content: memoryBlock }, ...history] : history,
         graphStore,
         repoPath: currentRepoPath,
         onEvent: sendEvent,
@@ -46,6 +85,22 @@ export function registerAgent(app: FastifyInstance): void {
         type: 'error',
         data: { error: `Agent 异常: ${err instanceof Error ? err.message : String(err)}` },
       });
+    }
+
+    // 落库 assistant 消息（含 agent 轨迹）
+    if (convId && finalAnswer) {
+      try {
+        appendMessage(convId, {
+          role: 'assistant',
+          content: finalAnswer,
+          mode: 'agent',
+          meta: { followUp: finalFollowUp, steps },
+        });
+      } catch (err) {
+        app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // 后台沉淀记忆（fire-and-forget）
+      void generateMemoriesFromTurn(projectId, convId, q, finalAnswer);
     }
 
     reply.raw.end();
