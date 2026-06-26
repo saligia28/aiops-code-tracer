@@ -1,1 +1,1 @@
-export { GraphStore } from './graphStore';
+export { GraphStore } from './graphStore.js';
