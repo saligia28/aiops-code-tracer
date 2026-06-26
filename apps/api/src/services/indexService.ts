@@ -35,6 +35,7 @@ import {
   buildRecallIndex,
   buildFileRecallIndex,
   buildFactIndex,
+  buildDocIndex,
   buildPageAnchorIndex,
 } from './askService.js';
 
@@ -218,6 +219,9 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
     buildFileRecallIndex(repoName, log);
     buildFactIndex(repoName, log);
     buildPageAnchorIndex(log);
+    // 文档证据索引：异步构建（含网络向量化），不阻塞图谱就绪；
+    // 未配置 DOCS_PATH 时立即返回，docIndex 保持 null，问答行为同现状。
+    void buildDocIndex(repoName, log);
     log?.info(`图谱已加载: ${repoName} (${graphStore!.nodeCount} nodes, ${graphStore!.edgeCount} edges)`);
     return true;
   } catch (err) {

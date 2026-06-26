@@ -10,22 +10,27 @@ import type {
   GraphNode,
 } from '@aiops/shared-types';
 import {
+  MONOREPO_ROOT,
+  DOCS_PATH,
   currentRepoPath,
   fileNodeMap,
   pageAnchors,
   setRecallIndex,
   setFileRecallIndex,
   setFactIndex,
+  setDocIndex,
   setPageAnchors,
   type RecallDoc,
   type FileRecallDoc,
   type FactKind,
   type CodeFact,
+  type DocChunk,
   type PageAnchor,
 } from '../../context.js';
 import { tokenizeForRecall } from './textUtils.js';
-import { hasApiSignal } from './codeScan.js';
+import { hasApiSignal, listFilesRecursively } from './codeScan.js';
 import { extractPagePhrase } from './questionAnalysis.js';
+import { embedTexts, canUseEmbedding, getEmbeddingModel } from '../embeddingService.js';
 
 
 function normalizeComponentAlias(aliasPath: string): string {
@@ -349,4 +354,153 @@ export function buildFactIndex(repoName: string, log?: FastifyBaseLogger): void 
   const dedup = Array.from(new Map(allFacts.map((fact) => [fact.id, fact])).values());
   setFactIndex({ repoName, facts: dedup });
   log?.info(`通用事实索引已构建: ${repoName} (${dedup.length} facts)`);
+}
+
+
+// ============================================================
+// 文档证据通道：markdown 分块 + 文档索引构建
+// chunkMarkdown 为纯函数（可单测）；buildDocIndex 负责读盘 + 向量化 + idf。
+// ============================================================
+
+/** 单块文档块上限（字符）；超过则按段落拆分。 */
+const DOC_CHUNK_MAX_CHARS = 800;
+
+/** 未向量化的文档块草稿（embedding / indexedAt 由 buildDocIndex 填充）。 */
+export type DocChunkDraft = Omit<DocChunk, 'embedding' | 'indexedAt'>;
+
+function packParagraphs(text: string, maxChars: number): string[] {
+  const paras = text.split(/\n{2,}/);
+  const packed: string[] = [];
+  let buf = '';
+  for (const para of paras) {
+    if (buf && buf.length + para.length + 2 > maxChars) {
+      packed.push(buf);
+      buf = para;
+    } else {
+      buf = buf ? `${buf}\n\n${para}` : para;
+    }
+  }
+  if (buf.trim()) packed.push(buf);
+
+  // 单段本身超限时硬切，保证每块 <= maxChars
+  return packed.flatMap((chunk) => {
+    if (chunk.length <= maxChars) return [chunk];
+    const pieces: string[] = [];
+    for (let i = 0; i < chunk.length; i += maxChars) {
+      pieces.push(chunk.slice(i, i + maxChars));
+    }
+    return pieces;
+  });
+}
+
+/**
+ * 把一篇 markdown 切成文档块草稿。
+ * - title：首个 H1，缺失则回退到文件名（去扩展名）
+ * - 按标题（#~######）分节；首个标题前的内容归为无 section 的前言块
+ * - 超过 DOC_CHUNK_MAX_CHARS 的节按段落再拆
+ */
+export function chunkMarkdown(content: string, source: string): DocChunkDraft[] {
+  const lines = content.split(/\r?\n/);
+  const baseName = (source.split('/').pop() ?? source).replace(/\.(md|markdown)$/i, '');
+
+  let title = baseName;
+  for (const line of lines) {
+    const h1 = line.match(/^#\s+(.+?)\s*$/);
+    if (h1) { title = h1[1].trim(); break; }
+  }
+
+  type RawSection = { section?: string; body: string[] };
+  const headingRe = /^#{1,6}\s+(.+?)\s*$/;
+  const sections: RawSection[] = [];
+  let current: RawSection = { section: undefined, body: [] };
+  for (const line of lines) {
+    const h = line.match(headingRe);
+    if (h) {
+      if (current.body.some((l) => l.trim())) sections.push(current);
+      current = { section: h[1].trim(), body: [line] };
+    } else {
+      current.body.push(line);
+    }
+  }
+  if (current.body.some((l) => l.trim())) sections.push(current);
+
+  const drafts: DocChunkDraft[] = [];
+  let idx = 0;
+  for (const sec of sections) {
+    const text = sec.body.join('\n').trim();
+    if (!text) continue;
+    const pieces = text.length <= DOC_CHUNK_MAX_CHARS ? [text] : packParagraphs(text, DOC_CHUNK_MAX_CHARS);
+    for (const piece of pieces) {
+      const t = piece.trim();
+      if (!t) continue;
+      const terms = tokenizeForRecall(`${title} ${sec.section ?? ''} ${t}`).slice(0, 200);
+      drafts.push({ id: `${source}#${idx}`, title, section: sec.section, source, text: t, terms });
+      idx++;
+    }
+  }
+  return drafts;
+}
+
+/**
+ * 构建文档证据索引。失败/未配置时清空 docIndex（问答退回纯代码模式，行为同现状）。
+ * 自身不抛错，可安全 fire-and-forget。
+ */
+export async function buildDocIndex(repoName: string, log?: FastifyBaseLogger): Promise<void> {
+  if (!DOCS_PATH) { setDocIndex(null); return; }
+  if (!canUseEmbedding()) {
+    setDocIndex(null);
+    log?.warn('已配置 DOCS_PATH，但 embedding 未就绪（缺 key/model/baseUrl），跳过文档索引');
+    return;
+  }
+
+  try {
+    const docsDir = path.isAbsolute(DOCS_PATH) ? DOCS_PATH : path.resolve(MONOREPO_ROOT, DOCS_PATH);
+    if (!fs.existsSync(docsDir)) {
+      setDocIndex(null);
+      log?.warn(`文档目录不存在: ${docsDir}，跳过文档索引`);
+      return;
+    }
+
+    const mdFiles = listFilesRecursively(docsDir, 6).filter((f) => /\.(md|markdown)$/i.test(f));
+    const drafts: DocChunkDraft[] = [];
+    for (const absFile of mdFiles) {
+      let content = '';
+      try { content = fs.readFileSync(absFile, 'utf-8'); } catch { continue; }
+      const rel = path.relative(docsDir, absFile).split(path.sep).join('/');
+      drafts.push(...chunkMarkdown(content, rel));
+    }
+    if (drafts.length === 0) {
+      setDocIndex(null);
+      log?.info(`文档目录无可索引内容: ${docsDir}`);
+      return;
+    }
+
+    const vectors = await embedTexts(drafts.map((d) => d.text));
+    if (!vectors || vectors.length !== drafts.length) {
+      setDocIndex(null);
+      log?.warn('文档向量化失败，跳过文档索引（问答仍按纯代码模式运行）');
+      return;
+    }
+
+    const indexedAt = new Date().toISOString();
+    const chunks: DocChunk[] = drafts.map((d, i) => ({ ...d, embedding: vectors[i], indexedAt }));
+
+    // 文档级 TF-IDF（词法那一路），与 buildRecallIndex 同款
+    const df = new Map<string, number>();
+    for (const chunk of chunks) {
+      for (const token of new Set(chunk.terms)) df.set(token, (df.get(token) ?? 0) + 1);
+    }
+    const idf = new Map<string, number>();
+    const docCount = chunks.length || 1;
+    for (const [token, freq] of df.entries()) {
+      idf.set(token, Math.log((docCount + 1) / (freq + 1)) + 1);
+    }
+
+    const dim = chunks[0]?.embedding.length ?? 0;
+    setDocIndex({ repoName, model: getEmbeddingModel(), dim, idf, chunks });
+    log?.info(`文档证据索引已构建: ${repoName} (${chunks.length} chunks, dim=${dim})`);
+  } catch (err) {
+    setDocIndex(null);
+    log?.warn(`文档索引构建异常，跳过: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
