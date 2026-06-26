@@ -1,18 +1,43 @@
+# ---------- builder ----------
 FROM node:20-alpine AS builder
 WORKDIR /app
 RUN corepack enable
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+
+# Workspace manifests + base tsconfig.
+# Every package tsconfig does `"extends": "../../tsconfig.base.json"`, so the
+# base file must be present or `tsc -b` fails to resolve the config.
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY packages/ packages/
 COPY apps/indexer/ apps/indexer/
-RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @aiops/shared-types build
-RUN pnpm --filter @aiops/graph-core build
-RUN pnpm --filter @aiops/parser build
-RUN pnpm --filter @aiops/indexer build
 
+# --ignore-scripts skips native install scripts. The only one here is
+# tree-sitter-java (node-gyp), a parser devDependency used solely to regenerate
+# the committed assets/tree-sitter-java.wasm — never imported at runtime, which
+# loads the grammar through web-tree-sitter (pure wasm). Skipping it avoids
+# pulling a full C/C++ toolchain into the build.
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+# Build in dependency order (shared-types -> graph-core -> parser -> indexer).
+# The indexer does not depend on @aiops/nlp, so it is not built here.
+RUN pnpm --filter @aiops/shared-types build \
+ && pnpm --filter @aiops/graph-core build \
+ && pnpm --filter @aiops/parser build \
+ && pnpm --filter @aiops/indexer build
+
+# ---------- runtime ----------
 FROM node:20-alpine
 WORKDIR /app
-COPY --from=builder /app/apps/indexer/dist ./dist
+ENV NODE_ENV=production
+
+# Recreate the pnpm workspace layout verbatim. `node apps/indexer/dist/cli.js`
+# resolves `@aiops/*` through the symlink farm under apps/indexer/node_modules
+# and packages/*/node_modules (which point back into packages/* and the root
+# node_modules/.pnpm store). The parser also loads its tree-sitter WASM via an
+# `import.meta.url`/__dirname-relative path (packages/parser/assets), so the
+# package dirs must keep their on-disk structure — flattening dist breaks both.
+COPY --from=builder /app/package.json /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/indexer/package.json ./
-CMD ["node", "dist/cli.js", "index", "--repo", "/repos"]
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/apps/indexer ./apps/indexer
+
+CMD ["node", "apps/indexer/dist/cli.js", "index", "--repo", "/repos"]

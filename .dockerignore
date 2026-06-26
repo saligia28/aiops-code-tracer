@@ -1,0 +1,23 @@
+# Build clean from source inside the image — never ship host (macOS-built)
+# node_modules / dist / tsbuildinfo into the build context.
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+
+.git
+.gitignore
+
+# Local index artifacts, env, logs, editor/AI configs
+data/.aiops/
+.env
+.env.local
+.env.*.local
+**/*.log
+.DS_Store
+.claude/
+.vscode/
+.idea/
+coverage/
+.pnpm-store/
+tmp/
+temp/
