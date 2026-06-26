@@ -295,3 +295,11 @@ export function setFileRecallIndex(value: FileRecallIndex | null): void { fileRe
 export function setFactIndex(value: FactIndex | null): void { factIndex = value; }
 export function setFileNodeMap(value: Map<string, GraphNode[]>): void { fileNodeMap = value; }
 export function setPageAnchors(value: PageAnchor[]): void { pageAnchors = value; }
+
+/**
+ * 会话归属的项目 id：优先已切换的项目，回退到启动加载的 repo 名，再回退 'default'。
+ * ask / agent / conversations 三处共用，避免回退链漂移导致"建得出却列不到"。
+ */
+export function resolveActiveProjectId(): string {
+  return currentProjectId ?? currentRepoName ?? 'default';
+}

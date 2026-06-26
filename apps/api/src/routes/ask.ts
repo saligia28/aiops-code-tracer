@@ -2,8 +2,10 @@ import type { FastifyInstance } from 'fastify'
 import path from 'path'
 import type { AskResponse } from '@aiops/shared-types'
 import { classifyIntent, analyzeQuestion } from '@aiops/nlp'
-import { graphStore, fileNodeMap } from '../context.js'
+import { graphStore, fileNodeMap, resolveActiveProjectId } from '../context.js'
 import { callChatCompletion, canUseLlm } from '../services/llmService.js'
+import { createConversation, getConversation, appendMessage, buildLlmHistory } from '../db/conversationStore.js'
+import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
 import {
   ensureGraph,
   isApiListQuestion,
@@ -55,12 +57,46 @@ import {
 export function registerAsk(app: FastifyInstance): void {
   app.post('/api/ask', async (request, reply) => {
     if (!ensureGraph(reply)) return
-    const { question } = request.body as { question: string }
+    const { question, conversationId } = request.body as { question: string; conversationId?: string }
     if (!question || !question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' })
     }
 
     try {
+      // ====== Step 0: 解析/创建会话，落库用户消息，取多轮历史 ======
+      const projectId = resolveActiveProjectId()
+      const memoryBlock = retrieveMemoryBlock(projectId, question)
+      let convId: string | null = null
+      let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = []
+      try {
+        const conv = (conversationId ? getConversation(conversationId) : null) ?? createConversation(projectId, question.slice(0, 40))
+        convId = conv.id
+        history = buildLlmHistory(convId, 1500)
+        appendMessage(convId, { role: 'user', content: question, mode: 'rag' })
+      } catch (err) {
+        app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      // extractMemory：仅在"复杂问答（走了 LLM 阅读代码那条路）"时才后台沉淀记忆；
+      // 快速路径(API 清单)与规则兜底答案信号低、易产生噪音，默认不抽取。
+      const finalizeResponse = (resp: AskResponse, extractMemory = false): AskResponse => {
+        if (convId) {
+          try {
+            appendMessage(convId, {
+              role: 'assistant',
+              content: resp.answer,
+              mode: 'rag',
+              meta: { followUp: resp.followUp, intent: resp.intent, confidence: resp.confidence, evidenceCount: resp.evidence.length },
+            })
+          } catch (err) {
+            app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`)
+          }
+          // 后台沉淀记忆（fire-and-forget，不阻断响应）
+          if (extractMemory) void generateMemoriesFromTurn(projectId, convId, question, resp.answer)
+          resp.conversationId = convId
+        }
+        return resp
+      }
+
       // ====== Step 1: 理解问题 — LLM 驱动意图+实体提取 ======
       const [analysis, plan] = await Promise.all([
         analyzeQuestion(
@@ -84,7 +120,7 @@ export function registerAsk(app: FastifyInstance): void {
       if (isApiListQuestion(question) && anchor) {
         const endpointHits = collectPageEndpointHits(anchor)
         if (endpointHits.length > 0) {
-          return buildApiListResponse(question, anchor, endpointHits)
+          return finalizeResponse(buildApiListResponse(question, anchor, endpointHits))
         }
       }
 
@@ -210,6 +246,8 @@ export function registerAsk(app: FastifyInstance): void {
       // ====== Step 4: LLM 分析回答 ======
       let answer: string
       let evidence: import('@aiops/shared-types').Evidence[]
+      // 仅当回答确由 LLM 阅读代码生成（复杂问答）时才沉淀记忆，见 finalizeResponse
+      let answeredByLlm = false
 
       const complexConcerns = new Set([
         'click_flow',
@@ -282,11 +320,14 @@ ${trimmedGraphContext}`
 
         const llmAnswer = await callChatCompletion([
           { role: 'system', content: systemPrompt },
+          ...(memoryBlock ? [{ role: 'system' as const, content: memoryBlock }] : []),
+          ...history,
           { role: 'user', content: userPrompt },
         ])
 
         if (llmAnswer) {
           answer = llmAnswer
+          answeredByLlm = true
           const extractedEvidence = extractEvidenceFromAnswer(llmAnswer, codeContext)
           const mergedMap = new Map<string, import('@aiops/shared-types').Evidence>()
           for (const item of traditionalEvidence) {
@@ -320,7 +361,7 @@ ${trimmedGraphContext}`
         followUp,
       }
 
-      return response
+      return finalizeResponse(response, answeredByLlm)
     } catch (err) {
       app.log.error(`问答失败: ${err instanceof Error ? err.message : String(err)}`)
       return reply.code(500).send({ error: 'ASK_FAILED', message: '问答处理失败，请稍后重试' })

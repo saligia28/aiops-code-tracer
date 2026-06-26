@@ -222,6 +222,8 @@ export interface AskResponse {
   intent: IntentType;
   confidence: number;
   followUp: string[];
+  /** 本轮所属会话 id（持久化后回带，供前端落活动会话） */
+  conversationId?: string;
 }
 
 export type LlmMode = 'api' | 'intranet';
@@ -287,7 +289,7 @@ export interface AppConfig {
 // ============================================================
 
 /** Agent SSE 事件类型 */
-export type AgentEventType = 'thinking' | 'tool_call' | 'tool_result' | 'answer_delta' | 'done' | 'error';
+export type AgentEventType = 'conversation' | 'thinking' | 'tool_call' | 'tool_result' | 'answer_delta' | 'done' | 'error';
 
 /** Agent SSE 事件 */
 export interface AgentEvent {
@@ -309,6 +311,8 @@ export interface AgentEvent {
     followUp?: string[];
     /** error: 错误信息 */
     error?: string;
+    /** conversation: 本轮所属会话 id（首事件回带，供前端落活动会话） */
+    conversationId?: string;
   };
 }
 
@@ -317,4 +321,54 @@ export interface AgentToolDef {
   name: string;
   description: string;
   parameters: Record<string, unknown>; // JSON Schema
+}
+
+// ============================================================
+// 对话持久化（会话 / 消息 / 记忆）
+// ============================================================
+
+/** 消息角色（与 LLM messages 对齐） */
+export type ChatRole = 'user' | 'assistant' | 'system';
+
+/** 问答模式 */
+export type ChatMode = 'rag' | 'agent';
+
+/** 持久化的一条消息（一行 = LLM messages 数组里一条） */
+export interface ConversationMessage {
+  id: string;
+  conversationId: string;
+  role: ChatRole;
+  content: string;
+  mode?: ChatMode;
+  /** 富信息：followUp / evidence 摘要 / elapsed / error / aborted / agent steps 等 */
+  meta?: Record<string, unknown> | null;
+  createdAt: number; // epoch ms
+}
+
+/** 一条会话 */
+export interface Conversation {
+  id: string;
+  projectId: string;
+  title: string | null;
+  createdAt: number;
+  updatedAt: number;
+  archived: boolean;
+}
+
+/** 会话 + 其消息（用于刷新恢复） */
+export interface ConversationWithMessages extends Conversation {
+  messages: ConversationMessage[];
+}
+
+/** 记忆类型（预留，本期不实现） */
+export type MemoryKind = 'summary' | 'fact' | 'preference';
+
+/** 一条记忆（预留，本期不实现） */
+export interface Memory {
+  id: string;
+  projectId: string;
+  conversationId?: string | null;
+  kind: MemoryKind;
+  content: string;
+  createdAt: number;
 }
