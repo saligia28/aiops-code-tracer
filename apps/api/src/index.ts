@@ -10,6 +10,7 @@ import {
 } from './context.js';
 import { registerAuth } from './auth.js';
 import { setLlmServiceLogger } from './services/llmService.js';
+import { shutdownTracing } from './services/traceService.js';
 import { loadGraph, patchIndexTaskState, migrateExistingGraphData } from './services/indexService.js';
 import { initDb } from './db/sqlite.js';
 
@@ -37,6 +38,21 @@ const app = Fastify({ logger: true });
 await app.register(cors, { origin: true, credentials: true });
 await app.register(cookie);
 await app.register(websocket);
+
+// L4 观测：进程收尾时把 Langfuse 批量队列冲干净（未配置时 no-op）
+app.addHook('onClose', async () => {
+  await shutdownTracing();
+});
+
+// docker stop / Ctrl-C 发的是信号，默认不会走 app.close() → 最后一批 trace 会丢。
+// 这里显式接信号触发优雅关停（once 防重入；close 卡住时 5s 兜底强退）。
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    const force = setTimeout(() => process.exit(1), 5000);
+    force.unref();
+    void app.close().then(() => process.exit(0));
+  });
+}
 
 // 将 logger 注入需要它的 service
 setLlmServiceLogger(app.log);

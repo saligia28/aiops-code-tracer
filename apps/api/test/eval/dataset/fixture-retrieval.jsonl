@@ -1,0 +1,10 @@
+# CI 门禁数据集 · 针对 test/eval/fixture-repo（随仓库提交，CI 现场建图，门禁永不 skip）。
+# 用例刻意覆盖三条召回通道：中文业务词（文件内容 TF-IDF）、英文标识符（name 索引）、路径词（路径候选通道）。
+{"id":"f-void-page-zh","question":"订单作废的列表页在哪个文件？","expectedFiles":["src/views/orderManage/orderVoid/List.vue"],"note":"中文业务词通道：文件内含'作废/订单作废管理'"}
+{"id":"f-void-api-en","question":"voidOrder 接口定义在哪个文件？","expectedFiles":["src/api/orderVoid.ts"],"note":"标识符通道：函数名精确命中"}
+{"id":"f-stock-check-zh","question":"备料核料页面在哪个文件？","expectedFiles":["src/views/inventory/stockCheck/List.vue"],"note":"中文业务词通道"}
+{"id":"f-price-status-zh","question":"核价状态在哪个页面展示？","expectedFiles":["src/views/costManagement/priceCheck/List.vue"],"note":"中文业务词：columns title '核价状态'"}
+{"id":"f-order-route","question":"订单作废管理的路由在哪个文件配置？","expectedFiles":["src/router/modules/order.ts"],"note":"路由文件含中文 title"}
+{"id":"f-pagination","question":"表格分页每页多少条是在哪个公共组件里定义的？","expectedFiles":["src/components/CommonTable.vue"],"note":"中文'每页/分页' + pageSize"}
+{"id":"f-stock-api-en","question":"getStockCheckList 在哪里实现？","expectedFiles":["src/api/stockCheck.ts"],"note":"标识符通道"}
+{"id":"f-format-util","question":"日期格式化工具函数在哪个文件？","expectedFiles":["src/utils/format.ts"],"note":"中文注释'日期格式化' + formatDate"}

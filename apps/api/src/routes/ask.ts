@@ -2,8 +2,11 @@ import type { FastifyInstance } from 'fastify'
 import path from 'path'
 import type { AskResponse } from '@aiops/shared-types'
 import { classifyIntent, analyzeQuestion } from '@aiops/nlp'
-import { graphStore, fileNodeMap, resolveActiveProjectId } from '../context.js'
-import { callChatCompletion, canUseLlm } from '../services/llmService.js'
+import { graphStore, fileNodeMap, resolveActiveProjectId, currentRepoName, currentRepoPath } from '../context.js'
+import { reflectOnAnswer } from '../services/ask/reflection.js'
+import { retrieveDocEvidence, renderDocEvidenceForPrompt } from '../services/ask/docRecall.js'
+import { callChatCompletion, canUseLlm, getLastLlmCallMeta } from '../services/llmService.js'
+import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
 import { createConversation, getConversation, appendMessage, buildLlmHistory } from '../db/conversationStore.js'
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
 import {
@@ -17,6 +20,7 @@ import {
   collectPageEndpointHits,
   buildApiListResponse,
   findRelevantNodes,
+  findRelevantNodesWithSemantic,
   mergeNodesByOrder,
   prioritizeNodesByFileScope,
   collectComponentScopeFiles,
@@ -55,12 +59,16 @@ import {
 } from '../services/askService.js'
 
 export function registerAsk(app: FastifyInstance): void {
+  setTraceServiceLogger(app.log)
   app.post('/api/ask', async (request, reply) => {
     if (!ensureGraph(reply)) return
     const { question, conversationId } = request.body as { question: string; conversationId?: string }
     if (!question || !question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' })
     }
+
+    // L4 观测：未配置 Langfuse 时 startAskTrace 返回 no-op facade，主链路零开销
+    let trace: AskTrace | null = null
 
     try {
       // ====== Step 0: 解析/创建会话，落库用户消息，取多轮历史 ======
@@ -76,6 +84,7 @@ export function registerAsk(app: FastifyInstance): void {
       } catch (err) {
         app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`)
       }
+      trace = startAskTrace({ question, projectId, conversationId: convId, repoName: currentRepoName })
       // extractMemory：仅在"复杂问答（走了 LLM 阅读代码那条路）"时才后台沉淀记忆；
       // 快速路径(API 清单)与规则兜底答案信号低、易产生噪音，默认不抽取。
       const finalizeResponse = (resp: AskResponse, extractMemory = false): AskResponse => {
@@ -94,6 +103,8 @@ export function registerAsk(app: FastifyInstance): void {
           if (extractMemory) void generateMemoriesFromTurn(projectId, convId, question, resp.answer)
           resp.conversationId = convId
         }
+        // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖
+        trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
         return resp
       }
 
@@ -125,6 +136,7 @@ export function registerAsk(app: FastifyInstance): void {
       }
 
       // ====== Step 2: 检索相关代码 ======
+      const tRecall = Date.now()
       const componentQuestion = plan.concern === 'component_relation' || isComponentFeatureQuestion(question)
       const componentFiles = anchor?.componentFile
         ? collectComponentScopeFiles(anchor.componentFile, componentQuestion ? 3 : 2, 180)
@@ -145,7 +157,9 @@ export function registerAsk(app: FastifyInstance): void {
         .filter(Boolean)
         .join(' ')
 
-      const candidateNodes = findRelevantNodes(searchQuery, 60, {
+      // 主召回走词法+语义 RRF 融合（语义索引未就绪/embedding 不可用时自动退化为纯词法）。
+      // 其余 findRelevantNodes 调用点是英文标识符 scope 收窄，词法足够，不值得多付一跳 embed 延迟。
+      const candidateNodes = await findRelevantNodesWithSemantic(searchQuery, 60, {
         ...plan,
         keywords: [...plan.keywords, ...componentTerms.slice(0, 12)],
       })
@@ -215,6 +229,7 @@ export function registerAsk(app: FastifyInstance): void {
       rankedNodes = rankedNodes.slice(0, 80)
       const analysisNodes = rankedNodes.filter(node => node.type !== 'import' && node.type !== 'file')
       const answerNodes = analysisNodes.length > 0 ? analysisNodes : rankedNodes
+      trace?.span('recall', tRecall, { candidates: candidateNodes.length, ranked: rankedNodes.length })
 
       // 图谱追踪
       const intentResult = classifyIntent(question)
@@ -243,7 +258,12 @@ export function registerAsk(app: FastifyInstance): void {
         ...componentFiles,
       ])
 
+      // 文档证据（P0-B）：独立通道，只在答案层融合，不进代码召回。
+      // 未配 DOCS_PATH / 索引未建 / embedding 不可用时恒为 []，下方所有逻辑零变化。
+      const docEvidence = await retrieveDocEvidence(question, 4)
+
       // ====== Step 4: LLM 分析回答 ======
+      const tAnswer = Date.now()
       let answer: string
       let evidence: import('@aiops/shared-types').Evidence[]
       // 仅当回答确由 LLM 阅读代码生成（复杂问答）时才沉淀记忆，见 finalizeResponse
@@ -316,37 +336,82 @@ ${codeContext}
 ${evidenceHints}
 
 调用关系：
-${trimmedGraphContext}`
+${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
 
-        const llmAnswer = await callChatCompletion([
-          { role: 'system', content: systemPrompt },
+        const llmMessages = [
+          { role: 'system' as const, content: systemPrompt },
           ...(memoryBlock ? [{ role: 'system' as const, content: memoryBlock }] : []),
           ...history,
-          { role: 'user', content: userPrompt },
-        ])
+          { role: 'user' as const, content: userPrompt },
+        ]
+        const llmAnswer = await callChatCompletion(llmMessages)
 
-        if (llmAnswer) {
-          answer = llmAnswer
-          answeredByLlm = true
-          const extractedEvidence = extractEvidenceFromAnswer(llmAnswer, codeContext)
+        // 从 LLM 文本组装 answer + evidence（首答与反思重答共用同一套逻辑）
+        const composeFromLlm = (text: string): { answer: string; evidence: import('@aiops/shared-types').Evidence[] } => {
+          const extractedEvidence = extractEvidenceFromAnswer(text, codeContext)
+          // 合并顺序（有讲究）：页面锚点 → 答案自引的行 → 规则预定位的行，容量 12。
+          // 答案实际引用的 file:line 必须优先保住——它们是用户核对答案的第一线索；
+          // 旧顺序 traditional 在前会把自引行挤出清单，造成"答案与展示证据脱节"
+          //（L3 judge 曾因此把真实引用误判为不忠实——行是真的，只是清单里没有）。
+          const anchorItem = traditionalEvidence.find((item) => item.label === '页面锚点')
           const mergedMap = new Map<string, import('@aiops/shared-types').Evidence>()
-          for (const item of traditionalEvidence) {
-            mergedMap.set(`${item.file}:${item.line}:${item.label}`, item)
-          }
-          for (const item of extractedEvidence) {
+          for (const item of [...(anchorItem ? [anchorItem] : []), ...extractedEvidence, ...traditionalEvidence]) {
             const key = `${item.file}:${item.line}:${item.label}`
             if (!mergedMap.has(key)) {
               mergedMap.set(key, item)
             }
           }
-          evidence = [...mergedMap.values()].slice(0, 12)
+          return { answer: text, evidence: [...mergedMap.values()].slice(0, 12) }
+        }
+
+        if (llmAnswer) {
+          answeredByLlm = true
+          let composed = composeFromLlm(llmAnswer)
+
+          // ====== 自校验（P0-A）：答案先自查，不合格带反馈重答一次 ======
+          // 反思失败/异常一律放行原答案（增强不是闸门）；最多重试 1 次防成本失控。
+          const tReflect = Date.now()
+          const reflection = await reflectOnAnswer({
+            question,
+            answer: composed.answer,
+            evidence: composed.evidence,
+            repoPath: currentRepoPath,
+          })
+          if (!reflection.pass && reflection.feedback) {
+            const retryAnswer = await callChatCompletion([
+              ...llmMessages,
+              { role: 'assistant' as const, content: composed.answer },
+              { role: 'user' as const, content: reflection.feedback },
+            ])
+            if (retryAnswer) {
+              composed = composeFromLlm(retryAnswer)
+              // TODO(评测跟进): 重答后可再跑一次 reflectOnAnswer 做"仍不合格"统计，
+              // 但绝不二次重试；等 eval -- answers 观察一轮真实数据后再决定是否需要。
+            }
+          }
+          trace?.span('reflection', tReflect, { ...reflection.meta, retried: !reflection.pass })
+
+          answer = composed.answer
+          evidence = composed.evidence
         } else {
           evidence = traditionalEvidence
           answer = composeAnswer(question, finalIntent, answerNodes, trimmedGraph)
         }
       } else {
         evidence = traditionalEvidence
+        // TODO(P0-B 后续): 简单路径（composeAnswerWithLlm）暂不注入文档证据与反思——
+        // 该路径 prompt 在 answer.ts 内部组装，注入需改其签名；等复杂路径跑出真实收益再动它。
         answer = await composeAnswerWithLlm(question, finalIntent, answerNodes, trimmedGraph, evidence, plan, anchor)
+      }
+      {
+        // 紧跟主 LLM 调用之后同步读取，无 await 插入 → 元数据对应的就是这次调用
+        const llmMeta = getLastLlmCallMeta()
+        trace?.generation('answer', tAnswer, {
+          model: llmMeta?.model,
+          usage: llmMeta ? { promptTokens: llmMeta.promptTokens, completionTokens: llmMeta.completionTokens, totalTokens: llmMeta.totalTokens } : undefined,
+          promptChars: codeContext.length,
+          outputChars: answer.length,
+        })
       }
 
       const followUpNodes = answerNodes.slice(0, 3)
@@ -355,6 +420,8 @@ ${trimmedGraphContext}`
       const response: AskResponse = {
         answer,
         evidence,
+        // 文档证据独立下发（与代码 evidence 分开渲染）；空数组时不带此字段，前端行为同现状
+        ...(docEvidence.length > 0 ? { docEvidence } : {}),
         graph: trimmedGraph,
         intent: finalIntent,
         confidence: Math.max(analysis.confidence, intentResult.confidence, 0.55),
@@ -363,6 +430,7 @@ ${trimmedGraphContext}`
 
       return finalizeResponse(response, answeredByLlm)
     } catch (err) {
+      trace?.error(err)
       app.log.error(`问答失败: ${err instanceof Error ? err.message : String(err)}`)
       return reply.code(500).send({ error: 'ASK_FAILED', message: '问答处理失败，请稍后重试' })
     }

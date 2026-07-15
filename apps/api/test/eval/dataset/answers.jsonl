@@ -1,0 +1,10 @@
+# L3 答案质量数据集 · 每行一个 JSON。'#' 与空行跳过。
+# 字段：question（发给 /api/ask）；mustMention[]（答案必须提到，确定性判）；
+#       mustNotHallucinate[]（答案出现即扣分——特意选"似是而非的邻居"当陷阱）；
+#       referenceAnswer（人工核心结论，judge 评 correct 用）。
+# gold 出处与 retrieval.jsonl 同源（router title↔component 铁证）。
+{"id":"a-price-check","question":"订单会议核价的列表页在哪个文件？","mustMention":["qsOrderMeetingPriceCheck/List.vue"],"mustNotHallucinate":["odmDHPriceCheck"],"referenceAnswer":"列表页是 src/views/costManagement/qsOrderMeetingPriceCheck/List.vue。"}
+{"id":"a-book-warehouse","question":"约仓发货的页面在哪里实现的？","mustMention":["BookWarehouseSend.vue"],"mustNotHallucinate":["fabricSaleDelivery"],"referenceAnswer":"实现在 src/views/deliveryManagement/tailoringDeliver/BookWarehouseSend.vue。"}
+{"id":"a-process-cost","question":"加工费核算页面在哪个文件？","mustMention":["processCost"],"mustNotHallucinate":[],"referenceAnswer":"页面在 src/views/costManagement/bigGoodsPricing/processCost/ 目录（入口 index.vue，详情 detail.vue）。"}
+{"id":"a-stock-check","question":"备料核料的列表页在哪个文件？","mustMention":["stockCheck"],"mustNotHallucinate":["stockOrder"],"referenceAnswer":"列表页是 src/views/inventoryManagement/stockCheck/List.vue。"}
+{"id":"a-band-planning","question":"波段企划页面在哪个文件？","mustMention":["BandPlaning"],"mustNotHallucinate":["bandAnalysis"],"referenceAnswer":"页面是 src/views/designPlanning/seasonPlanning/BandPlaning.vue（注意文件名拼写就是 BandPlaning）。"}

@@ -172,6 +172,24 @@ export function updateLlmRuntimeConfig(input: { mode?: string; model?: string })
   return buildLlmRuntimeConfig();
 }
 
+/**
+ * 最近一次 LLM 调用的观测元数据（model + token usage）。
+ * 供 L4 trace 在「调用后立即同步读取」——同一事件循环 tick 内无 await 插入时是准确的；
+ * 这是观测级近似（避免为 usage 改动全部调用方签名），不用于计费结算。
+ */
+export interface LlmCallMeta {
+  model: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
+let lastCallMeta: LlmCallMeta | null = null;
+
+export function getLastLlmCallMeta(): LlmCallMeta | null {
+  return lastCallMeta;
+}
+
 export async function callApiCompatibleChatCompletion(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   provider: LlmProvider,
@@ -208,6 +226,13 @@ export async function callApiCompatibleChatCompletion(
 
     const json = await resp.json() as {
       choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+    lastCallMeta = {
+      model,
+      promptTokens: json.usage?.prompt_tokens,
+      completionTokens: json.usage?.completion_tokens,
+      totalTokens: json.usage?.total_tokens,
     };
     const rawContent = json.choices?.[0]?.message?.content;
     if (typeof rawContent === 'string') return rawContent.trim();
@@ -252,7 +277,17 @@ export async function callOllamaChatCompletion(messages: Array<{ role: 'system' 
       return null;
     }
 
-    const json = await resp.json() as { message?: { content?: string } };
+    const json = await resp.json() as {
+      message?: { content?: string };
+      prompt_eval_count?: number;
+      eval_count?: number;
+    };
+    lastCallMeta = {
+      model,
+      promptTokens: json.prompt_eval_count,
+      completionTokens: json.eval_count,
+      totalTokens: (json.prompt_eval_count ?? 0) + (json.eval_count ?? 0) || undefined,
+    };
     return json.message?.content?.trim() || null;
   } catch (err) {
     _log?.warn(`内网 Ollama 调用异常: ${err instanceof Error ? err.message : String(err)}`);

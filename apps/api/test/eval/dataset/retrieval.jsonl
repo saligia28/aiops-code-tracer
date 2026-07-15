@@ -1,0 +1,28 @@
+# 检索评测数据集 · 每行一个 JSON（RetrievalCase）。'#' 开头与空行会被跳过。
+#
+# 标注纪律：gold 必须来自独立看代码（router title↔component 映射 / grep 真实仓库），
+# 不能抄检索结果——否则评测变成系统给自己打分。
+# 变体约定：同一目标可留 en + zh 两条（-en 后缀测 Gap A 词法路径，zh 测 Gap B 跨语言语义）。
+# 所有 gold 均已验证存在于 data/.aiops/elink-pc/graph.json 的节点 filePath 中。
+#
+# ============ 配对变体（en 测词法，zh 测语义）============
+{"id":"q-inventory-sample-api-en","question":"库存抽样管理 sampleManagement 的接口定义在哪个文件？","expectedFiles":["src/api/inventoryManagement/sampleManagement.ts"],"note":"en 变体（问题带英文标识符）。gold 出处：src/api 目录结构。"}
+{"id":"q-inventory-sample-api","question":"库存抽样管理的接口定义在哪个文件？","expectedFiles":["src/api/inventoryManagement/sampleManagement.ts"],"note":"zh 变体。词法预期 miss（Gap B：'抽样'桥不到 sampleManagement）。"}
+{"id":"q-order-route-en","question":"订单管理模块 orderManage 的路由是怎么配置的？","expectedFiles":["src/router/modules/orderManage.ts"],"note":"en 变体。gold 出处：router/modules 目录。"}
+{"id":"q-order-route","question":"订单管理模块的路由是在哪个文件配置的？","expectedFiles":["src/router/modules/orderManage.ts"],"note":"zh 变体。词法预期 miss（Gap B）。"}
+{"id":"q-price-check-list-en","question":"qsOrderMeetingPriceCheck 这个核价页面的列表在哪个文件？","expectedFiles":["src/views/costManagement/qsOrderMeetingPriceCheck/List.vue"],"note":"en 变体（Gap A 修复案例：路径候选通道后 rank2）。gold 出处：目录结构+文件内'核价状态'等标签。"}
+{"id":"q-price-check-list","question":"订单会议核价的列表页在哪个文件？","expectedFiles":["src/views/costManagement/qsOrderMeetingPriceCheck/List.vue"],"note":"zh 变体（Gap B 修复案例：语义通道后 rank1；词法仍 miss——'会议'不在文件内，'核价'被 49 文件稀释）。"}
+# ============ 页面定位 · 自然中文（gold 出处：router title↔component 铁证）============
+{"id":"q-band-planning","question":"波段企划页面在哪个文件？","expectedFiles":["src/views/designPlanning/seasonPlanning/BandPlaning.vue"],"note":"router: designPlanning.ts title='波段企划'。文件名还有 typo(BandPlaning)，词法几乎不可能桥到。"}
+{"id":"q-book-warehouse-send","question":"约仓发货的页面在哪里实现的？","expectedFiles":["src/views/deliveryManagement/tailoringDeliver/BookWarehouseSend.vue"],"note":"router: deliveryManagement.ts title='约仓发货'。"}
+{"id":"q-process-cost","question":"加工费核算页面在哪个文件？","expectedFiles":["src/views/costManagement/bigGoodsPricing/processCost/index.vue"],"note":"router: costManagement.ts title='加工费核算'。"}
+{"id":"q-stock-check","question":"备料核料的列表页在哪个文件？","expectedFiles":["src/views/inventoryManagement/stockCheck/List.vue"],"note":"router: inventoryManagement.ts title='备料核料'。"}
+{"id":"q-fabric-approve","question":"面料审批单页面在哪个文件？","expectedFiles":["src/views/costManagement/approvePrice/FabricApprove.vue"],"note":"router: costManagement.ts title='面料审批单'。"}
+{"id":"q-tag-price-plan","question":"吊牌价企划的列表页在哪个文件？","expectedFiles":["src/views/commodityPlanning/tagPricePlan/List/index.vue"],"note":"router: commodityPlanning.ts title='吊牌价企划'。"}
+{"id":"q-purchase-reconciliation","question":"成衣对账付款明细页面在哪个文件？","expectedFiles":["src/views/financialManage/reconciliation/purchaseReconciliationPaymentDetailList/index.vue"],"note":"router: financialManage.ts title='成衣对账付款明细'。"}
+{"id":"q-smart-dispatch","question":"齐色智能派单推荐功能在哪个组件？","expectedFiles":["src/views/developManage/flowBom/components/SmartDispatch.vue"],"note":"router: developManage.ts title='齐色智能派单推荐'。"}
+{"id":"q-futures-product-order","question":"期货商品下单页面在哪个文件？","expectedFiles":["src/views/orderManage/futuresProductOrder/index.vue"],"note":"router: orderManage.ts title='期货商品下单'。"}
+{"id":"q-capacity-reporting","question":"产能提报的列表页在哪个文件？","expectedFiles":["src/views/productionManagement/capacityManagement/capacityReporting/list.vue"],"note":"router: productionManagement.ts title='产能提报'。"}
+# ============ 功能/逻辑定位 · 自然中文（gold 出处：grep 真实仓库）============
+{"id":"q-fabric-check-void","question":"面料检验单列表的作废操作在哪个文件？","expectedFiles":["src/views/qualityManagement/fabricCheck/List/index.vue"],"note":"grep '作废' 命中该文件；router: qualityManagement.ts fabricCheck 列表。"}
+{"id":"q-test-demand-config","question":"质量管理里检测要求的配置页在哪个文件？","expectedFiles":["src/views/qualityManagement/configurationManagement/TestDemand.vue"],"note":"router: qualityManagement.ts title='检测要求'。"}

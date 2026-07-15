@@ -360,8 +360,11 @@ export function buildPlanEvidence(
     if (anchorFile) {
       scoped.unshift({
         file: anchorFile.filePath,
-        line: parseLine(anchorFile.loc),
-        code: `${anchor.title} (${anchor.routeName ?? 'route'})`,
+        // 文件级断言（"该文件是标题为 X 的页面"）锚在第 1 行；此前取任意节点行 + code 带
+        // routeName 标识符，行内容对不上 → L2 引用核对永远记它一笔"行内容不符"。
+        // routeName 属于 router 配置文件而非本组件文件，不在此处声称。
+        line: 1,
+        code: `页面：${anchor.title}`,
         label: '页面锚点',
       });
     }

@@ -9,19 +9,22 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.check.json",
     "test": "vitest run",
+    "eval": "tsx test/eval/run.ts",
+    "eval:nightly": "tsx test/eval/run.ts semantic && tsx test/eval/run.ts answers",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@aiops/shared-types": "workspace:*",
     "@aiops/graph-core": "workspace:*",
-    "@aiops/parser": "workspace:*",
     "@aiops/nlp": "workspace:*",
+    "@aiops/parser": "workspace:*",
+    "@aiops/shared-types": "workspace:*",
     "@fastify/cookie": "^11.0.0",
     "@fastify/cors": "^10.0.0",
     "@fastify/websocket": "^11.0.0",
     "better-sqlite3": "^11.8.0",
     "dotenv": "^16.4.0",
-    "fastify": "^5.2.0"
+    "fastify": "^5.2.0",
+    "langfuse": "^3.38.20"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
