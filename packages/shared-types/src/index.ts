@@ -313,7 +313,7 @@ export interface AppConfig {
 // ============================================================
 
 /** Agent SSE 事件类型 */
-export type AgentEventType = 'conversation' | 'thinking' | 'tool_call' | 'tool_result' | 'answer_delta' | 'done' | 'error';
+export type AgentEventType = 'conversation' | 'plan' | 'thinking' | 'tool_call' | 'tool_result' | 'answer_delta' | 'done' | 'error';
 
 /** Agent SSE 事件 */
 export interface AgentEvent {
@@ -337,6 +337,8 @@ export interface AgentEvent {
     error?: string;
     /** conversation: 本轮所属会话 id（首事件回带，供前端落活动会话） */
     conversationId?: string;
+    /** plan: 任务分解出的步骤目标列表（P1-C；简单问题不发此事件） */
+    planSteps?: string[];
   };
 }
 

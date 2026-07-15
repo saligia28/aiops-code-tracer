@@ -4,6 +4,7 @@ import { AGENT_MAX_TURNS, AGENT_SINGLE_LLM_TIMEOUT_MS, AGENT_TOTAL_TIMEOUT_MS } 
 import { executeTool, getOpenAITools } from './tools.js'
 import { callChatCompletionWithTools, type ChatMessage, type ToolDefinition } from './llmWithTools.js'
 import { AGENT_SYSTEM_PROMPT } from './prompt.js'
+import { shouldPlan, generatePlan, renderPlanForPrompt } from './planner.js'
 
 // ============================================================
 // 配置
@@ -50,6 +51,23 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
   ]
 
   const startTime = Date.now()
+
+  // ====== 任务规划（P1-C）：长任务先列计划再执行，简单问题直通 ======
+  // 规划失败一律静默降级为无计划（增强不是闸门）；计划以 system 消息注入，
+  // 位置在压缩保护区（compressMessages 从第 3 条起折叠，system 不受影响）。
+  if (shouldPlan(question)) {
+    const planSteps = await generatePlan(question, {
+      provider: llm.provider,
+      model: llm.model,
+      baseUrl: llm.baseUrl,
+      apiKey: llm.apiKey,
+      timeoutMs: SINGLE_LLM_TIMEOUT_MS,
+    })
+    if (planSteps) {
+      messages.splice(1, 0, { role: 'system', content: renderPlanForPrompt(planSteps) })
+      onEvent({ type: 'plan', data: { planSteps } })
+    }
+  }
 
   // 请求级工具结果缓存：key = "工具名:参数JSON"
   const toolCache = new Map<string, string>()
@@ -193,8 +211,12 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
     return
   }
 
-  // 超过最大轮次
-  onEvent({ type: 'error', data: { error: `达到最大推理轮次（${MAX_TURNS} 轮）` } })
+  // 超过最大轮次：不再硬报错——按计划/已收集信息优雅收尾（P1-C）
+  await forceFinalAnswer(
+    messages, question, llm, onEvent,
+    '【系统指令】已达到最大探索轮次。请立即停止调用任何工具，基于以上已收集的信息用中文给出最终回答：' +
+    '若存在执行计划，逐条说明每一步的完成情况与结论；未完成的步骤明确标注"未完成"及原因。',
+  )
 }
 
 // ============================================================
@@ -216,19 +238,22 @@ function buildRepeatHint(toolName: string, args: Record<string, unknown>): strin
 }
 
 /**
- * 强制收尾：检测到死循环时，禁用工具再调一次 LLM，逼模型基于现有信息输出文字答案。
+ * 强制收尾：禁用工具再调一次 LLM，逼模型基于现有信息输出文字答案。
+ * 用于死循环检测（默认指令）与最大轮次耗尽（P1-C：按计划汇报进度）两个场景。
  */
 async function forceFinalAnswer(
   messages: ChatMessage[],
   question: string,
   llm: AgentLoopOptions['llm'],
   onEvent: (event: AgentEvent) => void,
+  instruction?: string,
 ): Promise<void> {
   messages.push({
     role: 'user',
     content:
-      '【系统指令】检测到工具被重复调用且未取得新进展。请立即停止调用任何工具，' +
-      '基于以上已收集的信息用中文给出最终回答；若证据不足，请明确说明缺少哪部分信息。',
+      instruction ??
+      ('【系统指令】检测到工具被重复调用且未取得新进展。请立即停止调用任何工具，' +
+        '基于以上已收集的信息用中文给出最终回答；若证据不足，请明确说明缺少哪部分信息。'),
   })
   try {
     // 传入空 tools 数组 → 模型无法再发起工具调用，必须输出文字答案
