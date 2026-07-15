@@ -193,7 +193,8 @@ async function answers(): Promise<void> {
     // L2 引用核对（确定性，免费）：file:line 是否真实存在且与声称内容匹配
     const citation = repoPath ? citationAccuracy(resp.evidence, repoPath) : null;
     if (citation) citationRates.push(citation.accuracy);
-    const judged = await judgeAnswer({ question: c.question, answer: resp.answer, evidence: resp.evidence, referenceAnswer: c.referenceAnswer });
+    // codeContext 透传 = judge 口径对齐（v4）：忠实度以答案的真实信息源为锚，而非仅 12 条清单
+    const judged = await judgeAnswer({ question: c.question, answer: resp.answer, evidence: resp.evidence, referenceAnswer: c.referenceAnswer, codeContext: (resp as { codeContextPreview?: string }).codeContextPreview });
 
     if (men.ok) mentionPass++;
     if (hal.ok) halluFree++;

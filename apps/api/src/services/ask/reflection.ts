@@ -43,6 +43,8 @@ export async function reflectOnAnswer(input: {
   answer: string;
   evidence: Evidence[];
   repoPath: string;
+  /** 答案生成时的代码上下文；L2 judge 口径对齐用（见 answerJudge PROMPT_VERSION v4）。 */
+  codeContext?: string;
 }): Promise<ReflectionResult> {
   const meta: ReflectionResult['meta'] = { citationAccuracy: null, judgeFaithful: null };
 
@@ -71,7 +73,7 @@ export async function reflectOnAnswer(input: {
   // ---- L2：judge 忠实度（LLM，一票，显式开启才跑）----
   if (JUDGE_ENABLED) {
     try {
-      const judged = await judgeAnswer({ question: input.question, answer: input.answer, evidence: input.evidence }, 1);
+      const judged = await judgeAnswer({ question: input.question, answer: input.answer, evidence: input.evidence, codeContext: input.codeContext }, 1);
       if (judged) {
         meta.judgeFaithful = judged.verdict.faithful;
         if (!judged.verdict.faithful) {

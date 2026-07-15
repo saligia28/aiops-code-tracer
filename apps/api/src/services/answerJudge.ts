@@ -69,6 +69,12 @@ export interface JudgeInput {
   referenceAnswer?: string;
   /** 有文档片段（与代码证据矛盾）时 judge 才评 codeFirst，否则 null。 */
   docSnippet?: string;
+  /**
+   * 答案生成时看到的代码上下文（口径对齐，v4 起）：答案的信息源是完整 codeContext，
+   * 只按 12 条 evidence 清单判忠实会把"真实但没进清单"的细节误判为编造。
+   * 传入后 rubric 认它为合法依据；不传则维持旧口径（evidence-only，偏严）。
+   */
+  codeContext?: string;
 }
 
 export interface JudgeVerdict {
@@ -87,8 +93,11 @@ export interface JudgeVerdict {
  * 直接给合规布尔稳得多，极性映射由解析层做。
  * v3：收紧 mixed 定义——v2 实测"提及文档并指出其过时"被误判 mixed，可指出文档过时恰是
  * 最好的代码优先行为；mixed 仅指「结论摇摆/未取舍」。
+ * v4：口径对齐——faithful 的合法依据扩展到「相关代码上下文」（答案的真实信息源）。
+ * v3 只认 evidence 清单，实测把"源码里真实存在但没挤进 12 条清单"的细节误判为编造
+ *（L2 引用核对 100% 而 judge 判不忠实的矛盾即此）。行号型论断仍须严格对上。
  */
-const PROMPT_VERSION = 'v3';
+const PROMPT_VERSION = 'v4';
 
 function buildJudgeMessages(input: JudgeInput): Array<{ role: 'system' | 'user'; content: string }> {
   const evidenceBlock = input.evidence
@@ -98,8 +107,12 @@ function buildJudgeMessages(input: JudgeInput): Array<{ role: 'system' | 'user';
 
   const sections = [
     `【用户问题】\n${input.question}`,
-    `【代码证据】（检索自真实仓库，是唯一可信的事实来源）\n${evidenceBlock}`,
+    `【代码证据】（检索自真实仓库）\n${evidenceBlock}`,
   ];
+  if (input.codeContext) {
+    // 截断保护：codeContext 生成侧本身有预算（~6000 字符），这里再兜一道底
+    sections.push(`【相关代码上下文】（答案生成时看到的完整代码材料，同为可信事实来源）\n${input.codeContext.slice(0, 6500)}`);
+  }
   if (input.docSnippet) sections.push(`【相关文档片段】（可能过时，与代码冲突时以代码为准）\n${input.docSnippet}`);
   if (input.referenceAnswer) sections.push(`【参考答案】（人工标注的核心结论）\n${input.referenceAnswer}`);
   sections.push(`【待评审答案】\n${input.answer.slice(0, 3000)}`);
@@ -109,7 +122,7 @@ function buildJudgeMessages(input: JudgeInput): Array<{ role: 'system' | 'user';
       role: 'system',
       content: [
         '你是严格的代码问答质量评审。只依据给出的材料评审，不使用外部知识。逐项判定：',
-        '1. faithful（忠实度）：答案中的每个具体技术论断（文件名/函数名/行号/条件/流程）是否都能在【代码证据】中找到支持？出现证据之外的具体断言即为 false。',
+        '1. faithful（忠实度）：答案中的每个具体技术论断（文件名/函数名/行号/条件/流程）是否都能在【代码证据】或【相关代码上下文】（若提供）中找到支持？两处都找不到的具体断言即为 false；引用的 文件:行号 必须与材料中标注的行号严格对应。',
         '2. correct（正确性）：仅当提供了【参考答案】时判定——答案的核心结论与参考答案是否一致？未提供则输出 null。',
         '3. basis（答案的结论以什么为准）：仅当提供了【相关文档片段】时判定，看的是「结论」而非「是否提及」：',
         '   "code"=结论以代码证据为准（答案提及文档、甚至指出文档过时，只要结论站在代码一边，就是 code）；',
@@ -185,7 +198,7 @@ function cacheKey(input: JudgeInput, votes: number): string {
   const h = crypto.createHash('sha1');
   // judge 后端标识必须进 key：换独立 judge 模型后不能复用旧模型的票
   const judgeBackend = judgeHasOwnLlm ? `${JUDGE_LLM_BASE_URL}#${JUDGE_LLM_MODEL}` : 'main-llm';
-  h.update([PROMPT_VERSION, judgeBackend, String(votes), input.question, input.answer, input.referenceAnswer ?? '', input.docSnippet ?? '', JSON.stringify(input.evidence.map((e) => `${e.file}:${e.line}`))].join(' '));
+  h.update([PROMPT_VERSION, judgeBackend, String(votes), input.question, input.answer, input.referenceAnswer ?? '', input.docSnippet ?? '', input.codeContext ?? '', JSON.stringify(input.evidence.map((e) => `${e.file}:${e.line}`))].join(' '));
   return h.digest('hex');
 }
 
