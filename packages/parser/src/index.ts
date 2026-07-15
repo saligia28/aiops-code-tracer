@@ -51,3 +51,11 @@ export type { LanguageParser, ParserContext, ResolveResult } from './languages/t
 // framework → preset mapping
 export { presetFor } from './presets.js';
 export type { LanguagePreset } from './presets.js';
+
+/**
+ * Parser 产物版本戳：解析行为变化（会影响已建图谱正确性的修复/变更）时递增。
+ * indexService 把它写进 meta.json；loadGraph 发现不匹配会告警提示重建——
+ * 否则像 Vue SFC 行号偏移这类修复后，旧图会静默带着错数据继续服务。
+ * 2026.07.14: Vue SFC script 块行号偏移修复（loc 映射回文件行号）。
+ */
+export const PARSER_VERSION = '2026.07.14';
