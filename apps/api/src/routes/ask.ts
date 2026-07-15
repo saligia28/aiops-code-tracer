@@ -376,6 +376,7 @@ ${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
             answer: composed.answer,
             evidence: composed.evidence,
             repoPath: currentRepoPath,
+            codeContext,
           })
           if (!reflection.pass && reflection.feedback) {
             const retryAnswer = await callChatCompletion([
@@ -422,6 +423,8 @@ ${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
         evidence,
         // 文档证据独立下发（与代码 evidence 分开渲染）；空数组时不带此字段，前端行为同现状
         ...(docEvidence.length > 0 ? { docEvidence } : {}),
+        // 评测用途：judge 口径对齐需要答案的真实信息源（见 shared-types 注释）；仅 LLM 路径有值
+        ...(answeredByLlm ? { codeContextPreview: codeContext.slice(0, 6500) } : {}),
         graph: trimmedGraph,
         intent: finalIntent,
         confidence: Math.max(analysis.confidence, intentResult.confidence, 0.55),

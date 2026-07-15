@@ -243,6 +243,11 @@ export interface AskResponse {
   followUp: string[];
   /** 本轮所属会话 id（持久化后回带，供前端落活动会话） */
   conversationId?: string;
+  /**
+   * 答案生成时的代码上下文预览（截断）。评测用途：L3 judge 口径对齐需要拿到
+   * 答案的真实信息源（只看 evidence 清单会把真实细节误判为编造）。前端可忽略。
+   */
+  codeContextPreview?: string;
 }
 
 export type LlmMode = 'api' | 'intranet';
