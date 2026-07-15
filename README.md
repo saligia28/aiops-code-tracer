@@ -258,3 +258,16 @@ docker compose -f docker/docker-compose.yml up --build
 ## License
 
 MIT
+
+## 质量与评测（L1~L4）
+
+问答质量不靠感觉，靠四层可回归的评测/观测（详见 `apps/api/test/eval/README.md` 与同目录 `PRODUCTION-READINESS.md` 审计）：
+
+| 层 | 测什么 | 怎么判 |
+|---|---|---|
+| L1 检索 | 召回命中该找的文件 | Recall@K / MRR，双门禁：CI fixture 版（永不 skip）+ 本机语义版（断言语义≥词法） |
+| L2 引用 | 答案 `file:line` 真实且匹配 | 确定性核对源码（曾抓出 parser 行号偏移真 bug，25%→92%） |
+| L3 答案 | 忠实度/正确性/代码优先 | LLM-as-judge 三票 + 确定性陷阱词；`eval -- answers` |
+| L4 观测 | 线上链路/延迟/token 成本 | Langfuse 自托管（`docker/langfuse-compose.yml`）+ 抽样 judge 打分回写告警 |
+
+亮点：评测驱动开发全程留痕——RRF 融合（0.556→0.778）、Vue SFC 行号修复、judge prompt 两轮校准，全部由评测数字驱动并验证。
