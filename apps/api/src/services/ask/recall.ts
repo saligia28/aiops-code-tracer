@@ -20,6 +20,7 @@ import {
 import { NODE_TYPE_SCORE, tokenizeForRecall, parseLine } from './textUtils.js';
 import { extractMethodNamesFromEventLine } from './codeScan.js';
 import { extractSearchTerms, extractQuestionCoreTerms, extractButtonLabelKeywords } from './questionAnalysis.js';
+import { semanticFileCandidates } from './semanticRecall.js';
 
 
 function vectorRecallCandidates(question: string, maxResults: number = 80, extraTerms: string[] = []): Array<{ node: GraphNode; score: number }> {
@@ -100,11 +101,16 @@ function fileRecallCandidates(question: string, maxResults: number = 30, extraTe
 }
 
 
-export function findRelevantNodes(question: string, maxResults: number = 40, plan?: QuestionPlan): GraphNode[] {
-  if (!graphStore) return [];
+/**
+ * 打分核：把一个问题在图上召回到的候选节点累积成 id→{node,score} 分数表。
+ * 词法四通道（name / 路径 / 向量 / 文件内容 TF-IDF）都在这里。抽出来是为了让
+ * 同步的 findRelevantNodes 与带语义的 findRelevantNodesWithSemantic 复用同一套词法基座。
+ */
+function collectScoredNodes(question: string, maxResults: number, plan?: QuestionPlan): Map<string, { node: GraphNode; score: number }> {
+  const scored = new Map<string, { node: GraphNode; score: number }>();
+  if (!graphStore) return scored;
   const scopeTerms = tokenizeForRecall(plan?.scope ?? '').slice(0, 8);
   const terms = extractSearchTerms(question, [...(plan?.keywords ?? []), ...scopeTerms]);
-  const scored = new Map<string, { node: GraphNode; score: number }>();
 
   for (const term of terms) {
     if (term.length < 2) continue;
@@ -128,6 +134,34 @@ export function findRelevantNodes(question: string, maxResults: number = 40, pla
         prev.score += score;
       } else {
         scored.set(node.id, { node, score });
+      }
+    }
+  }
+
+  // 路径候选通道：让「功能/目录名只出现在文件路径里」的节点也能进候选。
+  // 根因：上面的 name 命中只认 node.name，而像 List.vue 这类页面的节点按「动作」命名
+  //（processPriceValidation / getTableData…），功能名只活在路径段（qsOrderMeetingPriceCheck）里，
+  // 于是「按功能/目录名提问」永远进不了候选。这里按文件路径子串补一批候选。
+  // 噪声控制：某词命中过多文件（> PATH_MATCH_FILE_CAP）说明它太常见（如 index/list/api），跳过——
+  // 这是个自调节的稀有度闸门：越稀有的路径标识符命中越少，越该被信任。
+  const PATH_MATCH_FILE_CAP = 40;
+  for (const term of terms) {
+    if (term.length < 3) continue; // 路径标识符一般较长；顺带排除中文 n-gram（路径是英文，命中不了）
+    const matchedFiles: string[] = [];
+    let tooCommon = false;
+    for (const filePath of fileNodeMap.keys()) {
+      if (!filePath.toLowerCase().includes(term)) continue;
+      matchedFiles.push(filePath);
+      if (matchedFiles.length > PATH_MATCH_FILE_CAP) { tooCommon = true; break; }
+    }
+    if (tooCommon || matchedFiles.length === 0) continue;
+    for (const filePath of matchedFiles) {
+      for (const node of (fileNodeMap.get(filePath) ?? []).slice(0, 40)) {
+        // 温和加分：低于「精确 name 命中」（+5），确保「节点就叫这个」仍排在「只是同路径」之上。
+        const boost = 4 + (NODE_TYPE_SCORE[node.type] ?? 0);
+        const prev = scored.get(node.id);
+        if (prev) prev.score += boost;
+        else scored.set(node.id, { node, score: boost });
       }
     }
   }
@@ -158,10 +192,81 @@ export function findRelevantNodes(question: string, maxResults: number = 40, pla
     }
   }
 
+  return scored;
+}
+
+/** 分数表排序取前 maxResults。 */
+function rankTop(scored: Map<string, { node: GraphNode; score: number }>, maxResults: number): GraphNode[] {
   return Array.from(scored.values())
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults)
     .map((item) => item.node);
+}
+
+/** 纯词法召回（同步、离线、确定性）。既有调用方行为不变。 */
+export function findRelevantNodes(question: string, maxResults: number = 40, plan?: QuestionPlan): GraphNode[] {
+  return rankTop(collectScoredNodes(question, maxResults, plan), maxResults);
+}
+
+/**
+ * 词法 + 语义召回（异步）。桥接 Gap B（中文提问 × 英文标识符）。
+ * 未构建/未就绪语义索引时自动退化为纯词法（== findRelevantNodes），零副作用。
+ *
+ * 融合用 RRF（Reciprocal Rank Fusion）而非加权加分——18 条评测扫参（W=5/8/14）证明
+ * 加法融合无解：词法的文件内容 TF-IDF 命中绝对分很小（<1），语义 boost 任何权重都会
+ * 把它挤下去；降权则轮到语义翻正的掉出。两通道分数刻度不可比，只有「排名空间」可比：
+ *   fused(file) = Σ_通道 1/(RRF_K + rank_通道)
+ * 双通道都命中的文件天然浮顶；单通道噪声只有一个信号，自然沉底。
+ */
+export async function findRelevantNodesWithSemantic(question: string, maxResults: number = 40, plan?: QuestionPlan): Promise<GraphNode[]> {
+  const scored = collectScoredNodes(question, maxResults, plan);
+  if (!graphStore) return rankTop(scored, maxResults);
+
+  // 旋钮：env 可覆盖，供评测扫参；默认值由 test/eval 的 18 条数据集调定。
+  const SEM_TOPN = Number(process.env.SEM_TOPN || '') || 10;
+  const RRF_K = Number(process.env.SEM_RRF_K || '') || 20;
+  const SEM_NODES_PER_FILE = Number(process.env.SEM_NODES_PER_FILE || '') || 3;
+
+  const semFiles = await semanticFileCandidates(question, SEM_TOPN);
+  if (semFiles.length === 0) return rankTop(scored, maxResults);
+
+  // 词法侧取双倍深度的节点序 → 去重保序得到文件排名（1-based）。
+  const lexNodes = rankTop(scored, maxResults * 2);
+  const lexFileRank = new Map<string, number>();
+  const nodesByFile = new Map<string, GraphNode[]>();
+  for (const node of lexNodes) {
+    if (!lexFileRank.has(node.filePath)) lexFileRank.set(node.filePath, lexFileRank.size + 1);
+    const list = nodesByFile.get(node.filePath) ?? [];
+    list.push(node);
+    nodesByFile.set(node.filePath, list);
+  }
+
+  // 加权 RRF：语义项 ×SEM_RRF_SEM_W(<1)——平票时确定性的词法通道优先
+  //（词法 rank1 的精确命中不该被语义 rank1 的薄边距相似度单独顶掉）。
+  const SEM_RRF_SEM_W = Number(process.env.SEM_RRF_SEM_W || '') || 0.9;
+  const fused = new Map<string, number>();
+  for (const [file, rank] of lexFileRank.entries()) {
+    fused.set(file, (fused.get(file) ?? 0) + 1 / (RRF_K + rank));
+  }
+  semFiles.forEach((sf, i) => {
+    fused.set(sf.filePath, (fused.get(sf.filePath) ?? 0) + SEM_RRF_SEM_W / (RRF_K + i + 1));
+  });
+
+  // 按融合后的文件序输出节点。⚠️ 每文件限额 SEM_NODES_PER_FILE：若整文件倾倒，
+  // 前几个文件就会吃光 maxResults 个坑，把后面文件（含正确命中）整体挤出输出——
+  // RRF 第一版实测 4 条翻负皆因此坑位垄断，而非融合公式本身。
+  const out: GraphNode[] = [];
+  const orderedFiles = [...fused.entries()].sort((a, b) => b[1] - a[1]).map(([f]) => f);
+  for (const file of orderedFiles) {
+    const nodes = nodesByFile.get(file) ?? (fileNodeMap.get(file) ?? [])
+      .slice()
+      .sort((a, b) => (NODE_TYPE_SCORE[b.type] ?? 0) - (NODE_TYPE_SCORE[a.type] ?? 0));
+    for (const node of nodes.slice(0, SEM_NODES_PER_FILE)) {
+      out.push(node);
+      if (out.length >= maxResults) return out;
+    }
+  }
+  return out;
 }
 
 

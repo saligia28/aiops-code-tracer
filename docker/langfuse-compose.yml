@@ -1,0 +1,55 @@
+# L4 观测 · 自托管 Langfuse（v2，本地开发档）
+#
+# 起：docker compose -f docker/langfuse-compose.yml up -d
+# UI：http://localhost:3050（登录 dev@local.test / devpassword123）
+# API 服务对接（.env 或环境变量）：
+#   LANGFUSE_PUBLIC_KEY=pk-lf-local-dev
+#   LANGFUSE_SECRET_KEY=sk-lf-local-dev
+#   LANGFUSE_BASE_URL=http://localhost:3050
+#   LANGFUSE_JUDGE_SAMPLE=0.1   # 线上抽样送 LLM-judge 打分（可选）
+#
+# ⚠️ 所有密钥都是本地开发占位值，靠 LANGFUSE_INIT_* 无头初始化预置；
+#    上生产请换随机密钥并另管密钥存储。
+services:
+  langfuse-db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U langfuse']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  langfuse:
+    image: langfuse/langfuse:2
+    restart: unless-stopped
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    ports:
+      - '3050:3000'
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3050
+      NEXTAUTH_SECRET: local-dev-nextauth-secret-change-me
+      SALT: local-dev-salt-change-me
+      TELEMETRY_ENABLED: 'false'
+      # 无头初始化：起容器即建好 org/project/key，SDK 直接可用，不需要进 UI 点
+      LANGFUSE_INIT_ORG_ID: aiops
+      LANGFUSE_INIT_ORG_NAME: AIOps
+      LANGFUSE_INIT_PROJECT_ID: code-tracer
+      LANGFUSE_INIT_PROJECT_NAME: code-tracer
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-local-dev
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-local-dev
+      LANGFUSE_INIT_USER_EMAIL: dev@local.test
+      LANGFUSE_INIT_USER_NAME: Dev
+      LANGFUSE_INIT_USER_PASSWORD: devpassword123
+
+volumes:
+  langfuse-db-data:

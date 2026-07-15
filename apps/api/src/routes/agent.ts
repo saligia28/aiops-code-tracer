@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { AgentEvent } from '@aiops/shared-types';
-import { graphStore, currentRepoPath, resolveActiveProjectId, LLM_API_KEY, LLM_MAX_TOKENS } from '../context.js';
+import { graphStore, currentRepoPath, currentRepoName, resolveActiveProjectId, LLM_API_KEY, LLM_MAX_TOKENS } from '../context.js';
+import { startAskTrace } from '../services/traceService.js';
 import { agentLoop } from '../agent/index.js';
 import { getCurrentLlmProvider, getCurrentLlmModel, getCurrentLlmBaseUrl } from '../services/llmService.js';
 import { createConversation, getConversation, appendMessage, buildLlmHistory } from '../db/conversationStore.js';
@@ -46,6 +47,10 @@ export function registerAgent(app: FastifyInstance): void {
       reply.raw.write(`data: ${JSON.stringify({ type: 'conversation', data: { conversationId: convId } })}\n\n`);
     }
 
+    // L4 观测：agent 管线同样上报（未配置 Langfuse 时为 no-op）
+    const trace = startAskTrace({ name: 'agent', question: q, projectId, conversationId: convId, repoName: currentRepoName });
+    const tLoop = Date.now();
+
     // 累积 agent 轨迹与最终答案，用于落库
     const steps: Array<Record<string, unknown>> = [];
     let finalAnswer = '';
@@ -81,11 +86,15 @@ export function registerAgent(app: FastifyInstance): void {
         },
       });
     } catch (err) {
+      trace.error(err);
       sendEvent({
         type: 'error',
         data: { error: `Agent 异常: ${err instanceof Error ? err.message : String(err)}` },
       });
     }
+
+    trace.span('agent_loop', tLoop, { steps: steps.length });
+    trace.end({ answer: finalAnswer, evidence: [], intent: 'AGENT', confidence: 1, answeredByLlm: true });
 
     // 落库 assistant 消息（含 agent 轨迹）
     if (convId && finalAnswer) {

@@ -1,0 +1,6 @@
+# quality（Java/Spring 仓库）检索评测数据集 —— P1-15 多语言覆盖起步。
+# gold 出处：Controller 类的中文 Javadoc 注释 + @RequestMapping（独立于检索器的证据）。
+# 跑法：EVAL_REPO=quality pnpm --filter @aiops/api eval
+{"id":"jq-weigh","question":"品质称重管理的接口在哪个 Controller？","expectedFiles":["elink-juliet-quality-domain/src/main/java/com/juliet/quality/controller/QcWeighController.java"],"note":"Javadoc '品质称重管理 前端控制器'，@RequestMapping(/qcWeigh)"}
+{"id":"jq-spot-risk","question":"现货风险评估单的接口定义在哪个文件？","expectedFiles":["elink-juliet-quality-domain/src/main/java/com/juliet/quality/controller/QcRiskEstimateSpotGoodsController.java"],"note":"Javadoc '现货风险评估单 前端控制器'"}
+{"id":"jq-warehouse-check-en","question":"warehoseCheck 相关的 Controller 在哪里？","expectedFiles":["elink-juliet-quality-domain/src/main/java/com/juliet/quality/controller/QcWarehoseCheckController.java"],"note":"en 变体：@RequestMapping(/warehoseCheck)，注意源码拼写就是 warehose"}

@@ -46,8 +46,10 @@ export function resolveEmbeddingsUrl(baseUrl: string): string {
 /**
  * 将一批文本转为向量。失败返回 null（调用方自行决定降级/跳过）。
  * 返回顺序与入参一致。
+ * @param opts.timeoutMs 覆盖默认超时——构建期可以慢（默认 EMBEDDING_TIMEOUT_MS=30s），
+ *        但「查询期内联调用」必须传一个短超时（如 2.5s），否则 embedding 后端挂起会拖垮问答主链路。
  */
-export async function embedTexts(texts: string[]): Promise<number[][] | null> {
+export async function embedTexts(texts: string[], opts?: { timeoutMs?: number }): Promise<number[][] | null> {
   if (!canUseEmbedding()) return null;
   const inputs = texts.map((t) => stripLoneSurrogates(t));
   if (inputs.length === 0) return [];
@@ -57,7 +59,8 @@ export async function embedTexts(texts: string[]): Promise<number[][] | null> {
     headers.authorization = `Bearer ${EMBEDDING_API_KEY}`;
   }
 
-  const timeout = Number.isFinite(EMBEDDING_TIMEOUT_MS) && EMBEDDING_TIMEOUT_MS > 0 ? EMBEDDING_TIMEOUT_MS : 30000;
+  const fallback = Number.isFinite(EMBEDDING_TIMEOUT_MS) && EMBEDDING_TIMEOUT_MS > 0 ? EMBEDDING_TIMEOUT_MS : 30000;
+  const timeout = opts?.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : fallback;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
 
@@ -102,7 +105,7 @@ export async function embedTexts(texts: string[]): Promise<number[][] | null> {
 }
 
 /** 单条文本便捷封装。 */
-export async function embedText(text: string): Promise<number[] | null> {
-  const result = await embedTexts([text]);
+export async function embedText(text: string, opts?: { timeoutMs?: number }): Promise<number[] | null> {
+  const result = await embedTexts([text], opts);
   return result?.[0] ?? null;
 }

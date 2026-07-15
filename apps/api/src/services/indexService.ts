@@ -3,7 +3,7 @@ import path from 'path';
 import type { FastifyBaseLogger } from 'fastify';
 import { GraphStore } from '@aiops/graph-core';
 import type { CodeGraph, RepoConfig, ProjectFramework } from '@aiops/shared-types';
-import { collectFiles, buildGraph, presetFor, scanExtensionsFor } from '@aiops/parser';
+import { collectFiles, buildGraph, presetFor, scanExtensionsFor, PARSER_VERSION } from '@aiops/parser';
 import type { SymbolIndex, BuildResult } from '@aiops/parser';
 import {
   DATA_DIR,
@@ -38,6 +38,11 @@ import {
   buildDocIndex,
   buildPageAnchorIndex,
 } from './askService.js';
+import {
+  loadSemanticFileIndex,
+  buildSemanticFileIndex,
+  setSemanticIndex,
+} from './ask/semanticRecall.js';
 
 export function broadcastProgress(event: Record<string, unknown>): void {
   const payload = JSON.stringify(event);
@@ -149,6 +154,7 @@ export function persistBuildArtifacts(result: BuildResult, repoName: string): Re
     resolveRate: result.stats.resolveRate,
     duration: result.stats.duration,
     buildTime: new Date().toISOString(),
+    parserVersion: PARSER_VERSION,
   };
   fs.writeFileSync(path.join(repoOutputDir, 'meta.json'), JSON.stringify(meta, null, 2));
   return meta;
@@ -182,6 +188,7 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
       setFileRecallIndex(null);
       setFactIndex(null);
       setDocIndex(null);
+      setSemanticIndex(null);
       setFileNodeMap(new Map());
       setPageAnchors([]);
       return false;
@@ -195,7 +202,12 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
     }
 
     if (fs.existsSync(metaPath)) {
-      setMetaData(JSON.parse(fs.readFileSync(metaPath, 'utf-8')));
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Record<string, unknown>;
+      setMetaData(meta);
+      // 版本戳校验：图谱由旧版 parser 构建时告警（不阻断服务——数据仍可用，只是可能带已修复的解析缺陷，如行号偏移）
+      if (meta.parserVersion !== PARSER_VERSION) {
+        log?.warn(`图谱 ${repoName} 由旧版 parser 构建（${String(meta.parserVersion ?? '无版本戳')} ≠ ${PARSER_VERSION}），建议全量重建索引`);
+      }
     }
 
     setCurrentRepoName(repoName);
@@ -222,6 +234,11 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
     // 文档证据索引：异步构建（含网络向量化），不阻塞图谱就绪；
     // 未配置 DOCS_PATH 时立即返回，docIndex 保持 null，问答行为同现状。
     void buildDocIndex(repoName, log);
+    // 语义文件索引：优先从磁盘载入（同步、快；含模型兼容校验）；缺失/不兼容时后台构建。
+    // embedding 未就绪时 build 自动跳过，语义通道保持 dormant，问答退化为纯词法。
+    if (!loadSemanticFileIndex(repoName, log)) {
+      void buildSemanticFileIndex(repoName, log);
+    }
     log?.info(`图谱已加载: ${repoName} (${graphStore!.nodeCount} nodes, ${graphStore!.edgeCount} edges)`);
     return true;
   } catch (err) {
@@ -231,6 +248,7 @@ export function loadGraph(repoName?: string, log?: FastifyBaseLogger): boolean {
     setFileRecallIndex(null);
     setFactIndex(null);
     setDocIndex(null);
+    setSemanticIndex(null);
     setFileNodeMap(new Map());
     setPageAnchors([]);
     log?.error(`加载图谱失败: ${err}`);
@@ -333,6 +351,8 @@ export async function executeIndexBuild(options: {
     const meta = persistBuildArtifacts(result, repoName);
 
     const loaded = loadGraph(repoName, log);
+    // 图重建后旧语义索引已过期（loadGraph 只会载入磁盘旧版），后台强制重建刷新。
+    if (loaded) void buildSemanticFileIndex(repoName, log);
     patchIndexTaskState({
       status: loaded ? 'ready' : 'error',
       phase: loaded ? 'done' : 'error',
