@@ -100,6 +100,30 @@ function runExtractors(
   };
 }
 
+/** loc（"行:列"，1-based）整体下移 offset 行；解析不出行号时原样保留。 */
+function offsetLoc(loc: string, offset: number): string {
+  const sep = loc.indexOf(':');
+  const line = Number(sep >= 0 ? loc.slice(0, sep) : loc);
+  if (!Number.isFinite(line) || line < 1) return loc;
+  return `${line + offset}${sep >= 0 ? loc.slice(sep) : ''}`;
+}
+
+/**
+ * Vue SFC：extractor 拿到的是 script 块内容，产出的行号是「块内行号」；
+ * 这里统一映射回文件行号（+ scriptStartLine - 1），否则所有 SFC 符号的
+ * file:line 引用会整体偏移 template 的长度（L2 引用评测抓到的真 bug）。
+ * file 节点代表整个文件，不偏移。
+ */
+function offsetVueScriptLocs(result: FileParseResult, scriptStartLine: number): FileParseResult {
+  const offset = scriptStartLine - 1;
+  if (offset <= 0) return result;
+  return {
+    ...result,
+    nodes: result.nodes.map((n) => (n.type === 'file' ? n : { ...n, loc: offsetLoc(n.loc, offset) })),
+    unresolvedRefs: result.unresolvedRefs.map((r) => ({ ...r, loc: offsetLoc(r.loc, offset) })),
+  };
+}
+
 /**
  * content 版单文件解析 — 编排层已读取文件内容后调用（LanguageParser.parseFile）。
  * `.vue` 传入的是原始 SFC 文本，由本函数内部提取 `<script>`。
@@ -115,6 +139,7 @@ export function parseTypeScriptContent(
   let scriptContent: string | null = null;
   let scriptLang: string | null = null;
   let isSetupScript = false;
+  let scriptStartLine = 1;
 
   if (ext === '.vue') {
     try {
@@ -122,6 +147,7 @@ export function parseTypeScriptContent(
       scriptContent = sfcResult.scriptContent;
       scriptLang = sfcResult.scriptLang;
       isSetupScript = sfcResult.scriptSetup;
+      scriptStartLine = sfcResult.scriptStartLine;
     } catch {
       return { filePath, parserId: 'typescript', nodes: [fileNode], edges: [], unresolvedRefs: [], error: 'SFC_PARSE_ERROR' };
     }
@@ -129,7 +155,8 @@ export function parseTypeScriptContent(
     scriptContent = content;
   }
 
-  return runExtractors(filePath, fileNode, scriptContent, scriptLang, isSetupScript, config);
+  const result = runExtractors(filePath, fileNode, scriptContent, scriptLang, isSetupScript, config);
+  return ext === '.vue' ? offsetVueScriptLocs(result, scriptStartLine) : result;
 }
 
 /**
@@ -144,6 +171,7 @@ export function parseFileFromDisk(filePath: string, config: RepoConfig): FilePar
   let scriptContent: string | null = null;
   let scriptLang: string | null = null;
   let isSetupScript = false;
+  let scriptStartLine = 1;
 
   if (ext === '.vue') {
     try {
@@ -151,6 +179,7 @@ export function parseFileFromDisk(filePath: string, config: RepoConfig): FilePar
       scriptContent = sfcResult.scriptContent;
       scriptLang = sfcResult.scriptLang;
       isSetupScript = sfcResult.scriptSetup;
+      scriptStartLine = sfcResult.scriptStartLine;
     } catch {
       return { filePath, parserId: 'typescript', nodes: [fileNode], edges: [], unresolvedRefs: [], error: 'SFC_PARSE_ERROR' };
     }
@@ -162,7 +191,8 @@ export function parseFileFromDisk(filePath: string, config: RepoConfig): FilePar
     }
   }
 
-  return runExtractors(filePath, fileNode, scriptContent, scriptLang, isSetupScript, config);
+  const result = runExtractors(filePath, fileNode, scriptContent, scriptLang, isSetupScript, config);
+  return ext === '.vue' ? offsetVueScriptLocs(result, scriptStartLine) : result;
 }
 
 /**

@@ -7,6 +7,12 @@ export interface SfcParseResult {
   scriptSetup: boolean;
   templateContent: string | null;
   filePath: string;
+  /**
+   * script 块内容在原始 .vue 文件中的起始行（1-based，= compiler-sfc 的 block.loc.start.line）。
+   * extractor 对 scriptContent 计算的行号是块内行号，映射回文件行号需 +(scriptStartLine - 1)。
+   * 丢掉这个偏移会让所有 SFC 符号的 file:line 引用整体偏移 template 的长度（评测 L2 抓到的真 bug）。
+   */
+  scriptStartLine: number;
 }
 
 /**
@@ -25,6 +31,7 @@ export function parseVueSfcContent(source: string, filePath: string): SfcParseRe
     scriptSetup: !!descriptor.scriptSetup,
     templateContent: descriptor.template?.content ?? null,
     filePath,
+    scriptStartLine: script?.loc.start.line ?? 1,
   };
 }
 
