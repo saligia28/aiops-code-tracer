@@ -317,7 +317,6 @@
 import { ref, watch, computed, nextTick, onMounted, reactive } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import http from '@/lib/http';
 import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
@@ -331,7 +330,6 @@ import {
 } from '@/composables/useConversation';
 import { consumePendingQuestion } from '@/composables/usePendingQuestion';
 
-const ASK_TIMEOUT_MS = 150000; // 150 秒
 
 const { currentRepo } = useCurrentRepo();
 const { currentProjectId } = useProject();
@@ -553,22 +551,81 @@ async function fetchAnswer(q: string) {
   currentAbortController.value = ctrl;
 
   try {
-    const res = await http.post('/api/ask', {
-      question: q,
-      conversationId: activeConversationId.value,
-    }, {
-      timeout: ASK_TIMEOUT_MS,
+    // 流式（P1-D）：stream:true 走 SSE，answer_delta 逐 token 打字机渲染，
+    // done 终帧带完整 AskResponse（answer/followUp/conversationId）收尾兜底。
+    // 服务端对快速路径/降级路径会补一帧整体 delta，因此本解析器对所有路径通用。
+    const resp = await fetch('/api/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q, conversationId: activeConversationId.value, stream: true }),
+      credentials: 'include',
       signal: ctrl.signal,
     });
-    turn.answer = res.data.answer || '未能生成回答';
-    turn.renderedAnswer = renderMarkdown(turn.answer);
-    turn.followUp = res.data.followUp || [];
-    if (res.data.conversationId) {
-      setActiveConversation(res.data.conversationId);
-      syncConversationList(res.data.conversationId);
+
+    if (!resp.ok) {
+      if (resp.status === 401) {
+        router.push('/login');
+        return;
+      }
+      turn.error = `请求失败: ${resp.status}`;
+      return;
+    }
+
+    const reader = resp.body?.getReader();
+    if (!reader) {
+      turn.error = '无法建立流式连接';
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr) continue;
+
+        try {
+          const event = JSON.parse(jsonStr) as { type: string; data: Record<string, unknown> };
+
+          switch (event.type) {
+            case 'answer_delta':
+              turn.answer += event.data.delta as string;
+              turn.renderedAnswer = renderMarkdown(turn.answer);
+              break;
+
+            case 'done':
+              // 以终帧为准（流式拼接与整包语义一致，这里兜底覆盖）
+              turn.answer = (event.data.answer as string) || turn.answer || '未能生成回答';
+              turn.renderedAnswer = renderMarkdown(turn.answer);
+              turn.followUp = (event.data.followUp as string[]) || [];
+              if (event.data.conversationId) {
+                setActiveConversation(event.data.conversationId as string);
+                syncConversationList(event.data.conversationId as string);
+              }
+              break;
+
+            case 'error':
+              turn.error = (event.data.error as string) || '未知错误';
+              break;
+          }
+
+          await scrollToBottom();
+        } catch {
+          // 忽略单帧 JSON 解析错误
+        }
+      }
     }
   } catch (err: unknown) {
-    if ((err as { name?: string })?.name === 'CanceledError' || ctrl.signal.aborted) {
+    if ((err as { name?: string })?.name === 'AbortError' || ctrl.signal.aborted) {
       turn.aborted = true;
     } else {
       turn.error = '查询超时或失败，请检查模型服务后重试';
