@@ -5,7 +5,7 @@ import { classifyIntent, analyzeQuestion } from '@aiops/nlp'
 import { graphStore, fileNodeMap, resolveActiveProjectId, currentRepoName, currentRepoPath } from '../context.js'
 import { reflectOnAnswer } from '../services/ask/reflection.js'
 import { retrieveDocEvidence, renderDocEvidenceForPrompt } from '../services/ask/docRecall.js'
-import { callChatCompletion, canUseLlm, getLastLlmCallMeta } from '../services/llmService.js'
+import { callChatCompletion, callChatCompletionStream, canUseLlm, getLastLlmCallMeta } from '../services/llmService.js'
 import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
 import { createConversation, getConversation, appendMessage, buildLlmHistory } from '../db/conversationStore.js'
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
@@ -62,13 +62,33 @@ export function registerAsk(app: FastifyInstance): void {
   setTraceServiceLogger(app.log)
   app.post('/api/ask', async (request, reply) => {
     if (!ensureGraph(reply)) return
-    const { question, conversationId } = request.body as { question: string; conversationId?: string }
+    const { question, conversationId, stream } = request.body as { question: string; conversationId?: string; stream?: boolean }
     if (!question || !question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' })
     }
 
+    // ====== 流式模式（P1-D）：body.stream=true 时走 SSE，否则整包 JSON（默认，零变化）======
+    // 事件协议与 agent 路由一致：answer_delta 逐 token + done 终帧（含完整 AskResponse）。
+    // 中断：客户端断开连接 → abortCtl 中止进行中的 LLM 流（trace 记 cancelled）。
+    const sse = stream === true
+    const abortCtl = new AbortController()
+    const sendSse = (type: string, data: unknown): void => {
+      if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify({ type, data })}\n\n`)
+    }
+    if (sse) {
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      })
+      request.raw.on('close', () => abortCtl.abort())
+    }
+
     // L4 观测：未配置 Langfuse 时 startAskTrace 返回 no-op facade，主链路零开销
     let trace: AskTrace | null = null
+    // 流式模式下是否已逐 token 下发过答案（finalizeResponse 据此决定要不要补整帧 delta）
+    let streamedTokens = false
 
     try {
       // ====== Step 0: 解析/创建会话，落库用户消息，取多轮历史 ======
@@ -87,7 +107,8 @@ export function registerAsk(app: FastifyInstance): void {
       trace = startAskTrace({ question, projectId, conversationId: convId, repoName: currentRepoName })
       // extractMemory：仅在"复杂问答（走了 LLM 阅读代码那条路）"时才后台沉淀记忆；
       // 快速路径(API 清单)与规则兜底答案信号低、易产生噪音，默认不抽取。
-      const finalizeResponse = (resp: AskResponse, extractMemory = false): AskResponse => {
+      // 返回 undefined = SSE 模式已用 done 帧收尾（handler 不再返回 JSON）
+      const finalizeResponse = (resp: AskResponse, extractMemory = false): AskResponse | undefined => {
         if (convId) {
           try {
             appendMessage(convId, {
@@ -105,6 +126,14 @@ export function registerAsk(app: FastifyInstance): void {
         }
         // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖
         trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
+        // 流式模式：答案若未经逐 token 下发（快速路径/规则路径/流式降级），补一帧整体 delta；
+        // done 终帧带完整 AskResponse（evidence/graph/docEvidence），前端以此收尾渲染。
+        if (sse) {
+          if (!streamedTokens) sendSse('answer_delta', { delta: resp.answer })
+          sendSse('done', resp)
+          reply.raw.end()
+          return undefined
+        }
         return resp
       }
 
@@ -345,7 +374,28 @@ ${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
           ...history,
           { role: 'user' as const, content: userPrompt },
         ]
-        const llmAnswer = await callChatCompletion(llmMessages)
+        // 流式优先（P1-D）：SSE 模式逐 token 下发；流式不可用（内网模式/网络失败）自动降级整包。
+        let llmAnswer: string | null = null
+        if (sse) {
+          const streamed = await callChatCompletionStream(
+            llmMessages,
+            (delta) => {
+              streamedTokens = true
+              sendSse('answer_delta', { delta })
+            },
+            abortCtl.signal,
+          )
+          if (streamed?.aborted) {
+            // 用户中断：不落库、不继续管线，记观测后直接收尾
+            trace?.error(new Error('client_cancelled'))
+            reply.raw.end()
+            return undefined
+          }
+          llmAnswer = streamed?.text || null
+        }
+        if (!llmAnswer) {
+          llmAnswer = await callChatCompletion(llmMessages)
+        }
 
         // 从 LLM 文本组装 answer + evidence（首答与反思重答共用同一套逻辑）
         const composeFromLlm = (text: string): { answer: string; evidence: import('@aiops/shared-types').Evidence[] } => {
@@ -379,7 +429,10 @@ ${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
             repoPath: currentRepoPath,
             codeContext,
           })
-          if (!reflection.pass && reflection.feedback) {
+          // 流式模式跳过重试：token 已推给用户，重答会造成"答案被撤回"的割裂体验。
+          // 反思结果仍进 trace（可观测流式答案的质量水位）。
+          // TODO(P1-D 后续): 前端支持"答案修正"交互后（如折叠旧答案），放开流式重试。
+          if (!sse && !reflection.pass && reflection.feedback) {
             const retryAnswer = await callChatCompletion([
               ...llmMessages,
               { role: 'assistant' as const, content: composed.answer },
@@ -436,6 +489,12 @@ ${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
     } catch (err) {
       trace?.error(err)
       app.log.error(`问答失败: ${err instanceof Error ? err.message : String(err)}`)
+      // SSE 已开始时响应头不可再改，用错误帧收尾
+      if (sse) {
+        sendSse('error', { error: '问答处理失败，请稍后重试' })
+        reply.raw.end()
+        return undefined
+      }
       return reply.code(500).send({ error: 'ASK_FAILED', message: '问答处理失败，请稍后重试' })
     }
   })
