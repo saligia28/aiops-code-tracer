@@ -19,7 +19,7 @@ import {
   type QuestionPlan,
   type CodeLocation,
 } from '../../context.js';
-import { callChatCompletion, canUseLlm } from '../llmService.js';
+import { callChatCompletion, callChatCompletionStream, canUseLlm } from '../llmService.js';
 import { stripLoneSurrogates } from '../../textSafety.js';
 import { parseLine, estimateTokens, escapeRegex, NODE_TYPE_SCORE, tokenizeForRecall } from './textUtils.js';
 import { findFunctionBoundary } from './codeScan.js';
@@ -453,7 +453,13 @@ export async function composeAnswerWithLlm(
   graph: { nodes: GraphNode[]; edges: GraphEdge[] },
   evidence: Evidence[],
   plan: QuestionPlan,
-  anchor: PageAnchor | null
+  anchor: PageAnchor | null,
+  /**
+   * 流式选项（P1-D）：传入则逐 token 回调 onDelta（SSE 模式用）；
+   * 流式后端不可用时自动回退非流式整包，行为对调用方透明。
+   * 用户中止时返回已累积的部分文本——调用方通过自己的 AbortSignal 判断是否中止。
+   */
+  streamOpts?: { onDelta: (delta: string) => void; signal?: AbortSignal }
 ): Promise<string> {
   const fallback = composeAnswer(question, intent, nodes, graph);
   if (!canUseLlm()) return fallback;
@@ -490,9 +496,19 @@ export async function composeAnswerWithLlm(
     '请严格基于以上证据作答。',
   ].join('\n');
 
-  const llmAnswer = await callChatCompletion([
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt },
-  ]);
+  const messages = [
+    { role: 'system' as const, content: systemPrompt },
+    { role: 'user' as const, content: userPrompt },
+  ];
+
+  // 流式优先：SSE 模式逐 token 下发；流式不可用（返回 null）时回退非流式整包。
+  // 中止（aborted）时直接返回部分文本，不再发起非流式兜底——用户已经不要这个答案了。
+  if (streamOpts) {
+    const streamed = await callChatCompletionStream(messages, streamOpts.onDelta, streamOpts.signal);
+    if (streamed?.aborted) return streamed.text;
+    if (streamed?.text) return streamed.text;
+  }
+
+  const llmAnswer = await callChatCompletion(messages);
   return llmAnswer || fallback;
 }

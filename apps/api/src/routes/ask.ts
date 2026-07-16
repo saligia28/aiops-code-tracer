@@ -82,7 +82,11 @@ export function registerAsk(app: FastifyInstance): void {
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
       })
-      request.raw.on('close', () => abortCtl.abort())
+      // 注意：不能监听 request.raw 的 close——Node ≥18 里它在「请求体读完」就触发（消息结束≠连接断开），
+      // 会让 abort 信号在问答开始前就置位。客户端断开的正确信号是响应侧 close 且未正常 end。
+      reply.raw.on('close', () => {
+        if (!reply.raw.writableEnded) abortCtl.abort()
+      })
     }
 
     // L4 观测：未配置 Langfuse 时 startAskTrace 返回 no-op facade，主链路零开销
@@ -454,9 +458,25 @@ ${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
         }
       } else {
         evidence = traditionalEvidence
-        // TODO(P0-B 后续): 简单路径（composeAnswerWithLlm）暂不注入文档证据与反思——
-        // 该路径 prompt 在 answer.ts 内部组装，注入需改其签名；等复杂路径跑出真实收益再动它。
-        answer = await composeAnswerWithLlm(question, finalIntent, answerNodes, trimmedGraph, evidence, plan, anchor)
+        // TODO(P0-B 后续): 简单路径暂不注入文档证据与反思——prompt 在 answer.ts 内部组装，
+        // 文档注入需再改其签名；等复杂路径跑出真实收益再动。
+        // 流式（P1-D）：SSE 模式逐 token 下发；大多数定位类问题走本路径，这里是流式覆盖率的主力。
+        answer = await composeAnswerWithLlm(
+          question, finalIntent, answerNodes, trimmedGraph, evidence, plan, anchor,
+          sse ? {
+            onDelta: (delta) => {
+              streamedTokens = true
+              sendSse('answer_delta', { delta })
+            },
+            signal: abortCtl.signal,
+          } : undefined,
+        )
+        if (sse && abortCtl.signal.aborted) {
+          // 用户中断：不落库、不发 done，记观测后直接收尾
+          trace?.error(new Error('client_cancelled'))
+          reply.raw.end()
+          return undefined
+        }
       }
       {
         // 紧跟主 LLM 调用之后同步读取，无 await 插入 → 元数据对应的就是这次调用
