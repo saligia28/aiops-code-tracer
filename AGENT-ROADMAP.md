@@ -136,6 +136,19 @@
 **验收**：记忆召回小评测 Recall ≥ 0.8；重复语义记忆自动合并。
 **工作量**：2 天。 **依赖**：embedding。
 
+> **进度（2026-07-16）· 核心已落地**：
+> - schema v3（migration：embedding BLOB / embed_model / last_used_at，additive 可重入）。
+> - 写入向量化 + 语义近重复跳过（余弦 ≥ 0.92）；检索 query 向量化 + 关键词/语义 **RRF 混合**
+>   （语义通道带余弦下限 0.6，保住"无相关记忆→不注入"的干净行为，防 v2 反而注入噪声）。
+> - 遗忘信号：命中更新 last_used_at（RRF 并列时的 tiebreak）；`pruneStaleMemories`（只删从未命中的旧记忆，opt-in 不自动触发）。
+> - 老数据/embedding 曾不可用时写入的记忆：后台 `backfillMemoryEmbeddings` 有界回填。
+> - 全程 embedding 不可用即退回 v1 纯关键词，零回归。
+> - 验证：确定性单测（RRF/下限/去重/prune/last_used_at）+ **真实 bge-m3 E2E**——"哪里看订货会价格核对清单"
+>   纯关键词漏、v2 混合召回捞回"核价列表页"那条。57 test 绿、typecheck 0。
+>
+> **遗留 TODO（已在代码注释）**：① LLM 合并固化（把互补的两条记忆合成一条规范记忆——最易丢信息，单独做）；
+> ② pruneStaleMemories 的自动触发接线（定时/索引重建时，接前先评测删除策略）；③ 真实语义召回的自动化评测（当前 skipIf 占位）。
+
 ---
 
 ## P2-G · 写操作 + 沙箱 + 人工审批（HITL）
