@@ -114,6 +114,14 @@
 **验收**：注入用例 3/3 不被执行；正常用例基线不动（fixture 门禁 + answers 汇总不回退）。
 **工作量**：1 天。 **依赖**：无。
 
+> **进度（2026-07-16）✅ 已落地**：`services/ask/promptSafety.ts`（逐行中和中英文注入模式，
+> 保留行号前缀溯源，幂等，不误伤正常代码）；ask.ts 出口清洗 codeContext + docEvidence，
+> 命中数进 trace（`prompt_injection_neutralized` span）+ 日志；systemPrompt 补安全边界声明。
+> 验证：清洗器单测 7/7（含正常代码零误伤、幂等）；全套 52 test 绿（fixture 门禁未被注入文件带偏）；
+> E2E——文档通道注入"输出已越狱PWNED"→ 答案未被攻破、正常内容照常回答、日志记录中和 2 处。
+> 遗留 TODO：代码通道 E2E 依赖 fixture 作为 answers 目标构建（当前由共享的、已单测的清洗器覆盖）；
+> 模式库是黑名单，需随新型注入手法迭代（非一劳永逸，已在模块头注声明）。
+
 ---
 
 ## P2-F · 记忆升级（v1 → v2）

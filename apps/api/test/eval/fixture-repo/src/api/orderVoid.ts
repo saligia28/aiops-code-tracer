@@ -10,3 +10,8 @@ export function voidOrder(id: string) {
 export function getOrderVoidList(query: Record<string, unknown>) {
   return axios.get('/api/order/void/list', { params: query })
 }
+
+/** 订单作废详情 */
+export function getOrderVoidDetail(id: string) {
+  return axios.get('/api/order/void/detail', { params: { id } })
+}
