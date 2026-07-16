@@ -297,6 +297,110 @@ export async function callOllamaChatCompletion(messages: Array<{ role: 'system' 
   }
 }
 
+/**
+ * 流式 Chat Completion（P1-D）。OpenAI 兼容 `stream:true`，逐 token 回调 onDelta。
+ *
+ * 行为约定（调用方请读）：
+ *  - 返回 { text: 完整文本, aborted }；网络/解析失败返回 null（调用方自行降级到非流式）。
+ *  - usage 通过 `stream_options.include_usage` 从最后一个 chunk 取，写入 lastCallMeta
+ *   （保住 L4 的 token 成本上报，语义与非流式一致）。
+ *  - signal 中止（用户点停止/断开连接）不算错误：返回已累积的部分文本 + aborted=true。
+ *  - TODO(P1-D 后续): 内网 ollama 模式暂不支持流式（/api/chat 的 NDJSON 协议不同），
+ *    当前 intranet 模式直接返回 null，调用方会退回非流式路径。
+ */
+export async function callChatCompletionStream(
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  onDelta: (delta: string) => void,
+  signal?: AbortSignal,
+): Promise<{ text: string; aborted: boolean } | null> {
+  if (!canUseLlm()) return null;
+  // intranet 模式：ollama 流式协议未接（见头注 TODO），但若配了 API 兜底则直接用 API 流式——
+  // 与非流式路径的降级终点保持一致（intranet 失败 → api）。纯内网无 API key 才返回 null。
+  if (llmRuntimeState.mode === 'intranet' && !canUseApiLlm()) return null;
+
+  const model = llmRuntimeState.mode === 'intranet'
+    ? (llmRuntimeState.apiModel || DEFAULT_API_MODEL)
+    : getCurrentLlmModel();
+  const baseUrl = llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL;
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (LLM_API_KEY) headers.authorization = `Bearer ${LLM_API_KEY}`;
+
+  const timeout = Number.isFinite(LLM_TIMEOUT_MS) && LLM_TIMEOUT_MS > 0 ? LLM_TIMEOUT_MS : 60000;
+  const timeoutCtl = new AbortController();
+  const timer = setTimeout(() => timeoutCtl.abort(), timeout);
+  // 外部中止（用户停止）与内部超时二选一即中止
+  const combined = signal ? AbortSignal.any([signal, timeoutCtl.signal]) : timeoutCtl.signal;
+
+  let text = '';
+  try {
+    const resp = await fetch(resolveChatCompletionUrl(baseUrl), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        max_tokens: LLM_MAX_TOKENS,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: messages.map((m) => ({ ...m, content: stripLoneSurrogates(m.content) })),
+      }),
+      signal: combined,
+    });
+    if (!resp.ok || !resp.body) {
+      _log?.warn(`LLM 流式调用失败: ${resp.status} ${resp.statusText}`);
+      return null;
+    }
+
+    // SSE 解析：按空行分帧，每帧 "data: {json}" 或 "data: [DONE]"
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const chunk = JSON.parse(payload) as {
+            choices?: Array<{ delta?: { content?: string } }>;
+            usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+          };
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (delta) {
+            text += delta;
+            onDelta(delta);
+          }
+          // usage 只出现在最后一个 chunk（choices 为空数组）
+          if (chunk.usage) {
+            lastCallMeta = {
+              model,
+              promptTokens: chunk.usage.prompt_tokens,
+              completionTokens: chunk.usage.completion_tokens,
+              totalTokens: chunk.usage.total_tokens,
+            };
+          }
+        } catch {
+          // 单帧解析失败不致命，跳过
+        }
+      }
+    }
+    return { text, aborted: false };
+  } catch (err) {
+    // 用户中止：返回已累积的部分文本，不算错误
+    if (signal?.aborted) return { text, aborted: true };
+    _log?.warn(`LLM 流式调用异常: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function callChatCompletion(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string | null> {
   if (!canUseLlm()) return null;
   if (llmRuntimeState.mode === 'intranet') {
