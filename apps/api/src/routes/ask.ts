@@ -98,7 +98,7 @@ export function registerAsk(app: FastifyInstance): void {
     try {
       // ====== Step 0: 解析/创建会话，落库用户消息，取多轮历史 ======
       const projectId = resolveActiveProjectId()
-      const memoryBlock = retrieveMemoryBlock(projectId, question)
+      const memoryBlock = await retrieveMemoryBlock(projectId, question)
       let convId: string | null = null
       let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = []
       try {

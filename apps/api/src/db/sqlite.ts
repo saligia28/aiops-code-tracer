@@ -69,6 +69,23 @@ function migrate(database: Database.Database): void {
     });
     toV2();
   }
+
+  // v3（记忆 v2 / P2-F）：给 memories 加语义召回与遗忘所需字段。全部 additive、可空——
+  // 旧记忆 embedding=NULL 时召回自动退回纯关键词，embedding 未配置时整条通道 dormant，零回归。
+  //   embedding    Float32 向量的小端字节（存 BLOB，读时按 embed_model 校验维度/模型）
+  //   embed_model  该向量出自哪个 embedding 模型（换模型后旧向量作废，避免跨模型算余弦）
+  //   last_used_at 最近一次被检索命中的时间戳（遗忘信号：久未命中的记忆排序降权）
+  if (current < 3) {
+    const toV3 = database.transaction(() => {
+      database.exec(`
+        ALTER TABLE memories ADD COLUMN embedding BLOB;
+        ALTER TABLE memories ADD COLUMN embed_model TEXT;
+        ALTER TABLE memories ADD COLUMN last_used_at INTEGER;
+      `);
+      database.pragma('user_version = 3');
+    });
+    toV3();
+  }
 }
 
 /**

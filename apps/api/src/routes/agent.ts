@@ -22,7 +22,7 @@ export function registerAgent(app: FastifyInstance): void {
 
     // 解析/创建会话，落库用户消息，取多轮历史（失败不阻断问答）
     const projectId = resolveActiveProjectId();
-    const memoryBlock = retrieveMemoryBlock(projectId, q);
+    const memoryBlock = await retrieveMemoryBlock(projectId, q);
     let convId: string | null = null;
     let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
     try {
