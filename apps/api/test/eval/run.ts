@@ -108,6 +108,11 @@ async function semantic(): Promise<void> {
 interface AnswerCase {
   id: string;
   question: string;
+  /**
+   * 多轮用例（P2-H）：前置轮按顺序发问并串同一 conversationId（历史窗口/摘要走真实链路），
+   * 最后再问 question 做判定——考察终轮答案是否正确利用了跨轮上下文。
+   */
+  turns?: string[];
   mustMention: string[];
   mustNotHallucinate: string[];
   referenceAnswer?: string;
@@ -144,16 +149,19 @@ async function loginIfNeeded(): Promise<void> {
   }
 }
 
-async function askServer(question: string): Promise<{ answer: string; evidence: Evidence[] } | null> {
+async function askServer(
+  question: string,
+  conversationId?: string,
+): Promise<{ answer: string; evidence: Evidence[]; conversationId?: string } | null> {
   try {
     const resp = await fetch(`${API_BASE}/api/ask`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(authCookie ? { cookie: authCookie } : {}) },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, ...(conversationId ? { conversationId } : {}) }),
     });
     if (!resp.ok) return null;
-    const json = (await resp.json()) as { answer?: string; evidence?: Evidence[] };
-    return { answer: json.answer ?? '', evidence: json.evidence ?? [] };
+    const json = (await resp.json()) as { answer?: string; evidence?: Evidence[]; conversationId?: string };
+    return { answer: json.answer ?? '', evidence: json.evidence ?? [], conversationId: json.conversationId };
   } catch {
     return null;
   }
@@ -183,7 +191,22 @@ async function answers(): Promise<void> {
   const scores: number[] = [];
   const citationRates: number[] = [];
   for (const c of cases) {
-    const resp = await askServer(c.question);
+    // 多轮用例（P2-H）：前置轮串同一会话（历史窗口/摘要走真实链路），仅终轮参与判定
+    let convId: string | undefined;
+    let turnsFailed = false;
+    for (const t of c.turns ?? []) {
+      const turnResp = await askServer(t, convId);
+      if (!turnResp) {
+        turnsFailed = true;
+        break;
+      }
+      convId = turnResp.conversationId ?? convId;
+    }
+    if (turnsFailed) {
+      console.log(`  ⚠️ ${c.id} 前置轮失败，跳过`);
+      continue;
+    }
+    const resp = await askServer(c.question, convId);
     if (!resp) {
       console.log(`  ⚠️ ${c.id} 问答失败，跳过`);
       continue;
@@ -205,7 +228,7 @@ async function answers(): Promise<void> {
     }
     if (judged) scores.push(judged.verdict.score);
 
-    console.log(`  ${c.id}`);
+    console.log(`  ${c.id}${c.turns?.length ? `（多轮：${c.turns.length} 前置轮）` : ''}`);
     const citationText = citation ? `   引用 ${(citation.accuracy * 100).toFixed(0)}%${citation.accuracy < 1 ? ` (${citation.checks.filter((x) => !x.matched).length} 条未核实)` : ''}` : '';
     console.log(`    必提 ${men.ok ? '✅' : `❌ 缺: ${men.missing.join(', ')}`}   陷阱 ${hal.ok ? '✅' : `❌ 踩: ${hal.hits.join(', ')}`}${citationText}`);
     if (judged) {

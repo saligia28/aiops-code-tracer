@@ -165,15 +165,18 @@ export function getMessages(conversationId: string): ConversationMessage[] {
   return rows.map(mapMessage);
 }
 
+/** 进 LLM 历史窗口的一条消息（过滤后：user/assistant、内容非空）。 */
+export interface HistoryEntry {
+  role: ChatRole;
+  content: string;
+}
+
 /**
- * 装配多轮历史窗口：取该会话所有 role 为 user/assistant 且 content 非空的消息，
- * 从最新往旧累加 token，累计超过 tokenBudget 即停（最旧先丢），最后反转为时间正序返回。
- * 只放自然语言问/答，绝不带检索代码块（那是当前轮 user 的事）。
+ * 过滤后的历史消息列表（user/assistant、content 非空），时间正序。
+ * 这是「窗口装配」与「摘要覆盖水位（summary_covered 条）」共用的唯一定义——
+ * 两边过滤条件必须一致，否则水位会错位。
  */
-export function buildLlmHistory(
-  conversationId: string,
-  tokenBudget: number,
-): { role: ChatRole; content: string }[] {
+export function getHistoryEntries(conversationId: string): HistoryEntry[] {
   const rows = getDb()
     .prepare(
       `SELECT role, content FROM messages
@@ -183,6 +186,19 @@ export function buildLlmHistory(
        ORDER BY created_at ASC`,
     )
     .all(conversationId) as Pick<MessageRow, 'role' | 'content'>[];
+  return rows.map((r) => ({ role: r.role as ChatRole, content: r.content }));
+}
+
+/**
+ * 装配多轮历史窗口（v1 纯截断）：从最新往旧累加 token，累计超过 tokenBudget 即停
+ * （最旧先丢），最后反转为时间正序返回。只放自然语言问/答，绝不带检索代码块。
+ * 带摘要的升级版入口见 services/ask/historyCompactor.ts 的 buildHistoryWindow（P2-H）。
+ */
+export function buildLlmHistory(
+  conversationId: string,
+  tokenBudget: number,
+): { role: ChatRole; content: string }[] {
+  const rows = getHistoryEntries(conversationId);
 
   const picked: { role: ChatRole; content: string }[] = [];
   let total = 0;
@@ -191,9 +207,34 @@ export function buildLlmHistory(
     const cost = estimateTokens(rows[i].content);
     if (total + cost > tokenBudget) break;
     total += cost;
-    picked.push({ role: rows[i].role as ChatRole, content: rows[i].content });
+    picked.push({ role: rows[i].role, content: rows[i].content });
   }
   // 反转为时间正序
   picked.reverse();
   return picked;
+}
+
+// ============================================================
+// 历史摘要缓存（P2-H）：conversations.summary / summary_covered
+// ============================================================
+
+export interface ConversationSummary {
+  /** 早期历史的 LLM 摘要正文 */
+  summary: string;
+  /** 摘要已覆盖 getHistoryEntries 列表的前多少条 */
+  covered: number;
+}
+
+export function getConversationSummary(conversationId: string): ConversationSummary | null {
+  const row = getDb()
+    .prepare('SELECT summary, summary_covered FROM conversations WHERE id = ?')
+    .get(conversationId) as { summary: string | null; summary_covered: number | null } | undefined;
+  if (!row || !row.summary || !row.summary_covered || row.summary_covered <= 0) return null;
+  return { summary: row.summary, covered: row.summary_covered };
+}
+
+export function setConversationSummary(conversationId: string, summary: string, covered: number): void {
+  getDb()
+    .prepare('UPDATE conversations SET summary = ?, summary_covered = ? WHERE id = ?')
+    .run(summary, covered, conversationId);
 }

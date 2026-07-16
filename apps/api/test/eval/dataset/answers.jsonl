@@ -8,3 +8,8 @@
 {"id":"a-process-cost","question":"加工费核算页面在哪个文件？","mustMention":["processCost"],"mustNotHallucinate":[],"referenceAnswer":"页面在 src/views/costManagement/bigGoodsPricing/processCost/ 目录（入口 index.vue，详情 detail.vue）。"}
 {"id":"a-stock-check","question":"备料核料的列表页在哪个文件？","mustMention":["stockCheck"],"mustNotHallucinate":["stockOrder"],"referenceAnswer":"列表页是 src/views/inventoryManagement/stockCheck/List.vue。"}
 {"id":"a-band-planning","question":"波段企划页面在哪个文件？","mustMention":["BandPlaning"],"mustNotHallucinate":["bandAnalysis"],"referenceAnswer":"页面是 src/views/designPlanning/seasonPlanning/BandPlaning.vue（注意文件名拼写就是 BandPlaning）。"}
+# 多轮用例（P2-H）：turns = 前置轮（串同一 conversationId），question = 终轮（参与判定）。
+# 考点：终轮问题刻意留歧义（"核价列表页"在 订单会议核价 与 大货核价(odmDHPriceCheck) 间摇摆），
+#       必须依赖前置轮历史消歧——历史窗口被截断/摘要失真时该用例最先红。
+{"id":"a-mt-price-anaphora","turns":["订单会议核价的列表页在哪个文件？"],"question":"这个核价列表页所在的完整目录路径是什么？","mustMention":["qsOrderMeetingPriceCheck"],"mustNotHallucinate":["odmDHPriceCheck"],"referenceAnswer":"接上轮：src/views/costManagement/qsOrderMeetingPriceCheck/ 目录（列表页 List.vue）。"}
+{"id":"a-mt-earliest-turn","turns":["备料核料的列表页在哪个文件？","约仓发货的页面在哪里实现的？"],"question":"回到最开始问的备料核料，它的列表页文件是哪一个？","mustMention":["stockCheck"],"mustNotHallucinate":["stockOrder"],"referenceAnswer":"列表页是 src/views/inventoryManagement/stockCheck/List.vue（第一轮已确认）。"}

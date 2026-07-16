@@ -5,6 +5,7 @@ import { executeTool, getOpenAITools } from './tools.js'
 import { callChatCompletionWithTools, type ChatMessage, type ToolDefinition } from './llmWithTools.js'
 import { AGENT_SYSTEM_PROMPT } from './prompt.js'
 import { shouldPlan, generatePlan, renderPlanForPrompt } from './planner.js'
+import { getAgentCompressThresholds } from '../services/ask/contextBudget.js'
 
 // ============================================================
 // 配置
@@ -280,8 +281,9 @@ async function forceFinalAnswer(
 
 /**
  * 渐进式压缩消息列表：
- * - 20K 字符：轻度压缩（折叠较早的 tool 结果，阈值 500 字）
- * - 40K 字符：重度压缩（阈值降至 150 字 + 清除早期 reasoning_content）
+ * - 轻度阈值（默认 20K 字符）：折叠较早的 tool 结果（阈值 500 字）
+ * - 重度阈值（默认 40K 字符）：折叠阈值降至 150 字 + 清除早期 reasoning_content
+ * 阈值经 AGENT_COMPRESS_LIGHT_CHARS / AGENT_COMPRESS_HEAVY_CHARS 可调（P2-H 预算收敛）。
  *
  * 关键：折叠时保留首行（含文件路径/读取范围）并用「已读取」措辞，
  * 而非「已压缩/已截断」——避免诱导模型误判内容缺失而反复重读（死循环根因）。
@@ -296,9 +298,10 @@ function compressMessages(messages: ChatMessage[]): void {
 
   const totalChars = estimateChars()
 
-  if (totalChars < 20_000) return
+  const thresholds = getAgentCompressThresholds()
+  if (totalChars < thresholds.lightChars) return
 
-  const isHeavy = totalChars >= 40_000
+  const isHeavy = totalChars >= thresholds.heavyChars
   const toolTruncateLimit = isHeavy ? 150 : 500
 
   // 从第 3 条消息开始（跳过 system + 第一条 user），保留最近 6 条不折叠

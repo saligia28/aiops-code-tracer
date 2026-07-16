@@ -6,9 +6,11 @@ import { graphStore, fileNodeMap, resolveActiveProjectId, currentRepoName, curre
 import { reflectOnAnswer } from '../services/ask/reflection.js'
 import { retrieveDocEvidence, renderDocEvidenceForPrompt } from '../services/ask/docRecall.js'
 import { sanitizeRetrievedText } from '../services/ask/promptSafety.js'
+import { getContextBudgets } from '../services/ask/contextBudget.js'
 import { callChatCompletion, callChatCompletionStream, canUseLlm, getLastLlmCallMeta } from '../services/llmService.js'
 import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
-import { createConversation, getConversation, appendMessage, buildLlmHistory } from '../db/conversationStore.js'
+import { createConversation, getConversation, appendMessage } from '../db/conversationStore.js'
+import { buildHistoryWindow, contextualizeQuestion } from '../services/ask/historyCompactor.js'
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
 import {
   ensureGraph,
@@ -63,7 +65,10 @@ export function registerAsk(app: FastifyInstance): void {
   setTraceServiceLogger(app.log)
   app.post('/api/ask', async (request, reply) => {
     if (!ensureGraph(reply)) return
-    const { question, conversationId, stream } = request.body as { question: string; conversationId?: string; stream?: boolean }
+    const body = request.body as { question: string; conversationId?: string; stream?: boolean }
+    const { conversationId, stream } = body
+    // question 可被指代补全重写（见 Step 0 末尾），落库/trace 始终用原始问题
+    let question = body.question
     if (!question || !question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' })
     }
@@ -104,12 +109,23 @@ export function registerAsk(app: FastifyInstance): void {
       try {
         const conv = (conversationId ? getConversation(conversationId) : null) ?? createConversation(projectId, question.slice(0, 40))
         convId = conv.id
-        history = buildLlmHistory(convId, 1500)
+        // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟），短会话行为与纯截断一致
+        history = buildHistoryWindow(convId, getContextBudgets().history, (err) =>
+          app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
+        )
         appendMessage(convId, { role: 'user', content: question, mode: 'rag' })
       } catch (err) {
         app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`)
       }
       trace = startAskTrace({ question, projectId, conversationId: convId, repoName: currentRepoName })
+      // P2-H 指代补全：指代型追问拼上一轮用户问题做检索语境（单轮/无指代零变化）。
+      // 注意放在 appendMessage / startAskTrace 之后——落库与 trace 记录的是用户原话。
+      const contextualQuestion = contextualizeQuestion(question, history)
+      if (contextualQuestion !== question) {
+        app.log.info(`[multi-turn] 指代补全检索语境: "${question.slice(0, 40)}"`)
+        trace?.span('question_contextualized', Date.now(), { original: question.slice(0, 80), contextualized: contextualQuestion.slice(0, 160) })
+        question = contextualQuestion
+      }
       // extractMemory：仅在"复杂问答（走了 LLM 阅读代码那条路）"时才后台沉淀记忆；
       // 快速路径(API 清单)与规则兜底答案信号低、易产生噪音，默认不抽取。
       // 返回 undefined = SSE 模式已用 done 帧收尾（handler 不再返回 JSON）
@@ -282,9 +298,13 @@ export function registerAsk(app: FastifyInstance): void {
       }
 
       // ====== Step 3: 组装代码上下文 ======
-      const CODE_BUDGET = 6000
-      const EVIDENCE_BUDGET = 1500
-      const GRAPH_BUDGET = 800
+      // 预算收敛（P2-H）：默认值与原硬编码一致，env 可调（CONTEXT_*_BUDGET），
+      // 实际用量记 context_assembly span——先有观测数据，再谈调预算。
+      const tAssemble = Date.now()
+      const budgets = getContextBudgets()
+      const CODE_BUDGET = budgets.code
+      const EVIDENCE_BUDGET = budgets.evidence
+      const GRAPH_BUDGET = budgets.graph
 
       // 提示注入防御（P1-E）：codeContext 来自被分析仓库（不可信输入），出 prompt 前中和
       // 伪装成指令的行。evidenceHints 由 codeContext 派生，故清洗源头即可覆盖。
@@ -397,6 +417,18 @@ ${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
           ...history,
           { role: 'user' as const, content: userPrompt },
         ]
+        // 观测各段实际 token（估算值）与预算——Langfuse 上看利用率分布，反推预算合理值（P2-H）
+        trace?.span('context_assembly', tAssemble, {
+          codeTokens: estimateTokens(codeContext),
+          evidenceTokens: estimateTokens(evidenceHints),
+          graphTokens: estimateTokens(trimmedGraphContext),
+          historyTokens: history.reduce((sum, m) => sum + estimateTokens(m.content), 0),
+          historySummaryUsed: history.some((m) => m.role === 'system'),
+          docTokens: estimateTokens(renderDocEvidenceForPrompt(docEvidence)),
+          memoryTokens: memoryBlock ? estimateTokens(memoryBlock) : 0,
+          promptTokensEstimated: llmMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0),
+          budgets,
+        })
         // 流式优先（P1-D）：SSE 模式逐 token 下发；流式不可用（内网模式/网络失败）自动降级整包。
         let llmAnswer: string | null = null
         if (sse) {

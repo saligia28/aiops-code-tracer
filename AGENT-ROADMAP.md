@@ -177,6 +177,30 @@
 **验收**：长会话（20+ 轮）答案质量不掉（answers 评测加 2 条多轮用例）；trace 显示 prompt token P95 下降。
 **工作量**：2 天。
 
+> **进度（2026-07-16）✅ 已落地**：
+> - 预算收敛：`services/ask/contextBudget.ts`——CODE/EVIDENCE/GRAPH/HISTORY 四预算 env 可调
+>   （`CONTEXT_*_BUDGET`，默认=原硬编码零回归），agent 压缩阈值同收敛；ask 链路新增
+>   `context_assembly` trace span（各段实际 token + 预算利用率，反推合理值有数据可依）。
+> - Evidence 贪心装填：`buildEvidenceHints`/`buildEvidenceContext` 去掉条数硬截断（8/6），
+>   按分数序装填到 token 预算，装不下的跳过继续试更小的（同预算多装 1~3 条低成本证据）。
+> - 历史摘要：DB v4（conversations.summary/summary_covered，条数水位防同毫秒错位）+
+>   `services/ask/historyCompactor.ts`——窗口保最近轮原文、早期历史用缓存摘要顶上（system 消息）；
+>   摘要后台 fire-and-forget 生成（当轮零延迟，下一轮生效），LLM 不可用退回 v1 截断零回归。
+>   两处活体验证打出来的坑已修：①摘要按 token 钳制（≤400；按字符卡 CJK 会低估 5 倍，比预算还大）；
+>   ②溢出路径单条消息钳制 250 token（长答案不再堵死整个窗口）。
+> - 指代补全（E2E 暴露的真缺口）：历史只进答案层、不进召回层——"这个核价列表页"类追问检索被
+>   无关页面带偏后，"以代码为准"纪律反而放大错误。`contextualizeQuestion`：指代词 + 有历史 →
+>   摘要头部/近期用户轮按词元重叠过滤后拼进检索语境（无关轮会制造竞争锚点，评测教训）。
+> - 验证：确定性单测 29 个（预算解析/贪心装填/窗口装配/压缩水位/指代补全），全套 83 test 绿；
+>   活体 E2E（预算 800 逼出摘要）：4 轮会话摘要落库（covered=2、file:line 保真）→ 指代追问正确
+>   消解不踩陷阱；answers 评测 +2 条多轮用例（turns 串 conversationId）双双 10/10，
+>   汇总必提 7/7、正确 7/7、引用 100%。
+>
+> **遗留 TODO**：① prompt token P95 下降需 Langfuse 上观测一段真实流量（context_assembly span
+> 已埋好）再回填数字；② 指代补全是确定性启发式（指代词表 + 词元重叠），复杂指代（跨多轮/省略主语）
+> 需 LLM query 改写，等真实败例攒够再上；③ agent 循环历史仍是折叠式压缩（compressMessages），
+> LLM 摘要版可复用 historyCompactor，观察 agent 长任务真实需求后再接。
+
 ---
 
 ## P3（远期，单人项目暂缓）

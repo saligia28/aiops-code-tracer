@@ -23,6 +23,7 @@ import { callChatCompletion, callChatCompletionStream, canUseLlm } from '../llmS
 import { stripLoneSurrogates } from '../../textSafety.js';
 import { parseLine, estimateTokens, escapeRegex, NODE_TYPE_SCORE, tokenizeForRecall } from './textUtils.js';
 import { findFunctionBoundary } from './codeScan.js';
+import { getContextBudgets } from './contextBudget.js';
 import { isApiListQuestion, isPaginationQuestion, isComponentFeatureQuestion, isFlowQuestion, isPageStructureQuestion, isUiConditionQuestion, extractPagePhrase, extractLikelyScope, extractQuestionCoreTerms } from './questionAnalysis.js';
 import { tryAnalyzeApiPassThrough } from './endpoints.js';
 
@@ -241,41 +242,51 @@ export function getCodeSnippet(filePath: string, line: number): string {
 }
 
 
-export function buildEvidenceContext(evidence: Evidence[]): string {
+/**
+ * 证据 → prompt 文本的贪心装填（P2-H）：按传入顺序（上游已按分数/优先级排好）逐条尝试，
+ * 装不下的跳过、继续尝试后面 token 更小的条目，直到预算耗尽。
+ * 对比旧的「条数硬截断 + 首个超限即停」：同预算下能多装几条低成本证据，且预算真实生效。
+ */
+export function buildEvidenceContext(evidence: Evidence[], tokenBudget: number): string {
   if (evidence.length === 0) return '无';
-  return evidence
-    .slice(0, 6)
-    .map((item, idx) => {
-      const snippet = getCodeSnippet(item.file, item.line);
-      return `${idx + 1}. ${item.file}:${item.line} | ${item.label}\n${snippet}`;
-    })
-    .join('\n');
+
+  const lines: string[] = [];
+  let usedTokens = 0;
+  for (const item of evidence) {
+    const snippet = getCodeSnippet(item.file, item.line);
+    const line = `${lines.length + 1}. ${item.file}:${item.line} | ${item.label}\n${snippet}`;
+    const cost = estimateTokens(line);
+    if (usedTokens + cost > tokenBudget) continue;
+    usedTokens += cost;
+    lines.push(line);
+  }
+
+  return lines.length > 0 ? lines.join('\n') : '无';
 }
 
 
 export function buildEvidenceHints(evidence: Evidence[], codeContext: string, tokenBudget: number): string {
   if (evidence.length === 0) return '无';
 
-  const items = evidence.slice(0, 8);
   const hints: string[] = [];
   let usedTokens = 0;
 
-  for (let idx = 0; idx < items.length; idx++) {
-    const item = items[idx];
+  // 同 buildEvidenceContext 的贪心装填；「已在代码片段中」的条目只占一行，几乎必然装得下
+  for (const item of evidence) {
     const lineMarker = `L${item.line}:`;
     const fileMarker = `--- ${item.file} ---`;
     const alreadyCovered = codeContext.includes(fileMarker) && codeContext.includes(lineMarker);
 
     let hint: string;
     if (alreadyCovered) {
-      hint = `${idx + 1}. [${item.label}] ${item.file}:${item.line}（已在代码片段中）`;
+      hint = `${hints.length + 1}. [${item.label}] ${item.file}:${item.line}（已在代码片段中）`;
     } else {
       const snippet = getCodeSnippet(item.file, item.line);
-      hint = `${idx + 1}. [${item.label}] ${item.file}:${item.line}\n${snippet}`;
+      hint = `${hints.length + 1}. [${item.label}] ${item.file}:${item.line}\n${snippet}`;
     }
 
     const hintTokens = estimateTokens(hint);
-    if (usedTokens + hintTokens > tokenBudget) break;
+    if (usedTokens + hintTokens > tokenBudget) continue;
     usedTokens += hintTokens;
     hints.push(hint);
   }
@@ -488,7 +499,7 @@ export async function composeAnswerWithLlm(
     `必需证据：${plan.mustEvidence.join(', ') || '无'}`,
     '',
     '证据列表：',
-    buildEvidenceContext(evidence),
+    buildEvidenceContext(evidence, getContextBudgets().evidence),
     '',
     '图谱链路：',
     buildGraphContext(graph),

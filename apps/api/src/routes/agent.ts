@@ -4,8 +4,10 @@ import { graphStore, currentRepoPath, currentRepoName, resolveActiveProjectId, L
 import { startAskTrace } from '../services/traceService.js';
 import { agentLoop } from '../agent/index.js';
 import { getCurrentLlmProvider, getCurrentLlmModel, getCurrentLlmBaseUrl } from '../services/llmService.js';
-import { createConversation, getConversation, appendMessage, buildLlmHistory } from '../db/conversationStore.js';
+import { createConversation, getConversation, appendMessage } from '../db/conversationStore.js';
+import { buildHistoryWindow } from '../services/ask/historyCompactor.js';
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js';
+import { getContextBudgets } from '../services/ask/contextBudget.js';
 
 export function registerAgent(app: FastifyInstance): void {
   app.post('/api/agent/ask', async (request, reply) => {
@@ -28,7 +30,10 @@ export function registerAgent(app: FastifyInstance): void {
     try {
       const conv = (conversationId ? getConversation(conversationId) : null) ?? createConversation(projectId, q.slice(0, 40));
       convId = conv.id;
-      history = buildLlmHistory(convId, 1500);
+      // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟），短会话行为与纯截断一致
+      history = buildHistoryWindow(convId, getContextBudgets().history, (err) =>
+        app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
+      );
       appendMessage(convId, { role: 'user', content: q, mode: 'agent' });
     } catch (err) {
       app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`);

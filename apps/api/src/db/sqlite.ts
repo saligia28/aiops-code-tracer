@@ -86,6 +86,22 @@ function migrate(database: Database.Database): void {
     });
     toV3();
   }
+
+  // v4（上下文工程 / P2-H）：给 conversations 加「早期历史摘要」缓存。additive 可空，零回归——
+  //   summary          早期历史的 LLM 摘要正文（NULL = 从未摘要，历史窗口走纯截断）
+  //   summary_covered  摘要已覆盖「过滤后历史消息列表」的前多少条
+  // 水位用条数而非时间戳：消息 append-only、条数前缀稳定；created_at 同毫秒并列时
+  // 时间戳水位会误判边界（一条没进摘要的消息被当成已覆盖 → 内容凭空丢失）。
+  if (current < 4) {
+    const toV4 = database.transaction(() => {
+      database.exec(`
+        ALTER TABLE conversations ADD COLUMN summary TEXT;
+        ALTER TABLE conversations ADD COLUMN summary_covered INTEGER;
+      `);
+      database.pragma('user_version = 4');
+    });
+    toV4();
+  }
 }
 
 /**
