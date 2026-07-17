@@ -100,34 +100,32 @@ describe('conversationStore', () => {
     expect(store.getConversationWithMessages('nope')).toBeNull();
   });
 
-  it('buildLlmHistory 按 token 预算截断：最旧先丢、只含 user/assistant、时间正序', () => {
-    const conv = store.createConversation('proj-budget');
-    // estimateTokens(s) = ceil(len/3)。构造长度可控的消息。
-    const longU1 = 'U'.repeat(300); // ~100 token（最旧）
-    const longA1 = 'A'.repeat(300); // ~100 token
-    const longU2 = 'B'.repeat(300); // ~100 token
-    const longA2 = 'C'.repeat(300); // ~100 token（最新）
-
-    store.appendMessage(conv.id, { role: 'user', content: longU1 });
+  it('getHistoryEntries：只含 user/assistant 非空消息、时间正序（窗口与摘要水位共用的唯一定义）', () => {
+    const conv = store.createConversation('proj-entries');
+    store.appendMessage(conv.id, { role: 'user', content: '第一问' });
     store.appendMessage(conv.id, { role: 'system', content: 'SYS 应被排除' });
-    store.appendMessage(conv.id, { role: 'assistant', content: longA1 });
+    store.appendMessage(conv.id, { role: 'assistant', content: '第一答' });
     store.appendMessage(conv.id, { role: 'user', content: '' }); // 空内容应被排除
-    store.appendMessage(conv.id, { role: 'user', content: longU2 });
-    store.appendMessage(conv.id, { role: 'assistant', content: longA2 });
+    store.appendMessage(conv.id, { role: 'user', content: '第二问' });
+    store.appendMessage(conv.id, { role: 'assistant', content: '第二答' });
 
-    // 预算 ~250 token：只容得下最新两条（longU2 + longA2 = 200），longA1(再 +100=300) 超预算被丢。
-    const history = store.buildLlmHistory(conv.id, 250);
-    expect(history).toEqual([
-      { role: 'user', content: longU2 },
-      { role: 'assistant', content: longA2 },
+    const entries = store.getHistoryEntries(conv.id);
+    expect(entries).toEqual([
+      { role: 'user', content: '第一问' },
+      { role: 'assistant', content: '第一答' },
+      { role: 'user', content: '第二问' },
+      { role: 'assistant', content: '第二答' },
     ]);
-    // 不含 system、不含空内容
-    expect(history.some((h) => (h.role as string) === 'system')).toBe(false);
-    expect(history.some((h) => h.content === '')).toBe(false);
+  });
 
-    // 预算极大：拿到全部 user/assistant（4 条），时间正序
-    const all = store.buildLlmHistory(conv.id, 1_000_000);
-    expect(all.map((h) => h.content)).toEqual([longU1, longA1, longU2, longA2]);
+  it('getHistoryEntries：同毫秒写入的消息保持插入序（rowid 次级排序，摘要水位的前提）', () => {
+    const conv = store.createConversation('proj-tie');
+    // 不 sleep，尽量制造同毫秒 created_at——无论是否同毫秒，插入序都必须稳定
+    for (let i = 1; i <= 10; i++) {
+      store.appendMessage(conv.id, { role: i % 2 === 1 ? 'user' : 'assistant', content: `m${i}` });
+    }
+    const entries = store.getHistoryEntries(conv.id);
+    expect(entries.map((e) => e.content)).toEqual(Array.from({ length: 10 }, (_, i) => `m${i + 1}`));
   });
 
   it('renameConversation 改标题并刷新 updated_at', async () => {

@@ -223,10 +223,15 @@ ${toolDesc}
 
 如果你不需要调用工具，直接用自然语言回答即可。`;
 
+  // 只给首条 system（agent 主系统提示）注入工具目录——历史窗口里可能还有别的 system
+  // 消息（P2-H 会话摘要、记忆块），给每条都追加会重复付几百 token 且把"XML 输出"指令
+  // 混进背景摘要内容里（review 修复）
+  let injected = false;
   return messages.map((m) => {
     const msg: Record<string, unknown> = { role: m.role, content: sanitizeMessageText(m.content) };
-    if (m.role === 'system' && typeof m.content === 'string') {
+    if (!injected && m.role === 'system' && typeof m.content === 'string') {
       msg.content = sanitizeMessageText(m.content + injection);
+      injected = true;
     }
     return msg;
   });

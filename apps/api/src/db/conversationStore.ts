@@ -62,11 +62,6 @@ function mapMessage(row: MessageRow): ConversationMessage {
   };
 }
 
-/** 轻量本地 token 估算（CJK 偏多，不引入 ask 管线依赖）。 */
-function estimateTokens(s: string): number {
-  return Math.ceil(s.length / 3);
-}
-
 // ============================================================
 // 会话
 // ============================================================
@@ -159,8 +154,10 @@ export function appendMessage(
 }
 
 export function getMessages(conversationId: string): ConversationMessage[] {
+  // rowid 次级排序：created_at 是毫秒精度，快速路径下同会话 user/assistant 可同毫秒落库，
+  // SQL 对并列行顺序无保证——摘要水位按「条数前缀」记，前缀顺序必须绝对稳定
   const rows = getDb()
-    .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
+    .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC')
     .all(conversationId) as MessageRow[];
   return rows.map(mapMessage);
 }
@@ -175,6 +172,8 @@ export interface HistoryEntry {
  * 过滤后的历史消息列表（user/assistant、content 非空），时间正序。
  * 这是「窗口装配」与「摘要覆盖水位（summary_covered 条）」共用的唯一定义——
  * 两边过滤条件必须一致，否则水位会错位。
+ * rowid 次级排序（review 修复）：同毫秒并列行的顺序 SQL 不保证，只靠索引扫描的
+ * 实现细节碰巧稳定；水位按条数前缀记，顺序漂移 = 消息从摘要和窗口同时消失。
  */
 export function getHistoryEntries(conversationId: string): HistoryEntry[] {
   const rows = getDb()
@@ -183,36 +182,15 @@ export function getHistoryEntries(conversationId: string): HistoryEntry[] {
        WHERE conversation_id = ?
          AND role IN ('user', 'assistant')
          AND content <> ''
-       ORDER BY created_at ASC`,
+       ORDER BY created_at ASC, rowid ASC`,
     )
     .all(conversationId) as Pick<MessageRow, 'role' | 'content'>[];
   return rows.map((r) => ({ role: r.role as ChatRole, content: r.content }));
 }
 
-/**
- * 装配多轮历史窗口（v1 纯截断）：从最新往旧累加 token，累计超过 tokenBudget 即停
- * （最旧先丢），最后反转为时间正序返回。只放自然语言问/答，绝不带检索代码块。
- * 带摘要的升级版入口见 services/ask/historyCompactor.ts 的 buildHistoryWindow（P2-H）。
- */
-export function buildLlmHistory(
-  conversationId: string,
-  tokenBudget: number,
-): { role: ChatRole; content: string }[] {
-  const rows = getHistoryEntries(conversationId);
-
-  const picked: { role: ChatRole; content: string }[] = [];
-  let total = 0;
-  // 从最新往旧累加，超预算即停（最旧先丢）
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const cost = estimateTokens(rows[i].content);
-    if (total + cost > tokenBudget) break;
-    total += cost;
-    picked.push({ role: rows[i].role, content: rows[i].content });
-  }
-  // 反转为时间正序
-  picked.reverse();
-  return picked;
-}
+// v1 的 buildLlmHistory（纯截断窗口）已删除：生产路径全部走
+// services/ask/historyCompactor.ts 的 buildHistoryWindow；它与正版 estimateTokens
+// （CJK 感知）4.5× 漂移的本地估算器一并移除，避免双实现各改各的。
 
 // ============================================================
 // 历史摘要缓存（P2-H）：conversations.summary / summary_covered

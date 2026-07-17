@@ -55,6 +55,21 @@ describe('evidence 贪心装填（P2-H）', () => {
     expect(buildEvidenceContext([ev('Z'.repeat(400))], 10)).toBe('无');
   });
 
+  it('头部保底：前 3 条只要单条不超总预算就必进——mustEvidence 队首补位不被贪心挤掉（review 修复）', () => {
+    // 三条 ~600 token 的头部证据（合计 1800 > 1500 预算）：纯贪心会跳过 rank-3、
+    // 留下低分小条目，prompt 里"必需证据"与证据列表脱节
+    const big1 = ev('A'.repeat(2400), 'src/must1.ts');
+    const big2 = ev('B'.repeat(2400), 'src/must2.ts');
+    const big3 = ev('C'.repeat(2400), 'src/must3.ts');
+    const small = ev('d'.repeat(40), 'src/tail.ts');
+    const hints = buildEvidenceHints([big1, big2, big3, small], '', 1500);
+    expect(hints).toContain('src/must1.ts');
+    expect(hints).toContain('src/must2.ts');
+    expect(hints).toContain('src/must3.ts');
+    // 头部保底后预算已尽：尾部条目提前收工（也省掉一次无谓的文件读取）
+    expect(hints).not.toContain('src/tail.ts');
+  });
+
   it('编号随装填顺序连续（跳过条目不留空号）', () => {
     const big = ev('X'.repeat(4000), 'src/big.ts');
     const small1 = ev('a'.repeat(40), 'src/s1.ts');

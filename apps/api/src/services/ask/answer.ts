@@ -243,20 +243,34 @@ export function getCodeSnippet(filePath: string, line: number): string {
 
 
 /**
- * 证据 → prompt 文本的贪心装填（P2-H）：按传入顺序（上游已按分数/优先级排好）逐条尝试，
- * 装不下的跳过、继续尝试后面 token 更小的条目，直到预算耗尽。
- * 对比旧的「条数硬截断 + 首个超限即停」：同预算下能多装几条低成本证据，且预算真实生效。
+ * 证据 → prompt 文本的装填器（P2-H，review 后修正）——buildEvidenceContext /
+ * buildEvidenceHints 共用（此前两份手写循环已经彼此漂移过一次）。规则：
+ *   - 头部保底：前 GUARANTEED_HEAD 条只要单条自身不超总预算就无条件装入。
+ *     evidencePlan 把 mustEvidence/api 补位项 unshift 在队首，纯贪心会因单条偏大
+ *     跳过队首、留下低分小条目（rank 前缀性质破坏，review 实锤的简单路径回归）。
+ *     代价有界：snippet 由 findFunctionBoundary 限 ~20 行，预算最多轻度超支。
+ *   - 其余按序贪心：装不下的跳过继续试更小的；剩余预算连最小条目都装不下时提前收工
+ *     ——否则被跳过的每一条还要白付一次整文件读（getCodeSnippet）。
  */
-export function buildEvidenceContext(evidence: Evidence[], tokenBudget: number): string {
-  if (evidence.length === 0) return '无';
+const GUARANTEED_HEAD = 3;
+/** 一条证据的最小成本下限（编号 + 文件:行 + 标签），剩余预算低于它就不必再渲染了 */
+const MIN_ITEM_TOKENS = 15;
+
+function packEvidence(
+  items: Evidence[],
+  tokenBudget: number,
+  render: (item: Evidence, ordinal: number) => string,
+): string {
+  if (items.length === 0) return '无';
 
   const lines: string[] = [];
   let usedTokens = 0;
-  for (const item of evidence) {
-    const snippet = getCodeSnippet(item.file, item.line);
-    const line = `${lines.length + 1}. ${item.file}:${item.line} | ${item.label}\n${snippet}`;
+  for (let i = 0; i < items.length; i++) {
+    if (i >= GUARANTEED_HEAD && tokenBudget - usedTokens < MIN_ITEM_TOKENS) break;
+    const line = render(items[i], lines.length + 1);
     const cost = estimateTokens(line);
-    if (usedTokens + cost > tokenBudget) continue;
+    const guaranteedHead = i < GUARANTEED_HEAD && cost <= tokenBudget;
+    if (!guaranteedHead && usedTokens + cost > tokenBudget) continue;
     usedTokens += cost;
     lines.push(line);
   }
@@ -264,34 +278,25 @@ export function buildEvidenceContext(evidence: Evidence[], tokenBudget: number):
   return lines.length > 0 ? lines.join('\n') : '无';
 }
 
+export function buildEvidenceContext(evidence: Evidence[], tokenBudget: number): string {
+  return packEvidence(evidence, tokenBudget, (item, n) => {
+    const snippet = getCodeSnippet(item.file, item.line);
+    return `${n}. ${item.file}:${item.line} | ${item.label}\n${snippet}`;
+  });
+}
+
 
 export function buildEvidenceHints(evidence: Evidence[], codeContext: string, tokenBudget: number): string {
-  if (evidence.length === 0) return '无';
-
-  const hints: string[] = [];
-  let usedTokens = 0;
-
-  // 同 buildEvidenceContext 的贪心装填；「已在代码片段中」的条目只占一行，几乎必然装得下
-  for (const item of evidence) {
+  return packEvidence(evidence, tokenBudget, (item, n) => {
+    // 「已在代码片段中」的条目只占一行，几乎必然装得下（且免掉一次文件读取）
     const lineMarker = `L${item.line}:`;
     const fileMarker = `--- ${item.file} ---`;
-    const alreadyCovered = codeContext.includes(fileMarker) && codeContext.includes(lineMarker);
-
-    let hint: string;
-    if (alreadyCovered) {
-      hint = `${hints.length + 1}. [${item.label}] ${item.file}:${item.line}（已在代码片段中）`;
-    } else {
-      const snippet = getCodeSnippet(item.file, item.line);
-      hint = `${hints.length + 1}. [${item.label}] ${item.file}:${item.line}\n${snippet}`;
+    if (codeContext.includes(fileMarker) && codeContext.includes(lineMarker)) {
+      return `${n}. [${item.label}] ${item.file}:${item.line}（已在代码片段中）`;
     }
-
-    const hintTokens = estimateTokens(hint);
-    if (usedTokens + hintTokens > tokenBudget) continue;
-    usedTokens += hintTokens;
-    hints.push(hint);
-  }
-
-  return hints.length > 0 ? hints.join('\n') : '无';
+    const snippet = getCodeSnippet(item.file, item.line);
+    return `${n}. [${item.label}] ${item.file}:${item.line}\n${snippet}`;
+  });
 }
 
 

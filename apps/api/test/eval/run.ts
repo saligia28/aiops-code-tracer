@@ -152,7 +152,7 @@ async function loginIfNeeded(): Promise<void> {
 async function askServer(
   question: string,
   conversationId?: string,
-): Promise<{ answer: string; evidence: Evidence[]; conversationId?: string } | null> {
+): Promise<{ answer: string; evidence: Evidence[]; conversationId?: string; codeContextPreview?: string } | null> {
   try {
     const resp = await fetch(`${API_BASE}/api/ask`, {
       method: 'POST',
@@ -160,8 +160,19 @@ async function askServer(
       body: JSON.stringify({ question, ...(conversationId ? { conversationId } : {}) }),
     });
     if (!resp.ok) return null;
-    const json = (await resp.json()) as { answer?: string; evidence?: Evidence[]; conversationId?: string };
-    return { answer: json.answer ?? '', evidence: json.evidence ?? [], conversationId: json.conversationId };
+    const json = (await resp.json()) as {
+      answer?: string;
+      evidence?: Evidence[];
+      conversationId?: string;
+      codeContextPreview?: string;
+    };
+    return {
+      answer: json.answer ?? '',
+      evidence: json.evidence ?? [],
+      conversationId: json.conversationId,
+      // judge 口径对齐（v4）的忠实度锚——此前被这里剥掉，judge 一直在用弱化口径评分（review 实锤）
+      codeContextPreview: json.codeContextPreview,
+    };
   } catch {
     return null;
   }
@@ -217,7 +228,7 @@ async function answers(): Promise<void> {
     const citation = repoPath ? citationAccuracy(resp.evidence, repoPath) : null;
     if (citation) citationRates.push(citation.accuracy);
     // codeContext 透传 = judge 口径对齐（v4）：忠实度以答案的真实信息源为锚，而非仅 12 条清单
-    const judged = await judgeAnswer({ question: c.question, answer: resp.answer, evidence: resp.evidence, referenceAnswer: c.referenceAnswer, codeContext: (resp as { codeContextPreview?: string }).codeContextPreview });
+    const judged = await judgeAnswer({ question: c.question, answer: resp.answer, evidence: resp.evidence, referenceAnswer: c.referenceAnswer, codeContext: resp.codeContextPreview });
 
     if (men.ok) mentionPass++;
     if (hal.ok) halluFree++;

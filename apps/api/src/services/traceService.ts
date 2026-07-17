@@ -101,6 +101,11 @@ export async function shutdownTracing(): Promise<void> {
 // ============ ask 链路 facade ============
 
 export interface AskTrace {
+  /**
+   * 是否真的在上报（Langfuse 已配置）。调用方给 span 组装昂贵 metadata（如整段 prompt
+   * 的 token 估算）前先看它——no-op facade 不判空的便利不该换来白算一遍的开销。
+   */
+  enabled: boolean;
   /** 记录一个已完成的阶段（用起止时间回填 span）。 */
   span(name: string, startMs: number, metadata?: Record<string, unknown>): void;
   /** 记录主 LLM 生成（问答那次大调用），usage 有则透传给 Langfuse 的成本统计。 */
@@ -117,6 +122,7 @@ export interface AskTrace {
 }
 
 const NOOP_TRACE: AskTrace = {
+  enabled: false,
   span: () => {},
   generation: () => {},
   end: () => {},
@@ -149,6 +155,7 @@ export function startAskTrace(input: {
   });
 
   return {
+    enabled: true,
     span(name, startMs, metadata) {
       trace.span({ name, startTime: new Date(startMs), endTime: new Date(), metadata });
     },

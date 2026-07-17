@@ -10,7 +10,7 @@ import { getContextBudgets } from '../services/ask/contextBudget.js'
 import { callChatCompletion, callChatCompletionStream, canUseLlm, getLastLlmCallMeta } from '../services/llmService.js'
 import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
 import { createConversation, getConversation, appendMessage } from '../db/conversationStore.js'
-import { buildHistoryWindow, contextualizeQuestion } from '../services/ask/historyCompactor.js'
+import { buildHistoryWindow, contextualizeQuestion, SUMMARY_PREFIX } from '../services/ask/historyCompactor.js'
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
 import {
   ensureGraph,
@@ -65,10 +65,7 @@ export function registerAsk(app: FastifyInstance): void {
   setTraceServiceLogger(app.log)
   app.post('/api/ask', async (request, reply) => {
     if (!ensureGraph(reply)) return
-    const body = request.body as { question: string; conversationId?: string; stream?: boolean }
-    const { conversationId, stream } = body
-    // question 可被指代补全重写（见 Step 0 末尾），落库/trace 始终用原始问题
-    let question = body.question
+    const { question, conversationId, stream } = request.body as { question: string; conversationId?: string; stream?: boolean }
     if (!question || !question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' })
     }
@@ -103,13 +100,12 @@ export function registerAsk(app: FastifyInstance): void {
     try {
       // ====== Step 0: 解析/创建会话，落库用户消息，取多轮历史 ======
       const projectId = resolveActiveProjectId()
-      const memoryBlock = await retrieveMemoryBlock(projectId, question)
       let convId: string | null = null
       let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = []
       try {
         const conv = (conversationId ? getConversation(conversationId) : null) ?? createConversation(projectId, question.slice(0, 40))
         convId = conv.id
-        // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟），短会话行为与纯截断一致
+        // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟）
         history = buildHistoryWindow(convId, getContextBudgets().history, (err) =>
           app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
         )
@@ -118,14 +114,16 @@ export function registerAsk(app: FastifyInstance): void {
         app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`)
       }
       trace = startAskTrace({ question, projectId, conversationId: convId, repoName: currentRepoName })
-      // P2-H 指代补全：指代型追问拼上一轮用户问题做检索语境（单轮/无指代零变化）。
-      // 注意放在 appendMessage / startAskTrace 之后——落库与 trace 记录的是用户原话。
-      const contextualQuestion = contextualizeQuestion(question, history)
-      if (contextualQuestion !== question) {
+      // P2-H 指代补全（review 修复后）：产出独立的 retrievalQuery，只喂给召回通道
+      // （代码/文档/记忆召回、页面锚点、事实召回、起点选择）。question 保持用户原话——
+      // 路由判定（isApiListQuestion 等）、意图分类、答案 prompt、反思、记忆沉淀全部用原话，
+      // 否则上一轮的措辞会劫持本轮的路由与答案（review 实锤过 API 清单快速路径被翻转）。
+      const retrievalQuery = contextualizeQuestion(question, history)
+      if (retrievalQuery !== question) {
         app.log.info(`[multi-turn] 指代补全检索语境: "${question.slice(0, 40)}"`)
-        trace?.span('question_contextualized', Date.now(), { original: question.slice(0, 80), contextualized: contextualQuestion.slice(0, 160) })
-        question = contextualQuestion
+        trace?.span('question_contextualized', Date.now(), { original: question.slice(0, 80), retrievalQuery: retrievalQuery.slice(0, 160) })
       }
+      const memoryBlock = await retrieveMemoryBlock(projectId, retrievalQuery)
       // extractMemory：仅在"复杂问答（走了 LLM 阅读代码那条路）"时才后台沉淀记忆；
       // 快速路径(API 清单)与规则兜底答案信号低、易产生噪音，默认不抽取。
       // 返回 undefined = SSE 模式已用 done 帧收尾（handler 不再返回 JSON）
@@ -172,10 +170,15 @@ export function registerAsk(app: FastifyInstance): void {
       }
 
       const scopedAnchor = plan.scope && plan.scope.trim().length >= 4 ? findBestPageAnchorByText(plan.scope) : null
+      // 指代型追问（retrievalQuery ≠ question）：指称对象在上一轮语境里，原问题提取出的
+      // 实体/scope 只是"核价列表页"这类歧义短语，按它先锚会锚去同名邻居页——语境锚点优先。
+      // 单轮问答 contextAnchor 恒为 null，优先级与原来完全一致。
+      const contextAnchor = retrievalQuery !== question ? findBestPageAnchorByText(retrievalQuery) : null
       const anchor =
+        contextAnchor ||
         scopedAnchor ||
         (analysis.entities.pageName ? findBestPageAnchorByText(analysis.entities.pageName) : null) ||
-        findBestPageAnchorByText(question)
+        findBestPageAnchorByText(retrievalQuery)
 
       // API 列表快速路径
       if (isApiListQuestion(question) && anchor) {
@@ -191,11 +194,11 @@ export function registerAsk(app: FastifyInstance): void {
       const componentFiles = anchor?.componentFile
         ? collectComponentScopeFiles(anchor.componentFile, componentQuestion ? 3 : 2, 180)
         : []
-      const hintedComponentFiles = pickHintedComponentFiles(question, componentFiles)
+      const hintedComponentFiles = pickHintedComponentFiles(retrievalQuery, componentFiles)
       const componentTerms = collectComponentScopeTerms(componentFiles)
 
       const searchQuery = [
-        question,
+        retrievalQuery,
         analysis.entities.pageName ?? '',
         analysis.entities.functionName ?? '',
         analysis.entities.componentName ?? '',
@@ -233,7 +236,7 @@ export function registerAsk(app: FastifyInstance): void {
       if (componentFiles.length > 0) {
         const componentScopedNodes = rankedNodes.filter(node => componentFiles.includes(node.filePath))
         const componentNodes = findRelevantNodes(
-          `${question} ${componentTerms.join(' ')}`,
+          `${retrievalQuery} ${componentTerms.join(' ')}`,
           componentQuestion ? 90 : 55,
           {
             ...plan,
@@ -252,7 +255,7 @@ export function registerAsk(app: FastifyInstance): void {
         new Set([...(anchor?.componentFile ? [anchor.componentFile] : []), ...hintedComponentFiles, ...componentFiles]),
       )
       const factHits = recallFacts(
-        question,
+        retrievalQuery,
         { ...plan, keywords: [...plan.keywords, ...componentTerms.slice(0, 12)] },
         factScopeFiles,
         60,
@@ -285,7 +288,7 @@ export function registerAsk(app: FastifyInstance): void {
       const intentResult = classifyIntent(question)
       const finalIntent = plan.intentHint ?? (analysis.intent !== 'GENERAL' ? analysis.intent : intentResult.intent)
       const startNode = selectStartNode(
-        question,
+        retrievalQuery,
         answerNodes,
         plan,
         [...hintedComponentFiles, ...componentFiles],
@@ -319,7 +322,7 @@ export function registerAsk(app: FastifyInstance): void {
       // 文档证据（P0-B）：独立通道，只在答案层融合，不进代码召回。
       // 未配 DOCS_PATH / 索引未建 / embedding 不可用时恒为 []，下方所有逻辑零变化。
       // 文档同为不可信输入（P1-E）：snippet 逐条中和注入。
-      const rawDocEvidence = await retrieveDocEvidence(question, 4)
+      const rawDocEvidence = await retrieveDocEvidence(retrievalQuery, 4)
       let docInjectionHits = 0
       const docEvidence = rawDocEvidence.map((d) => {
         const s = sanitizeRetrievedText(d.snippet)
@@ -397,6 +400,7 @@ export function registerAsk(app: FastifyInstance): void {
         if (analysis.entities.functionName) entitiesInfo.push(`函数：${analysis.entities.functionName}`)
         if (analysis.entities.componentName) entitiesInfo.push(`组件：${analysis.entities.componentName}`)
 
+        const docBlock = renderDocEvidenceForPrompt(docEvidence)
         const userPrompt = `问题：${question}
 ${entitiesInfo.length > 0 ? entitiesInfo.join('\n') : ''}
 问题关注点：${plan.concern}
@@ -409,7 +413,7 @@ ${codeContext}
 ${evidenceHints}
 
 调用关系：
-${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
+${trimmedGraphContext}${docBlock}`
 
         const llmMessages = [
           { role: 'system' as const, content: systemPrompt },
@@ -417,18 +421,21 @@ ${trimmedGraphContext}${renderDocEvidenceForPrompt(docEvidence)}`
           ...history,
           { role: 'user' as const, content: userPrompt },
         ]
-        // 观测各段实际 token（估算值）与预算——Langfuse 上看利用率分布，反推预算合理值（P2-H）
-        trace?.span('context_assembly', tAssemble, {
-          codeTokens: estimateTokens(codeContext),
-          evidenceTokens: estimateTokens(evidenceHints),
-          graphTokens: estimateTokens(trimmedGraphContext),
-          historyTokens: history.reduce((sum, m) => sum + estimateTokens(m.content), 0),
-          historySummaryUsed: history.some((m) => m.role === 'system'),
-          docTokens: estimateTokens(renderDocEvidenceForPrompt(docEvidence)),
-          memoryTokens: memoryBlock ? estimateTokens(memoryBlock) : 0,
-          promptTokensEstimated: llmMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0),
-          budgets,
-        })
+        // 观测各段实际 token（估算值）与预算——Langfuse 上看利用率分布，反推预算合理值（P2-H）。
+        // enabled 门控：no-op facade 下别为一个被丢弃的对象扫全量 prompt（review 修复）
+        if (trace?.enabled) {
+          trace.span('context_assembly', tAssemble, {
+            codeTokens: estimateTokens(codeContext),
+            evidenceTokens: estimateTokens(evidenceHints),
+            graphTokens: estimateTokens(trimmedGraphContext),
+            historyTokens: history.reduce((sum, m) => sum + estimateTokens(m.content), 0),
+            historySummaryUsed: history.some((m) => m.role === 'system' && m.content.startsWith(SUMMARY_PREFIX)),
+            docTokens: estimateTokens(docBlock),
+            memoryTokens: memoryBlock ? estimateTokens(memoryBlock) : 0,
+            promptTokensEstimated: llmMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0),
+            budgets,
+          })
+        }
         // 流式优先（P1-D）：SSE 模式逐 token 下发；流式不可用（内网模式/网络失败）自动降级整包。
         let llmAnswer: string | null = null
         if (sse) {
