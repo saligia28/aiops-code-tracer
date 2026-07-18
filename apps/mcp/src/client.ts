@@ -20,14 +20,18 @@ export function __resetAuthForTests(): void {
   authCookie = null;
 }
 
-async function fetchWithTimeout(url: string | URL, init?: RequestInit): Promise<Response> {
+async function fetchWithTimeout(
+  url: string | URL,
+  init?: RequestInit,
+  timeoutMs: number = TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
-      throw new AnalyzerError(`查询超时（>${TIMEOUT_MS}ms）`);
+      throw new AnalyzerError(`查询超时（>${timeoutMs}ms）`);
     }
     throw new AnalyzerError(`分析服务不可达（${BASE_URL}）。请确认 API 已启动：pnpm dev:api`);
   } finally {
@@ -94,6 +98,67 @@ export async function analyzerGet<T = unknown>(path: string, query: Query = {}):
       throw new AnalyzerError(`参数错误：${body?.message ?? path}`);
     }
     throw new AnalyzerError(`分析服务返回 ${res.status}：${body?.message ?? res.statusText}`);
+  }
+
+  return (await res.json()) as T;
+}
+
+export async function analyzerPost<T = unknown>(
+  path: string,
+  body: unknown,
+  opts: {
+    /**
+     * 单次调用超时覆盖。全局 ANALYZER_TIMEOUT_MS（默认 30s）按快速图谱查询校准，
+     * 走 LLM 管线的端点（/api/ask 最多 3-4 次串行 LLM 调用）必须传更长的预算，
+     * 否则客户端超时后服务端仍会跑完全程白白计费（review 修复）。
+     */
+    timeoutMs?: number;
+  } = {},
+): Promise<T> {
+  const url = BASE_URL + path;
+
+  const doFetch = () => {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (authCookie) headers.cookie = authCookie;
+    return fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      },
+      opts.timeoutMs,
+    );
+  };
+
+  let res = await doFetch();
+
+  // 401：若配置了密码，则登录后重试一次。
+  if (res.status === 401 && process.env.ANALYZER_PASSWORD) {
+    await login();
+    res = await doFetch();
+  }
+
+  if (!res.ok) {
+    let payload: { error?: string; message?: string } | null = null;
+    try {
+      payload = (await res.json()) as { error?: string; message?: string };
+    } catch {
+      /* non-JSON body */
+    }
+
+    if (res.status === 401) {
+      throw new AnalyzerError(
+        'API 需要鉴权。请在 MCP 配置的 env 里设置正确的 ANALYZER_PASSWORD。',
+      );
+    }
+    if (res.status === 503 || payload?.error === 'GRAPH_NOT_LOADED') {
+      throw new AnalyzerError('当前未加载任何仓库。请先在 Web 界面选中一个项目，再重试。');
+    }
+    if (res.status === 400) {
+      throw new AnalyzerError(`参数错误：${payload?.message ?? path}`);
+    }
+    throw new AnalyzerError(`分析服务返回 ${res.status}：${payload?.message ?? res.statusText}`);
   }
 
   return (await res.json()) as T;

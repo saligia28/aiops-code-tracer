@@ -4,7 +4,7 @@ import { graphStore, currentRepoPath, currentRepoName, resolveActiveProjectId, L
 import { startAskTrace } from '../services/traceService.js';
 import { agentLoop } from '../agent/index.js';
 import { getCurrentLlmProvider, getCurrentLlmModel, getCurrentLlmBaseUrl } from '../services/llmService.js';
-import { createConversation, getConversation, appendMessage } from '../db/conversationStore.js';
+import { createConversation, getConversationForProject, appendMessage } from '../db/conversationStore.js';
 import { buildHistoryWindow } from '../services/ask/historyCompactor.js';
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js';
 import { getContextBudgets } from '../services/ask/contextBudget.js';
@@ -28,7 +28,8 @@ export function registerAgent(app: FastifyInstance): void {
     let convId: string | null = null;
     let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
     try {
-      const conv = (conversationId ? getConversation(conversationId) : null) ?? createConversation(projectId, q.slice(0, 40));
+      // 归属校验（review 修复）：跨项目/失效的 conversationId 视作无效 → 新建会话
+      const conv = (conversationId ? getConversationForProject(conversationId, projectId) : null) ?? createConversation(projectId, q.slice(0, 40));
       convId = conv.id;
       // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟），短会话行为与纯截断一致
       history = buildHistoryWindow(convId, getContextBudgets().history, (err) =>

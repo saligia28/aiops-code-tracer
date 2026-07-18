@@ -35,11 +35,12 @@ pnpm --filter @aiops/mcp build
 
 ---
 
-## 可用工具（6 个）
+## 可用工具（7 个）
 
 | 工具 | 说明 |
 |------|------|
 | `repo_status` | 查看当前加载的是哪个仓库及可用仓库列表。建议在一串分析开头先调它确认目标。是唯一不依赖"已加载图谱"也能用的工具。 |
+| `explain_code_logic(question, conversationId?)` | 用自然语言分析当前仓库中的业务/代码逻辑，返回回答、代码证据、文档证据与图谱摘要。适合在改代码前先获取任务上下文。 |
 | `search_symbols(q, limit?)` | 按名字搜符号，返回精确文件位置。 |
 | `get_symbol(name)` | 某符号详情 + 深度 1 的直接邻居。 |
 | `trace_callees(symbol, depth?)` | **「它调用了谁」**——依赖链 / 下游追踪。 |
@@ -93,7 +94,8 @@ pnpm --filter @aiops/mcp build
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `ANALYZER_BASE_URL` | `http://localhost:4201` | 分析 API 的地址 |
-| `ANALYZER_TIMEOUT_MS` | `30000` | 单次 HTTP 请求超时（毫秒） |
+| `ANALYZER_TIMEOUT_MS` | `30000` | 单次 HTTP 请求超时（毫秒），按快速图谱查询校准 |
+| `ANALYZER_ASK_TIMEOUT_MS` | `120000` | `explain_code_logic` 专用超时——它走完整 LLM 分析管线（最多 3-4 次串行 LLM 调用），30s 必然不够。注意 Claude Code 侧的 MCP 工具超时（`MCP_TOOL_TIMEOUT`）也需不小于此值。 |
 | `ANALYZER_PASSWORD` | （空） | 当 API 开启了 `AUTH_PASSWORD` 鉴权时，设置为相同的登录密码。MCP 会在收到 401 时自动登录拿 cookie 并重试。未开启鉴权时留空即可。 |
 
 ---
@@ -103,4 +105,5 @@ pnpm --filter @aiops/mcp build
 - **单图谱共享：** MCP 与 Web 界面共用同一个"当前仓库"——在网页上切换仓库会同时影响 MCP 查询的对象。
 - **非实时：** 查询结果反映"上次索引时"的代码结构；修改代码后需重新构建索引才会更新。
 - **鉴权：** 现已支持（设置 `ANALYZER_PASSWORD` 即可自动登录）；仍不支持远程 HTTPS 或其他高级认证场景。
-- **范围外功能（后续增强）：** 重建索引、跨仓库参数、LLM 问答等均不在当前版本内。
+- **`explain_code_logic` 的成本与副作用：** 该工具走 LLM 分析，单次耗时数十秒、消耗 LLM 配额（其余 6 个工具为毫秒级纯图谱查询）。默认（不传 `conversationId`）为无状态问答、不产生任何会话记录；显式传 `conversationId` 做多轮追问时，对话会持久化到分析服务（消息带 `source: mcp` 标记）。两种模式都不会写入项目记忆库。
+- **范围外功能（后续增强）：** 重建索引、跨仓库参数、自动改代码等均不在当前版本内。

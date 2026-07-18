@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { analyzerGet, AnalyzerError, __resetAuthForTests } from '../src/client.js';
+import { analyzerGet, analyzerPost, AnalyzerError, __resetAuthForTests } from '../src/client.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -90,5 +90,55 @@ describe('analyzerGet', () => {
       expect(e).toBeInstanceOf(AnalyzerError);
       expect(e.message).toContain('密码不正确');
     });
+  });
+
+  it('POST sends JSON body and returns parsed JSON', async () => {
+    const seen: Array<{ url: string; method?: string; body?: string }> = [];
+    stubFetch(async (input, init) => {
+      seen.push({ url: String(input), method: init?.method, body: init?.body as string | undefined });
+      return new Response(JSON.stringify({ answer: 'ok' }), { status: 200 });
+    });
+
+    await expect(analyzerPost('/api/ask', { question: 'q' })).resolves.toEqual({ answer: 'ok' });
+    expect(seen[0].url).toContain('/api/ask');
+    expect(seen[0].method).toBe('POST');
+    expect(JSON.parse(seen[0].body ?? '{}')).toEqual({ question: 'q' });
+  });
+
+  it('POST logs in on 401 then retries with cookie', async () => {
+    vi.stubEnv('ANALYZER_PASSWORD', 'pw');
+    const calls: Array<{ url: string; cookie?: string }> = [];
+    stubFetch(async (input, init) => {
+      const url = String(input);
+      const headers = (init as RequestInit | undefined)?.headers as Record<string, string> | undefined;
+      calls.push({ url, cookie: headers?.cookie });
+      if (url.includes('/api/auth/login')) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'set-cookie': 'auth_token=TOKEN456; Path=/; HttpOnly' },
+        });
+      }
+      if (headers?.cookie === 'auth_token=TOKEN456') {
+        return new Response(JSON.stringify({ answer: 'ok' }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ message: '未授权' }), { status: 401 });
+    });
+
+    await expect(analyzerPost('/api/ask', { question: 'q' })).resolves.toEqual({ answer: 'ok' });
+    expect(calls.some((c) => c.url.includes('/api/auth/login'))).toBe(true);
+    expect(calls.some((c) => c.cookie === 'auth_token=TOKEN456')).toBe(true);
+  });
+
+  it('POST honors per-call timeoutMs override（LLM 端点专用长/短预算）', async () => {
+    // 永不 resolve、只响应 abort 的 fetch：超时路径必须由 timeoutMs 触发
+    stubFetch(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        }) as ReturnType<typeof fetch>,
+    );
+    await expect(analyzerPost('/api/ask', { question: 'q' }, { timeoutMs: 20 })).rejects.toThrow('查询超时（>20ms）');
   });
 });

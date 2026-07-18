@@ -56,7 +56,7 @@
 
 ### 4. MCP 服务 —— 把代码图谱接进 Claude Code
 
-`@aiops/mcp` 是一个轻量 stdio MCP 服务，向 Claude Code 暴露 6 个只读分析工具（`repo_status` / `search_symbols` / `get_symbol` / `trace_callees` / `trace_callers` / `get_file_graph`）。它本身不做分析，而是转发给分析 API 并把结果整理成紧凑文本，让 AI 助手拿到**精确的结构性事实**而非猜测。详见 [`apps/mcp/README.md`](apps/mcp/README.md)。
+`@aiops/mcp` 是一个轻量 stdio MCP 服务，向 Claude Code 暴露 7 个只读分析工具（`repo_status` / `explain_code_logic` / `search_symbols` / `get_symbol` / `trace_callees` / `trace_callers` / `get_file_graph`）。它本身不做分析，而是转发给分析 API 并把结果整理成紧凑文本，让 AI 助手拿到**精确的结构性事实**而非猜测。详见 [`apps/mcp/README.md`](apps/mcp/README.md)。
 
 ### 5. 对话持久化与记忆
 
@@ -137,7 +137,7 @@ apps/
   web/        → @aiops/web       Vue 3 前端（端口 4200）
   api/        → @aiops/api       Fastify API：鉴权 / 项目注册 / 索引 / 图谱 / RAG / Agent / 对话 / 记忆
   indexer/    → @aiops/indexer   CLI 索引工具
-  mcp/        → @aiops/mcp       Claude Code 的 stdio MCP 服务（6 个只读工具）
+  mcp/        → @aiops/mcp       Claude Code 的 stdio MCP 服务（7 个分析工具）
 
 packages/
   shared-types/ → @aiops/shared-types   共享 TS 类型（所有包的基础）
@@ -239,7 +239,7 @@ docker compose -f docker/docker-compose.yml up --build
 
 ### MCP 工具（对接 Claude Code）
 
-`repo_status` · `search_symbols` · `get_symbol` · `trace_callees` · `trace_callers` · `get_file_graph` —— 详见 [`apps/mcp/README.md`](apps/mcp/README.md)。
+`repo_status` · `explain_code_logic` · `search_symbols` · `get_symbol` · `trace_callees` · `trace_callers` · `get_file_graph` —— 详见 [`apps/mcp/README.md`](apps/mcp/README.md)。
 
 ### 前端页面
 

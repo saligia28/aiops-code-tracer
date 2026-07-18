@@ -1,4 +1,4 @@
-import type { GraphNode, GraphEdge } from '@aiops/shared-types';
+import type { AskResponse, DocEvidence, Evidence, GraphEdge, GraphNode } from '@aiops/shared-types';
 
 export function formatNode(n: GraphNode): string {
   const kind = n.meta?.kind ? `${n.type}/${n.meta.kind}` : n.type;
@@ -48,4 +48,95 @@ export function formatRepoStatus(currentRepo: string | null, repos: RepoEntry[])
   });
   const body = lines.length ? `\n可用仓库：\n${lines.join('\n')}` : '';
   return `${header}${body}`;
+}
+
+const DEFAULT_ASK_OUTPUT_LIMIT = 8000;
+
+function clampText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n...（已省略 ${text.length - limit} 字）`;
+}
+
+function formatEvidence(evidence: Evidence[], limit = 10): string[] {
+  if (evidence.length === 0) return ['（无代码证据）'];
+  const shown = evidence.slice(0, limit).map((item) =>
+    `  • ${item.file}:${item.line} [${item.label}] ${item.code.trim()}`,
+  );
+  if (evidence.length > limit) {
+    shown.push(`  ...（另有 ${evidence.length - limit} 条代码证据已省略）`);
+  }
+  return shown;
+}
+
+function formatDocEvidence(docEvidence: DocEvidence[] | undefined, limit = 4): string[] {
+  if (!docEvidence || docEvidence.length === 0) return [];
+  const lines = docEvidence.slice(0, limit).map((item) => {
+    const section = item.section ? ` / ${item.section}` : '';
+    const snippet = item.snippet.replace(/\s+/g, ' ').trim();
+    return `  • ${item.title}${section} (${item.source})：${clampText(snippet, 180)}`;
+  });
+  if (docEvidence.length > limit) {
+    lines.push(`  ...（另有 ${docEvidence.length - limit} 条文档证据已省略）`);
+  }
+  return lines;
+}
+
+function formatGraphSummary(response: AskResponse): string[] {
+  const nodes = response.graph?.nodes ?? [];
+  const edges = response.graph?.edges ?? [];
+  const lines = [`节点 ${nodes.length} 个 / 关系 ${edges.length} 条`];
+  const nodePreview = nodes.slice(0, 8).map((node) => `  • ${formatNode(node)}`);
+  if (nodePreview.length > 0) lines.push(...nodePreview);
+  if (nodes.length > nodePreview.length) {
+    lines.push(`  ...（另有 ${nodes.length - nodePreview.length} 个节点已省略）`);
+  }
+  return lines;
+}
+
+export function formatAskResponse(
+  question: string,
+  response: AskResponse,
+  opts: {
+    limit?: number;
+    /** 调用方请求复用的会话 id：与响应不一致时显式提示（静默 fork 会让多轮悄悄失忆，review 修复） */
+    requestedConversationId?: string;
+  } = {},
+): string {
+  const limit = opts.limit ?? DEFAULT_ASK_OUTPUT_LIMIT;
+  const confidence = Number.isFinite(response.confidence) ? response.confidence.toFixed(2) : String(response.confidence);
+  const sections: string[] = [
+    `问题：${question}`,
+    `意图：${response.intent}，置信度：${confidence}`,
+  ];
+
+  if (response.conversationId) {
+    sections.push(`会话：${response.conversationId}`);
+    if (opts.requestedConversationId && response.conversationId !== opts.requestedConversationId) {
+      sections.push(
+        `⚠️ 请求复用的会话 ${opts.requestedConversationId} 不存在或不属于当前项目，本轮已新开会话（历史上下文为空）。后续追问请改用上面的新会话 id。`,
+      );
+    }
+  }
+
+  sections.push(
+    '',
+    '回答：',
+    clampText(response.answer.trim() || '（空回答）', 2600),
+    '',
+    `代码证据（${response.evidence.length}）：`,
+    ...formatEvidence(response.evidence),
+  );
+
+  const docs = formatDocEvidence(response.docEvidence);
+  if (docs.length > 0) {
+    sections.push('', `文档证据（${response.docEvidence!.length}）：`, ...docs);
+  }
+
+  sections.push('', '图谱摘要：', ...formatGraphSummary(response));
+
+  if (response.followUp.length > 0) {
+    sections.push('', '建议追问：', ...response.followUp.slice(0, 3).map((item) => `  • ${item}`));
+  }
+
+  return clampText(sections.join('\n'), limit);
 }

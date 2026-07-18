@@ -9,7 +9,7 @@ import { sanitizeRetrievedText } from '../services/ask/promptSafety.js'
 import { getContextBudgets } from '../services/ask/contextBudget.js'
 import { callChatCompletion, callChatCompletionStream, canUseLlm, getLastLlmCallMeta } from '../services/llmService.js'
 import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
-import { createConversation, getConversation, appendMessage } from '../db/conversationStore.js'
+import { createConversation, getConversationForProject, appendMessage } from '../db/conversationStore.js'
 import { buildHistoryWindow, contextualizeQuestion, SUMMARY_PREFIX } from '../services/ask/historyCompactor.js'
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
 import {
@@ -65,7 +65,14 @@ export function registerAsk(app: FastifyInstance): void {
   setTraceServiceLogger(app.log)
   app.post('/api/ask', async (request, reply) => {
     if (!ensureGraph(reply)) return
-    const { question, conversationId, stream } = request.body as { question: string; conversationId?: string; stream?: boolean }
+    const { question, conversationId, stream, source } = request.body as {
+      question: string
+      conversationId?: string
+      stream?: boolean
+      /** 调用来源标记：'mcp' = 机器消费端（无 conversationId 则无状态问答，且恒不抽取记忆） */
+      source?: string
+    }
+    const fromMcp = source === 'mcp'
     if (!question || !question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' })
     }
@@ -103,17 +110,24 @@ export function registerAsk(app: FastifyInstance): void {
       let convId: string | null = null
       let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = []
       try {
-        const conv = (conversationId ? getConversation(conversationId) : null) ?? createConversation(projectId, question.slice(0, 40))
-        convId = conv.id
-        // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟）
-        history = buildHistoryWindow(convId, getContextBudgets().history, (err) =>
-          app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
-        )
-        appendMessage(convId, { role: 'user', content: question, mode: 'rag' })
+        // 归属校验（review 修复）：跨项目/失效的 conversationId 一律视作无效 → 新建会话，
+        // 调用方通过响应里的新 id 感知（MCP 侧会显式提示"已新开会话"）。
+        const requested = conversationId ? getConversationForProject(conversationId, projectId) : null
+        // source='mcp' 且未显式传会话 → 无状态问答：不建会话、不落消息（机器提问不淤积
+        // 人类侧边栏）；显式传了 conversationId 则照常落库——多轮追问依赖历史。
+        const conv = requested ?? (fromMcp && !conversationId ? null : createConversation(projectId, question.slice(0, 40)))
+        if (conv) {
+          convId = conv.id
+          // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟）
+          history = buildHistoryWindow(convId, getContextBudgets().history, (err) =>
+            app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
+          )
+          appendMessage(convId, { role: 'user', content: question, mode: 'rag', ...(fromMcp ? { meta: { source: 'mcp' } } : {}) })
+        }
       } catch (err) {
         app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`)
       }
-      trace = startAskTrace({ question, projectId, conversationId: convId, repoName: currentRepoName })
+      trace = startAskTrace({ question, projectId, conversationId: convId, repoName: currentRepoName, source })
       // P2-H 指代补全（review 修复后）：产出独立的 retrievalQuery，只喂给召回通道
       // （代码/文档/记忆召回、页面锚点、事实召回、起点选择）。question 保持用户原话——
       // 路由判定（isApiListQuestion 等）、意图分类、答案 prompt、反思、记忆沉淀全部用原话，
@@ -134,13 +148,15 @@ export function registerAsk(app: FastifyInstance): void {
               role: 'assistant',
               content: resp.answer,
               mode: 'rag',
-              meta: { followUp: resp.followUp, intent: resp.intent, confidence: resp.confidence, evidenceCount: resp.evidence.length },
+              meta: { followUp: resp.followUp, intent: resp.intent, confidence: resp.confidence, evidenceCount: resp.evidence.length, ...(fromMcp ? { source: 'mcp' } : {}) },
             })
           } catch (err) {
             app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`)
           }
-          // 后台沉淀记忆（fire-and-forget，不阻断响应）
-          if (extractMemory) void generateMemoriesFromTurn(projectId, convId, question, resp.answer)
+          // 后台沉淀记忆（fire-and-forget，不阻断响应）。
+          // 机器来源恒不抽取（review 修复）：MCP 提问蒸馏出的"用户偏好/事实"会永久混入
+          // 项目记忆库、与人类记忆竞争 top-5 注入位，且无 UI 可辨别清理。
+          if (extractMemory && !fromMcp) void generateMemoriesFromTurn(projectId, convId, question, resp.answer)
           resp.conversationId = convId
         }
         // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖

@@ -138,6 +138,14 @@ describe('conversationStore', () => {
     expect(after.updatedAt).toBeGreaterThan(before);
   });
 
+  it('getConversationForProject：归属匹配才返回，跨项目/不存在一律 null（防会话跨项目串染）', () => {
+    const conv = store.createConversation('proj-owner', '归属测试');
+    expect(store.getConversationForProject(conv.id, 'proj-owner')?.id).toBe(conv.id);
+    // 同一个真实存在的会话，换个项目问就当它不存在
+    expect(store.getConversationForProject(conv.id, 'proj-other')).toBeNull();
+    expect(store.getConversationForProject('no-such-id', 'proj-owner')).toBeNull();
+  });
+
   it('deleteConversation 级联删消息', () => {
     const conv = store.createConversation('proj-del');
     store.appendMessage(conv.id, { role: 'user', content: 'q' });

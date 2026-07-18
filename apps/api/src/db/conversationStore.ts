@@ -92,6 +92,17 @@ export function getConversation(id: string): Conversation | null {
   return row ? mapConversation(row) : null;
 }
 
+/**
+ * 按项目归属解析会话：不存在或不属于该项目一律返回 null，调用方视作无效 id 处理。
+ * 背景（review 修复）：getConversation 不做归属校验时，项目 A 的活会话 id 会在切到
+ * 项目 B 后被静默复用——A 的历史进 B 的召回、B 的答案写进 A 的会话、记忆跨项目串染。
+ * MCP 是第一个长期持有 conversationId 的客户端，这条路径从"理论上"变成了"必然发生"。
+ */
+export function getConversationForProject(id: string, projectId: string): Conversation | null {
+  const conv = getConversation(id);
+  return conv && conv.projectId === projectId ? conv : null;
+}
+
 export function getConversationWithMessages(id: string): ConversationWithMessages | null {
   const conversation = getConversation(id);
   if (!conversation) return null;

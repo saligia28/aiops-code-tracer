@@ -124,6 +124,104 @@
 
 ---
 
+## P1-MCP · 模型 Skill 集成层：任务级工具 + 结构化证据包
+
+**缺口**：`apps/mcp` 已经把 6 个只读图谱原子工具暴露给 Claude Code
+（`repo_status` / `search_symbols` / `get_symbol` / `trace_callees` / `trace_callers` /
+`get_file_graph`），但它们仍偏底层。外部模型要完成“先理解业务代码链路，再决定怎么改”的任务，
+仍需要自己组合多次符号搜索、文件图、调用链，并从自然语言回答里二次提取证据。
+
+**当前完成度判断**：MCP 原子事实层已可用，约等于完整结合方案的 55%~65%。还差一层面向
+模型 skill 的“任务前置分析 API”：把现有 `/api/ask`、图谱、证据、文档和记忆能力封装成
+结构化结果，让外部模型拿到的是可执行证据包，而不是零散节点和边。
+
+**价值**：这是“逻瞳”与通用模型 skill 的分工边界：
+
+- 逻瞳负责把仓库结构化、证据化、可追踪化；
+- 模型 skill 负责基于证据执行具体研发任务：改代码、跑测试、写提交说明、处理 CI。
+
+落地后，Claude Code/Codex/Cursor 类工具可以先调用逻瞳做任务前置分析，降低“边猜边改”的概率。
+
+**方案**（只读优先，分三刀）：
+
+1. **MCP 任务级只读工具**：在 `apps/mcp` 新增 3 个工具，先不写盘。
+   - `explain_code_logic(question, conversationId?)`：转发 `/api/ask`，返回紧凑的回答、代码证据、图谱摘要、文档证据。
+   - `prepare_fix_context(question)`：面向 bug/需求修改，返回入口文件、相关文件、关键证据、疑似修改点、验证建议。
+   - `get_impact_scope(symbol | file, depth?)`：基于现有 `trace_callers` / `trace_callees` 组合上游影响面和下游依赖。
+2. **结构化证据包**：不要让 MCP 只吐大段自然语言；新增内部格式 `AnalysisPacket`（可先只在 MCP 层组装，
+   不必立刻改 `AskResponse` 公共协议）：
+   ```ts
+   interface AnalysisPacket {
+     question: string;
+     answer: string;
+     entry?: { file: string; line?: number; symbol?: string; reason: string };
+     flowSteps: Array<{ title: string; file?: string; line?: number; evidence?: string }>;
+     relatedFiles: string[];
+     apiCalls: Array<{ method?: string; endpoint?: string; file?: string; line?: number }>;
+     riskPoints: string[];
+     suggestedEditLocations: Array<{ file: string; line?: number; reason: string }>;
+     verificationHints: string[];
+     evidence: import('@aiops/shared-types').Evidence[];
+   }
+   ```
+   第一版允许从 `AskResponse.answer/evidence/graph/docEvidence` 规则组装，后续再把 ask service 内部的
+   anchor / plan / evidenceNeed 结果显式下发。
+3. **仓库目标稳定性**：当前 MCP 依赖 Web 当前加载仓库，适合本机单人使用，但对多窗口/多模型会话不稳。
+   第一刀先在工具输出里强提示当前仓库；第二刀给 MCP 增加可选 `projectId/repoName`，或启动时用 env 锁定仓库，
+   避免 Web 端切换项目影响正在运行的模型任务。
+
+**不做的事（本阶段边界）**：
+
+- 不引入写操作，不落盘，不自动改代码；写操作仍归 P2-G。
+- 不让 MCP 直接暴露任意文件系统能力；保持只读分析工具边界。
+- 不把 Agent SSE 原样转成 MCP 流式工具；第一版用 `/api/ask` 的完整 `AskResponse`，避免 stdio 工具输出过长、
+  事件协议复杂化。
+
+**验收**：
+
+1. `apps/mcp` 新增工具有单测：参数映射、错误提示、格式化输出、鉴权复用均覆盖。
+2. 对 fixture repo 增加 2 条端到端用例：
+   - “样衣作废按钮点击后做了什么？”能返回入口、流程、接口/状态证据、验证建议。
+   - “改某个方法前影响面多大？”能返回上游调用方和下游依赖摘要。
+3. 输出长度受控：默认工具文本 ≤ 8k 字符；证据超过预算时有“已省略 N 条”的明确提示。
+4. 不改变现有 Web `/api/ask`、`/api/agent/ask` 行为；`pnpm --filter @aiops/mcp test`、`typecheck`
+   通过，至少不拖累全仓 `pnpm typecheck`。
+
+**工作量**：第一刀 1.5~2 天（MCP 工具 + formatter + 单测）；结构化证据包显式下沉到 API service
+再加 1~2 天。 **依赖**：无硬依赖；复用现有 `/api/ask`、`AskResponse`、图谱 API 和 MCP client。
+
+> **进度（2026-07-17）· 第一刀已落地**：新增 MCP `explain_code_logic(question, conversationId?)`，
+> 复用 `/api/ask` 返回高阶自然语言分析，并用 `formatAskResponse` 压缩为“回答 + 代码证据 +
+> 文档证据 + 图谱摘要 + 追问建议”。`client.ts` 增加 `analyzerPost`，复用鉴权/401 登录重试逻辑；
+> README / MCP README 已同步 7 个工具。验证：`pnpm --filter @aiops/mcp test` 25/25 绿，
+> `pnpm --filter @aiops/mcp typecheck`、`pnpm --filter @aiops/mcp build`、全仓 `pnpm typecheck` 通过。
+>
+> **Review 修复（2026-07-18）**：10 视角审查打出 15 个确认问题，前三名已修：
+> - **ask 专用长超时**：`ANALYZER_ASK_TIMEOUT_MS`（默认 120s）per-call 覆盖——全局 30s 按
+>   毫秒级图谱查询校准，/api/ask 最多 3-4 次串行 LLM 必然超时且服务端白跑全管线；
+>   README 提示消费端 `MCP_TOOL_TIMEOUT` 需同步调大。
+> - **`source:'mcp'` 持久化策略**：无 conversationId → 完全无状态（不建会话不落消息，机器提问
+>   不再淤积人类侧边栏）；显式传 id → 照常落库支撑多轮（消息带 `meta.source` 可辨别）；
+>   两种模式恒不抽取记忆（机器蒸馏的“用户偏好”曾会永久混入项目记忆库竞争注入位）；trace 记 source。
+> - **会话 projectId 归属校验**：`getConversationForProject`（ask/agent 两路由共用）——跨项目的
+>   活会话 id 曾被静默复用致历史/答案/记忆三路串染；失效或跨项目 id 一律视作无效新开会话，
+>   MCP 输出显式提示“已新开会话”（消灭静默 fork 失忆）。
+> - 验证：MCP 28 test 绿 + API 92 test 绿；E2E 三项——无状态调用会话/记忆表零增长、
+>   无效 id fork 落库带 source 标记、跨项目 id 被拒且外项目会话零污染。
+>
+> **遗留 TODO（review 打出、本轮未修）**：evidence[].code 未经 P1-E 清洗直达消费端 agent
+> （注入中继面）；单条证据无长度钳制可吃掉 8k 预算；clampText 会劈代理对且超 8k 口径 ~25 字；
+> 输出不标注仓库名（切库后静默答错库，需 AskResponse 加 repoName）；login() 非 401 一律误报密码错；
+> analyzerPost 与 analyzerGet 错误块重复待抽共享核心；formatAskResponse 截断行为零测试。
+
+**实现顺序建议**：
+
+1. 先做 `explain_code_logic`，证明 MCP 能消费 `/api/ask` 的高阶分析结果。
+2. 再做 `prepare_fix_context`，沉淀 `AnalysisPacket` 格式和格式化器。
+3. 最后做 `get_impact_scope` 与仓库目标稳定性，形成“理解问题 → 准备修改上下文 → 查影响面”的闭环。
+
+---
+
 ## P2-F · 记忆升级（v1 → v2）
 
 **缺口**：记忆召回是关键词匹配（`memoryStore.retrieveMemories`），召不到语义相近的；

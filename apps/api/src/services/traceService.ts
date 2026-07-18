@@ -139,6 +139,8 @@ export function startAskTrace(input: {
   repoName?: string | null;
   /** trace 名称：默认 'ask'（RAG 管线）；agent 管线传 'agent'。 */
   name?: string;
+  /** 调用来源（如 'mcp'）——机器流量与人类流量在观测上必须可分。 */
+  source?: string;
 }): AskTrace {
   const lf = getClient();
   if (!lf) return NOOP_TRACE;
@@ -150,6 +152,7 @@ export function startAskTrace(input: {
       projectId: input.projectId ?? undefined,
       conversationId: input.conversationId ?? undefined,
       repoName: input.repoName ?? undefined,
+      source: input.source ?? undefined,
       payloadsRedacted: !LOG_PAYLOADS,
     },
   });
