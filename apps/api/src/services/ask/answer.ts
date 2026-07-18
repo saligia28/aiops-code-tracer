@@ -475,7 +475,7 @@ export async function composeAnswerWithLlm(
    * 流式后端不可用时自动回退非流式整包，行为对调用方透明。
    * 用户中止时返回已累积的部分文本——调用方通过自己的 AbortSignal 判断是否中止。
    */
-  streamOpts?: { onDelta: (delta: string) => void; signal?: AbortSignal }
+  streamOpts?: { onDelta?: (delta: string) => void; signal?: AbortSignal }
 ): Promise<string> {
   const fallback = composeAnswer(question, intent, nodes, graph);
   if (!canUseLlm()) return fallback;
@@ -517,14 +517,15 @@ export async function composeAnswerWithLlm(
     { role: 'user' as const, content: userPrompt },
   ];
 
-  // 流式优先：SSE 模式逐 token 下发；流式不可用（返回 null）时回退非流式整包。
+  // 流式优先：SSE 模式（有 onDelta）逐 token 下发；流式不可用（返回 null）时回退非流式整包。
   // 中止（aborted）时直接返回部分文本，不再发起非流式兜底——用户已经不要这个答案了。
-  if (streamOpts) {
+  if (streamOpts?.onDelta) {
     const streamed = await callChatCompletionStream(messages, streamOpts.onDelta, streamOpts.signal);
     if (streamed?.aborted) return streamed.text;
     if (streamed?.text) return streamed.text;
   }
 
-  const llmAnswer = await callChatCompletion(messages);
+  // 非流式也透传 abort（review 修复）：客户端断连后立即中止，不再白跑整包 LLM
+  const llmAnswer = await callChatCompletion(messages, streamOpts?.signal);
   return llmAnswer || fallback;
 }

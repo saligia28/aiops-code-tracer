@@ -204,10 +204,11 @@
 >   不再淤积人类侧边栏）；显式传 id → 照常落库支撑多轮（消息带 `meta.source` 可辨别）；
 >   两种模式恒不抽取记忆（机器蒸馏的“用户偏好”曾会永久混入项目记忆库竞争注入位）；trace 记 source。
 > - **会话 projectId 归属校验**：`getConversationForProject`（ask/agent 两路由共用）——跨项目的
->   活会话 id 曾被静默复用致历史/答案/记忆三路串染；失效或跨项目 id 一律视作无效新开会话，
+>   活会话 id 曾被静默复用致历史/答案/记忆三路串染；失效或跨项目 id 一律【视作无效并新开会话】
+>   （不是 400 拒绝——与"过期 id"降级行为一致，避免给人类通道加新失败模式），
 >   MCP 输出显式提示“已新开会话”（消灭静默 fork 失忆）。
-> - 验证：MCP 28 test 绿 + API 92 test 绿；E2E 三项——无状态调用会话/记忆表零增长、
->   无效 id fork 落库带 source 标记、跨项目 id 被拒且外项目会话零污染。
+> - 验证：MCP 28 test 绿 + API 92 test 绿；三条持久化语义先做活体验证（curl + DB 计数），
+>   后已沉淀为路由级自动化测试 `test/askRoute.persistence.test.ts`（见下一条进度）。
 >
 > **Review 遗留批次修复（2026-07-18）✅**：
 > - 注入中继面：`source:'mcp'` 请求的出口 answer / evidence[].code 过 P1-E 清洗（放在落库与
@@ -220,6 +221,18 @@
 >   AnalyzerError，消灭 22 行双拷贝漂移面）；login() 只在 401 报密码错，5xx 报服务状态。
 > - 验证：MCP 33 test 绿（+5：POST 错误分支/非 JSON/login 状态区分/clampText/截断行为）、
 >   API 92 test 绿、全仓 typecheck 过；E2E——mcp 响应带 repoName 且保持无状态。
+>
+> **复查补修（2026-07-18，二轮 review 反馈）**：
+> - 出口清洗可测化：finalizeResponse 内联逻辑抽成 `sanitizeAskResponseForMachine`（promptSafety），
+>   单测证明含注入行的 evidence.code/answer 被中和、正常引用零误伤、入参不被改动
+>   （落库/trace 留原文）——此前"清洗存在"只能靠读路由闭包相信。
+> - 非 SSE abort 传播：断连监听移出 SSE 分支（writableEnded 守卫同款）；callChatCompletion
+>   全链支持 AbortSignal（外部中止与内部超时先到先杀）；意图分析/主答案/反思重答/简单路径
+>   四处 LLM 调用接 signal + Step 4 前中止检查点——消费端断开后服务端不再白跑整条 LLM 管线。
+> - 持久化语义自动化：`test/askRoute.persistence.test.ts`（fixture 图 + 临时 DB + fetch 离线桩，
+>   fastify inject 路由级）固化三条行为：mcp 无状态零落库、无效 id fork 带 source 标记、
+>   跨项目 id 视作无效新开且外项目会话零污染。
+> - 验证：API 96 test 绿（+4）、MCP 33 test 绿、全仓 typecheck 过。
 
 **实现顺序建议**：
 

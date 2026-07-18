@@ -194,7 +194,8 @@ export async function callApiCompatibleChatCompletion(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   provider: LlmProvider,
   model: string,
-  baseUrl: string
+  baseUrl: string,
+  signal?: AbortSignal
 ): Promise<string | null> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (LLM_API_KEY) {
@@ -204,6 +205,11 @@ export async function callApiCompatibleChatCompletion(
   const timeout = Number.isFinite(LLM_TIMEOUT_MS) && LLM_TIMEOUT_MS > 0 ? LLM_TIMEOUT_MS : 60000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  // 外部中止（客户端断连）与内部超时二选一先到先杀——非流式路径此前不接 abort，
+  // 消费端断开后服务端会白跑完全部 LLM 调用（review 修复）
+  const onExternalAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', onExternalAbort);
 
   try {
     const resp = await fetch(resolveChatCompletionUrl(baseUrl || getDefaultApiBaseUrl(provider)), {
@@ -246,10 +252,14 @@ export async function callApiCompatibleChatCompletion(
     return null;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
-export async function callOllamaChatCompletion(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string | null> {
+export async function callOllamaChatCompletion(
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  signal?: AbortSignal
+): Promise<string | null> {
   const baseUrl = INTRANET_OLLAMA_BASE_URL;
   const model = getCurrentLlmModel();
   if (!baseUrl || !model) return null;
@@ -257,6 +267,9 @@ export async function callOllamaChatCompletion(messages: Array<{ role: 'system' 
   const timeout = Number.isFinite(INTRANET_OLLAMA_TIMEOUT_MS) && INTRANET_OLLAMA_TIMEOUT_MS > 0 ? INTRANET_OLLAMA_TIMEOUT_MS : 120000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  const onExternalAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', onExternalAbort);
 
   try {
     const resp = await fetch(`${baseUrl}/api/chat`, {
@@ -294,6 +307,7 @@ export async function callOllamaChatCompletion(messages: Array<{ role: 'system' 
     return null;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -401,11 +415,16 @@ export async function callChatCompletionStream(
   }
 }
 
-export async function callChatCompletion(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string | null> {
+export async function callChatCompletion(
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  signal?: AbortSignal
+): Promise<string | null> {
   if (!canUseLlm()) return null;
+  if (signal?.aborted) return null;
   if (llmRuntimeState.mode === 'intranet') {
-    const ollamaResult = await callOllamaChatCompletion(messages);
+    const ollamaResult = await callOllamaChatCompletion(messages, signal);
     if (ollamaResult) return ollamaResult;
+    if (signal?.aborted) return null;
     if (canUseApiLlm()) {
       _log?.warn('内网 Ollama 调用失败，自动降级为 API 模式');
       llmRuntimeState.mode = 'api';
@@ -413,7 +432,8 @@ export async function callChatCompletion(messages: Array<{ role: 'system' | 'use
         messages,
         llmRuntimeState.apiProvider,
         llmRuntimeState.apiModel || DEFAULT_API_MODEL,
-        llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL
+        llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL,
+        signal
       );
     }
     return null;
@@ -422,6 +442,7 @@ export async function callChatCompletion(messages: Array<{ role: 'system' | 'use
     messages,
     llmRuntimeState.apiProvider,
     getCurrentLlmModel(),
-    llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL
+    llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL,
+    signal
   );
 }

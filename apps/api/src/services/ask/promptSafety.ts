@@ -43,6 +43,26 @@ export interface SanitizeResult {
  * 逐行扫描，中和命中注入模式的行。
  * @param text 待清洗的检索内容（codeContext / evidenceHints / docEvidence 拼好的文本）
  */
+/**
+ * 机器消费端（MCP 等）的响应出口清洗：中和 answer 与 evidence[].code 里伪装成指令的行。
+ * evidence.code 是未经任何清洗的原始仓库源码行、answer 是以其为素材的 LLM 输出——
+ * 直达 agent 的工具结果就是指令注入的中继面。返回新对象不改入参：调用方（ask.ts
+ * finalizeResponse）在落库/trace 之后调用，入库与观测保留原文；web 通道不经过本函数
+ * （前端引用核对要与源码逐字匹配）。幂等，继承 sanitizeRetrievedText 的全部边界。
+ */
+export function sanitizeAskResponseForMachine<T extends { answer: string; evidence: Array<{ code: string }> }>(
+  resp: T,
+): T {
+  return {
+    ...resp,
+    answer: sanitizeRetrievedText(resp.answer).text,
+    evidence: resp.evidence.map((e) => {
+      const s = sanitizeRetrievedText(e.code);
+      return s.hits > 0 ? { ...e, code: s.text } : e;
+    }),
+  };
+}
+
 export function sanitizeRetrievedText(text: string): SanitizeResult {
   if (!text) return { text, hits: 0 };
   let hits = 0;

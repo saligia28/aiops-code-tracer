@@ -5,7 +5,7 @@ import { classifyIntent, analyzeQuestion } from '@aiops/nlp'
 import { graphStore, fileNodeMap, resolveActiveProjectId, currentRepoName, currentRepoPath } from '../context.js'
 import { reflectOnAnswer } from '../services/ask/reflection.js'
 import { retrieveDocEvidence, renderDocEvidenceForPrompt } from '../services/ask/docRecall.js'
-import { sanitizeRetrievedText } from '../services/ask/promptSafety.js'
+import { sanitizeRetrievedText, sanitizeAskResponseForMachine } from '../services/ask/promptSafety.js'
 import { getContextBudgets } from '../services/ask/contextBudget.js'
 import { callChatCompletion, callChatCompletionStream, canUseLlm, getLastLlmCallMeta } from '../services/llmService.js'
 import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
@@ -92,12 +92,14 @@ export function registerAsk(app: FastifyInstance): void {
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
       })
-      // 注意：不能监听 request.raw 的 close——Node ≥18 里它在「请求体读完」就触发（消息结束≠连接断开），
-      // 会让 abort 信号在问答开始前就置位。客户端断开的正确信号是响应侧 close 且未正常 end。
-      reply.raw.on('close', () => {
-        if (!reply.raw.writableEnded) abortCtl.abort()
-      })
     }
+    // 断连监听对流式与整包一视同仁（review 修复）：非 SSE 此前不接 abort，MCP 等消费端
+    // 超时断开后服务端仍会跑完最多 3-4 次串行 LLM 白白计费。
+    // 注意：不能监听 request.raw 的 close——Node ≥18 里它在「请求体读完」就触发（消息结束≠连接断开），
+    // 会让 abort 信号在问答开始前就置位。客户端断开的正确信号是响应侧 close 且未正常 end。
+    reply.raw.on('close', () => {
+      if (!reply.raw.writableEnded) abortCtl.abort()
+    })
 
     // L4 观测：未配置 Langfuse 时 startAskTrace 返回 no-op facade，主链路零开销
     let trace: AskTrace | null = null
@@ -163,15 +165,12 @@ export function registerAsk(app: FastifyInstance): void {
         resp.repoName = currentRepoName ?? undefined
         // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖
         trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
-        // 机器消费端出口清洗（review 修复）：evidence[].code 是未经中和的原始仓库源码行，
-        // answer 是以其为素材的 LLM 输出——直达 agent 的工具结果即指令注入中继面。
-        // 放在落库/trace 之后：入库与观测保留原文；web 通道不动（引用核对要与源码逐字匹配）。
+        // 机器消费端出口清洗（review 修复，逻辑与边界见 sanitizeAskResponseForMachine 注释）。
+        // 必须在落库/trace 之后：入库与观测保留原文；web 通道不动（引用核对要与源码逐字匹配）。
         if (fromMcp) {
-          resp.answer = sanitizeRetrievedText(resp.answer).text
-          resp.evidence = resp.evidence.map((e) => {
-            const s = sanitizeRetrievedText(e.code)
-            return s.hits > 0 ? { ...e, code: s.text } : e
-          })
+          const cleaned = sanitizeAskResponseForMachine(resp)
+          resp.answer = cleaned.answer
+          resp.evidence = cleaned.evidence
         }
         // 流式模式：答案若未经逐 token 下发（快速路径/规则路径/流式降级），补一帧整体 delta；
         // done 终帧带完整 AskResponse（evidence/graph/docEvidence），前端以此收尾渲染。
@@ -188,7 +187,9 @@ export function registerAsk(app: FastifyInstance): void {
       const [analysis, plan] = await Promise.all([
         analyzeQuestion(
           question,
-          callChatCompletion as (messages: Array<{ role: string; content: string }>) => Promise<string | null>,
+          // 透传 abort：客户端断连后意图分析的 LLM 调用立刻中止
+          ((messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>) =>
+            callChatCompletion(messages, abortCtl.signal)) as (messages: Array<{ role: string; content: string }>) => Promise<string | null>,
         ),
         generateQuestionPlan(question),
       ])
@@ -365,6 +366,12 @@ export function registerAsk(app: FastifyInstance): void {
       }
 
       // ====== Step 4: LLM 分析回答 ======
+      // 中止检查点：客户端已断开就别再花大头的答案 LLM 钱了（非 SSE abort 传播，review 修复）
+      if (abortCtl.signal.aborted) {
+        app.log.info('[ask] 客户端已断开，中止管线（答案生成前）')
+        trace?.error(new Error('client_cancelled'))
+        return undefined
+      }
       const tAnswer = Date.now()
       let answer: string
       let evidence: import('@aiops/shared-types').Evidence[]
@@ -484,7 +491,7 @@ ${trimmedGraphContext}${docBlock}`
           llmAnswer = streamed?.text || null
         }
         if (!llmAnswer) {
-          llmAnswer = await callChatCompletion(llmMessages)
+          llmAnswer = await callChatCompletion(llmMessages, abortCtl.signal)
         }
 
         // 从 LLM 文本组装 answer + evidence（首答与反思重答共用同一套逻辑）
@@ -527,7 +534,7 @@ ${trimmedGraphContext}${docBlock}`
               ...llmMessages,
               { role: 'assistant' as const, content: composed.answer },
               { role: 'user' as const, content: reflection.feedback },
-            ])
+            ], abortCtl.signal)
             if (retryAnswer) {
               composed = composeFromLlm(retryAnswer)
               // TODO(评测跟进): 重答后可再跑一次 reflectOnAnswer 做"仍不合格"统计，
@@ -555,7 +562,7 @@ ${trimmedGraphContext}${docBlock}`
               sendSse('answer_delta', { delta })
             },
             signal: abortCtl.signal,
-          } : undefined,
+          } : { signal: abortCtl.signal }, // 非 SSE 也传 abort：断连即中止（review 修复）
         )
         if (sse && abortCtl.signal.aborted) {
           // 用户中断：不落库、不发 done，记观测后直接收尾
