@@ -6,10 +6,14 @@ import { getSymbol } from './getSymbol.js';
 import { getFileGraph } from './getFileGraph.js';
 import { repoStatus } from './repoStatus.js';
 import { explainCodeLogic } from './explainCodeLogic.js';
+import { prepareFixContext } from './prepareFixContext.js';
+import { getImpactScope } from './getImpactScope.js';
 
 export const allTools: ToolDescriptor[] = [
   repoStatus,
   explainCodeLogic,
+  prepareFixContext,
+  getImpactScope,
   searchSymbols,
   getSymbol,
   traceCallees,

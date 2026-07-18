@@ -269,6 +269,30 @@
 >   fastify inject 路由级）固化三条行为：mcp 无状态零落库、无效 id fork 带 source 标记、
 >   跨项目 id 视作无效新开且外项目会话零污染。
 > - 验证：API 96 test 绿（+4）、MCP 33 test 绿、全仓 typecheck 过。
+>
+> **第二刀已落地（2026-07-18）· prepare_fix_context + get_impact_scope + entry 下沉**：
+> - **`prepare_fix_context(question)`**：转发 `/api/ask`（source:mcp 无状态），MCP 层规则组装
+>   `AnalysisPacket`（新增 `analysisPacket.ts` 纯函数组装器 + `format.ts::formatAnalysisPacket`）。
+>   字段按可得性分档、诚实不硬凑：tier-1（question/answer/repoName/entry/flowSteps/relatedFiles/
+>   apiCalls/evidence）规则直接投影；tier-3 中 suggestedEditLocations/verificationHints 为**接地
+>   启发式**（入口+证据 / 接口+入口，formatter 显式标注"非 LLM 判断"），riskPoints v1 **留空**
+>   （真·LLM 判断，规则投影只会产出空话——降级说明写进输出，不制造伪结构）。
+> - **`get_impact_scope(symbol, depth?)`**：并行合成 `/api/why`（上游影响面）+ `/api/trace`
+>   （下游依赖）为一屏——纯图谱、零 LLM、确定性。两侧皆 SYMBOL_NOT_FOUND 才判未找到。
+> - **additive `entry` 字段下沉**：放宽"不动管线"为"不动管线、允许 additive 字段"——`AskResponse`
+>   加 `entry?:{file,line?,symbol?,reason}`（与 repoName 同款可选），ask.ts 用 anchor（快速路径）
+>   / startNode（主路径）单漏斗回填。消费端不必再从 evidence[0] 猜入口。零侵入 Web 行为。
+> - **验收（家风·先定后测，全确定性）**：D1 入口对不对 → `test/askRoute.entry.test.ts`（fixture
+>   现场建图 + 离线，断言"订单作废按钮点击后做了什么？"的 entry 命中 orderVoid 链路）；
+>   D2 修改点可执行 → `apps/mcp/test/analysisPacket.test.ts`（suggestedEditLocations 全指真实文件
+>   且覆盖 gold 改点 List.vue + api/orderVoid.ts）；两条 E2E 用例（作废链路 / 影响面）落为上述测试。
+> - 验证：MCP 46 test 绿（+13：analysisPacket 组装/降级/格式 10 + 两工具映射/合并/未找到 3）、
+>   API 98 test 绿（+2：entry 命中 + 无锚点不硬造）、`pnpm --filter @aiops/mcp build`、全仓
+>   `pnpm typecheck` 通过；未改现有 `/api/ask`、`/api/agent/ask` 行为；工具数 7 → 9。
+> - **遗留 TODO**：① tier-3 的 riskPoints/更强 suggestedEdit 走 `/api/ask` systemPrompt 按 source
+>   加输出段落下沉（第三刀，prompt 改动非管线改动）；② `get_impact_scope` 的 `file` 入参 v1 未做
+>   （只支持 symbol）；③ 仓库目标稳定性第二刀（MCP `projectId/repoName` 参数或启动 env 锁仓）未做；
+>   ④ prepare_fix_context 的真实服务器 + LLM 活体 E2E 未跑（entry/组装/降级已由确定性测试覆盖）。
 
 **实现顺序建议**：
 

@@ -253,6 +253,13 @@ export interface AskResponse {
    * 答案的真实信息源（只看 evidence 清单会把真实细节误判为编造）。前端可忽略。
    */
   codeContextPreview?: string;
+  /**
+   * 任务入口（P1-MCP 第二刀·additive 下沉）：服务端在检索/图谱阶段已定位的"从哪看起"起点
+   * （anchor 页面锚点 / startNode 图谱起点），本是 ask 管线内部变量。机器消费端
+   * （prepare_fix_context）拿它当"从哪改"的锚，不必再从 evidence[0] 猜。与 repoName 同款
+   * 可选 additive 字段——不改管线、不影响 Web 端行为；无锚点/无起点时缺省。
+   */
+  entry?: { file: string; line?: number; symbol?: string; reason: string };
 }
 
 export type LlmMode = 'api' | 'intranet';

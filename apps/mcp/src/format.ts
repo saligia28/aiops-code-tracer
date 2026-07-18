@@ -1,4 +1,5 @@
 import type { AskResponse, DocEvidence, Evidence, GraphEdge, GraphNode } from '@aiops/shared-types';
+import type { AnalysisPacket } from './analysisPacket.js';
 
 export function formatNode(n: GraphNode): string {
   const kind = n.meta?.kind ? `${n.type}/${n.meta.kind}` : n.type;
@@ -35,6 +36,46 @@ export interface RepoEntry {
   hasGraph: boolean;
   totalNodes?: number;
   totalEdges?: number;
+}
+
+/** 影响面的一侧（上游 callers / 下游 callees），结构与 /api/why、/api/trace 响应兼容。 */
+export interface ImpactSide {
+  depth: number;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  message?: string;
+}
+
+/**
+ * get_impact_scope 的输出：把上游影响面（谁调用了它）+ 下游依赖面（它调用了谁）合成一屏。
+ * 纯图谱组合 trace_callers/trace_callees，无 LLM——"改一个方法前先看波及范围"。
+ * 两侧都 SYMBOL_NOT_FOUND 才判未找到（单侧空是正常的：叶子节点无下游、入口无上游）。
+ */
+export function formatImpactScope(
+  symbol: string,
+  upstream: ImpactSide,
+  downstream: ImpactSide,
+  limit = DEFAULT_ASK_OUTPUT_LIMIT,
+): string {
+  const upNotFound = upstream.message === 'SYMBOL_NOT_FOUND';
+  const downNotFound = downstream.message === 'SYMBOL_NOT_FOUND';
+  if (upNotFound && downNotFound) {
+    return `未找到符号 "${symbol}"。先用 search_symbols 确认名字。`;
+  }
+  const sections = [
+    `符号 "${symbol}" 的影响面评估（改动前先看）：`,
+    '',
+    `▲ 上游影响面（谁调用了它 = 改动会波及谁，深度 ${upstream.depth}）：`,
+    upNotFound || upstream.nodes.length === 0
+      ? '  （无已知调用方——改动的外部波及面较小）'
+      : formatGraph(upstream.nodes, upstream.edges),
+    '',
+    `▼ 下游依赖面（它调用了谁 = 改动依赖什么，深度 ${downstream.depth}）：`,
+    downNotFound || downstream.nodes.length === 0
+      ? '  （无已知下游依赖）'
+      : formatGraph(downstream.nodes, downstream.edges),
+  ];
+  return clampText(sections.join('\n'), limit);
 }
 
 export function formatRepoStatus(currentRepo: string | null, repos: RepoEntry[]): string {
@@ -152,6 +193,87 @@ export function formatAskResponse(
   if (response.followUp.length > 0) {
     sections.push('', '建议追问：', ...response.followUp.slice(0, 3).map((item) => `  • ${item}`));
   }
+
+  return clampText(sections.join('\n'), limit);
+}
+
+/** 相关文件 / 接口 / 修改点等列表的通用"显示前 N + 已省略 M 条"渲染。 */
+function formatCappedList<T>(items: T[], cap: number, render: (item: T) => string, noun: string): string[] {
+  const shown = items.slice(0, cap).map((it) => `  • ${render(it)}`);
+  if (items.length > cap) shown.push(`  ...（另有 ${items.length - cap} ${noun}已省略）`);
+  return shown;
+}
+
+const fileLoc = (file?: string, line?: number): string => (file ? `${file}${line ? `:${line}` : ''}` : '');
+
+/**
+ * 格式化 AnalysisPacket（prepare_fix_context 的输出）。
+ * 与 formatAskResponse 同款：分段拼装 + clampText 收口（总长 ≤ 8k，超预算段落带"已省略 N 条"）。
+ * tier-3 字段（疑似修改点/验证建议/风险点）显式标注出处——启发式 vs LLM 判断字段的 v1 降级，
+ * 让消费端知道哪些能直接信、哪些要自己核对（不制造"看起来结构化实则空话"的错觉）。
+ */
+export function formatAnalysisPacket(packet: AnalysisPacket, opts: { limit?: number } = {}): string {
+  const limit = opts.limit ?? DEFAULT_ASK_OUTPUT_LIMIT;
+  const sections: string[] = [
+    `问题：${packet.question}`,
+    ...(packet.repoName ? [`仓库：${packet.repoName}`] : []),
+  ];
+
+  // 入口（"从哪看起 / 从哪改"的锚）
+  if (packet.entry) {
+    const sym = packet.entry.symbol ? `（${packet.entry.symbol}）` : '';
+    sections.push('', '入口：', `  ${fileLoc(packet.entry.file, packet.entry.line)}${sym} —— ${packet.entry.reason}`);
+  } else {
+    sections.push('', '入口：未定位到明确入口（换更具体的页面/组件名重试，或先用 search_symbols 确认符号）');
+  }
+
+  sections.push('', '结论：', clampText(packet.answer.trim() || '（空回答）', 2000));
+
+  if (packet.flowSteps.length > 0) {
+    const shown = packet.flowSteps.slice(0, 8).map((s, i) => {
+      const loc = s.file ? ` [${fileLoc(s.file, s.line)}]` : '';
+      return `  ${i + 1}. ${s.title}${loc}`;
+    });
+    if (packet.flowSteps.length > 8) shown.push(`  ...（另有 ${packet.flowSteps.length - 8} 步已省略）`);
+    sections.push('', '关键流程：', ...shown);
+  }
+
+  if (packet.relatedFiles.length > 0) {
+    sections.push('', `相关文件（${packet.relatedFiles.length}）：`, ...formatCappedList(packet.relatedFiles, 12, (f) => f, '个文件'));
+  }
+
+  if (packet.apiCalls.length > 0) {
+    sections.push(
+      '',
+      `接口调用（${packet.apiCalls.length}）：`,
+      ...formatCappedList(packet.apiCalls, 10, (a) => `${(a.method ?? '').toUpperCase()} ${a.endpoint ?? ''}${a.file ? ` (${fileLoc(a.file, a.line)})` : ''}`.replace(/\s+/g, ' ').trim(), '条接口'),
+    );
+  }
+
+  // tier-3：疑似修改点（接地启发式，非 LLM 判断——显式标注让消费端核对）
+  if (packet.suggestedEditLocations.length > 0) {
+    sections.push(
+      '',
+      '疑似修改点（基于入口+证据的启发式，非 LLM 判断，请核对）：',
+      ...packet.suggestedEditLocations.map((s) => `  • ${fileLoc(s.file, s.line)} —— ${s.reason}`),
+    );
+  }
+
+  // tier-3：验证建议（接地启发式）
+  if (packet.verificationHints.length > 0) {
+    sections.push('', '验证建议（基于接口/入口的启发式）：', ...packet.verificationHints.map((h) => `  • ${h}`));
+  }
+
+  // tier-3：风险点（v1 降级——真·LLM 判断字段，规则组不出来，诚实留缺而非硬凑空话）
+  sections.push(
+    '',
+    '风险点：',
+    packet.riskPoints.length > 0
+      ? packet.riskPoints.map((r) => `  • ${r}`).join('\n')
+      : '  （v1 暂不做风险推断：属 LLM 判断字段，规则投影只会产出空话；计划后续走 /api/ask 按 source 加输出段落下沉）',
+  );
+
+  sections.push('', `代码证据（${packet.evidence.length}）：`, ...formatEvidence(packet.evidence));
 
   return clampText(sections.join('\n'), limit);
 }

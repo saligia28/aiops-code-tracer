@@ -142,6 +142,9 @@ export function registerAsk(app: FastifyInstance): void {
       const memoryBlock = await retrieveMemoryBlock(projectId, retrievalQuery)
       // extractMemory：仅在"复杂问答（走了 LLM 阅读代码那条路）"时才后台沉淀记忆；
       // 快速路径(API 清单)与规则兜底答案信号低、易产生噪音，默认不抽取。
+      // 任务入口（P1-MCP·additive）：anchor/startNode 在下方逐步定位后回填此闭包变量，
+      // finalizeResponse 单漏斗下发（快速路径拿 anchor 级、主路径拿 startNode 级，覆盖所有出口）。
+      let entryHint: AskResponse['entry'] | undefined
       // 返回 undefined = SSE 模式已用 done 帧收尾（handler 不再返回 JSON）
       const finalizeResponse = (resp: AskResponse, extractMemory = false): AskResponse | undefined => {
         if (convId) {
@@ -163,6 +166,8 @@ export function registerAsk(app: FastifyInstance): void {
         }
         // 仓库标识（review 修复）：MCP 等长会话消费端靠它发现"Web 端把当前仓库切走了"
         resp.repoName = currentRepoName ?? undefined
+        // 任务入口下沉（P1-MCP·additive）：已定位锚点/起点则回带，机器消费端拿来当"从哪改"的起点
+        if (entryHint && !resp.entry) resp.entry = entryHint
         // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖
         trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
         // 机器消费端出口清洗（review 修复，逻辑与边界见 sanitizeAskResponseForMachine 注释）。
@@ -208,6 +213,8 @@ export function registerAsk(app: FastifyInstance): void {
         scopedAnchor ||
         (analysis.entities.pageName ? findBestPageAnchorByText(analysis.entities.pageName) : null) ||
         findBestPageAnchorByText(retrievalQuery)
+      // 入口初值（anchor 级）：快速路径（API 清单）也能带上；主路径下方用 startNode 升级为带行号的精确起点
+      if (anchor) entryHint = { file: anchor.componentFile, symbol: anchor.title, reason: `页面锚点：${anchor.title}` }
 
       // API 列表快速路径
       if (isApiListQuestion(question) && anchor) {
@@ -323,6 +330,15 @@ export function registerAsk(app: FastifyInstance): void {
         [...hintedComponentFiles, ...componentFiles],
         anchor,
       )
+      // 入口升级（startNode 级）：带文件+行号+符号的精确起点，覆盖上面的 anchor 级初值
+      if (startNode) {
+        entryHint = {
+          file: startNode.filePath,
+          line: parseLine(startNode.loc),
+          symbol: startNode.name,
+          reason: anchor ? `页面「${anchor.title}」链路的检索起点` : '检索排序命中的链路起点',
+        }
+      }
       const graph = startNode ? graphStore!.traceBidirectional(startNode.id, 3, 2) : { nodes: [], edges: [] }
       const trimmedGraph = {
         nodes: graph.nodes.slice(0, 180),
