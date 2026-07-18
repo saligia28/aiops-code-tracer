@@ -78,6 +78,21 @@
 （rubric 加 coverage 维度）；对照实验：同任务 planner on/off 的轮数与完整度。
 **工作量**：2~3 天。 **依赖**：无。
 
+> **进度（2026-07-18）· 核心已落地**（commit ed28c9b）：`agent/planner.ts` 三件套已接入
+> `agentLoop`——`shouldPlan`（长任务信号词或问题 ≥60 字）→ `generatePlan` 让 LLM 出 3~7 步
+> JSON 计划（解析/超时失败一律返回 null 静默降级，规划是增强不是闸门）→ `renderPlanForPrompt`
+> 以 system 片段 splice 进 `messages[1]`（压缩保护区，不被折叠）；发 `plan` SSE 事件（planSteps），
+> agent 路由（agent.ts 末尾通配 `reply.raw.write`）已透传到前端。超轮次不再硬报错，改
+> `forceFinalAnswer` 带"按计划逐条汇报完成/未完成项"指令优雅收尾；简单问题 `shouldPlan=false`
+> 直通、省一次 LLM 调用与 ~2s 延迟。
+> **遗留 TODO（本轮只据实修口径，故不标 ✅）**：
+> - **前端 checklist 未接**：AnswerView 不消费 `plan` 事件（apps/web 全局无 planSteps 消费点），
+>   commit ed28c9b 的"前端渲染 checklist"表述超前，实际只到"事件已透传"——想要"对用户可见的
+>   checklist = 强产品体验"这一价值点，还差前端一刀。
+> - **每轮 step 状态自报未做**：计划是一次性注入的 `string[]`，非原案的 `{steps:[{goal,done}]}`
+>   状态机（planner.ts 头注已声明为 TODO：待评测显示模型跑偏再加）。
+> - **验收未闭环**：2 条长任务评测用例 + judge coverage 维度 + planner on/off 对照实验尚未落。
+
 ---
 
 ## P1-D · 流式输出 + 中断
@@ -95,6 +110,25 @@
 
 **验收**：首 token < 2s（现在首字节 ~7s）；点停止后服务端 LLM 请求真实中止（日志/trace 佐证）。
 **工作量**：2~3 天（后端 1.5 + 前端 1）。 **依赖**：无。
+
+> **进度（2026-07-18）✅ 已落地**（后端 ad3bc75 + 8eb0b04 + 8da0759，前端 ace8a18）：
+> - **后端流式**：`/api/ask` 以 `body.stream=true` 走 SSE（`answer_delta` 逐 token + `done` 终帧
+>   带完整 AskResponse）——取 body 开关而非新路由/Accept header（原案二选一，取最省的一个）；
+>   `llmService.callChatCompletionStream` 解析 OpenAI 兼容 `stream:true` chunk，usage 从末帧取
+>   （保住 P1-10 成本上报），返回 `{ text, aborted }`；`AbortSignal.any([外部 signal, 内部超时])`
+>   先到先杀。evidence/graph/docEvidence 在 token 流结束后随 `done` 终帧下发。
+> - **中断贯穿**：`AbortController` 监听**响应侧** `close`（非 `request.raw` close——Node≥18 里它在
+>   请求体读完即触发，会让 abort 在问答开始前误置位，8eb0b04 修）；客户端断开即 abort 进行中的
+>   LLM 流，trace 记 `client_cancelled`。意图分析/问题规划/主答案/反思重答/简单路径**五处** LLM
+>   调用全接 signal + Step 4 答案生成前的中止检查点——消费端断开后不再白跑整条 LLM 管线。
+> - **简单路径也流式**（8eb0b04）：`composeAnswerWithLlm` 接流式，覆盖大多数定位类问题（流式
+>   覆盖率主力）；流式后端不可用（内网模式/网络失败）自动降级整包，对调用方透明。
+> - **前端**（ace8a18）：普通模式 `stream:true` 打字机渲染 + `done` 终帧兜底，复用 Agent 模式的
+>   SSE 解析与停止按钮（`handleAbort` → `AbortController.abort`）。
+> **遗留 TODO**：① 流式模式反思只记录不重试（token 已推给用户，重答=撤回答案的割裂体验；代码
+> TODO：前端支持"答案修正"折叠交互后放开）；② 验收数字（首 token <2s）机制已通（SSE 首帧即
+> answer_delta），未在真实流量上量化；③ agent 循环历史仍折叠式压缩，未接 P2-H 的 LLM 摘要
+> （见 P2-H 遗留③）。
 
 ---
 
@@ -227,8 +261,10 @@
 >   单测证明含注入行的 evidence.code/answer 被中和、正常引用零误伤、入参不被改动
 >   （落库/trace 留原文）——此前"清洗存在"只能靠读路由闭包相信。
 > - 非 SSE abort 传播：断连监听移出 SSE 分支（writableEnded 守卫同款）；callChatCompletion
->   全链支持 AbortSignal（外部中止与内部超时先到先杀）；意图分析/主答案/反思重答/简单路径
->   四处 LLM 调用接 signal + Step 4 前中止检查点——消费端断开后服务端不再白跑整条 LLM 管线。
+>   全链支持 AbortSignal（外部中止与内部超时先到先杀）；意图分析/问题规划/主答案/反思重答/
+>   简单路径**五处** LLM 调用接 signal + Step 4 前中止检查点——消费端断开后服务端不再白跑整条
+>   LLM 管线。（问题规划 `generateQuestionPlan` 是与意图分析并行、最后补全的一处，见 commit
+>   8da0759；此前本行记作"四处"已过期。）
 > - 持久化语义自动化：`test/askRoute.persistence.test.ts`（fixture 图 + 临时 DB + fetch 离线桩，
 >   fastify inject 路由级）固化三条行为：mcp 无状态零落库、无效 id fork 带 source 标记、
 >   跨项目 id 视作无效新开且外项目会话零污染。
