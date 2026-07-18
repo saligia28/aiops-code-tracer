@@ -191,7 +191,7 @@ export function registerAsk(app: FastifyInstance): void {
           ((messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>) =>
             callChatCompletion(messages, abortCtl.signal)) as (messages: Array<{ role: string; content: string }>) => Promise<string | null>,
         ),
-        generateQuestionPlan(question),
+        generateQuestionPlan(question, abortCtl.signal),
       ])
       plan.keywords = Array.from(new Set([...plan.keywords, ...analysis.searchKeywords])).slice(0, 24)
       if (analysis.entities.pageName && !plan.scope) {

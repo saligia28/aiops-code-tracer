@@ -88,7 +88,7 @@ export function heuristicQuestionPlan(question: string): QuestionPlan {
 }
 
 
-export async function generateQuestionPlan(question: string): Promise<QuestionPlan> {
+export async function generateQuestionPlan(question: string, signal?: AbortSignal): Promise<QuestionPlan> {
   const fallback = heuristicQuestionPlan(question);
   if (!canUseLlm()) return fallback;
   if (fallback.concern !== 'general') return fallback;
@@ -102,7 +102,8 @@ export async function generateQuestionPlan(question: string): Promise<QuestionPl
     `问题：${question}`,
   ].join('\n');
 
-  const content = await callChatCompletion([{ role: 'user', content: prompt }]);
+  // 透传 abort（review 补修）：Step 1 与意图分析并行的这次 LLM 调用曾是 abort 覆盖的缺口
+  const content = await callChatCompletion([{ role: 'user', content: prompt }], signal);
   if (!content) return fallback;
 
   const json = parseJsonObject(content);
