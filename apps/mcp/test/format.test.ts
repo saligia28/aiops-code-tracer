@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { AskResponse, GraphNode, GraphEdge } from '@aiops/shared-types';
-import { formatNode, formatGraph, formatSearch, formatRepoStatus, formatAskResponse } from '../src/format.js';
+import { formatNode, formatGraph, formatSearch, formatRepoStatus, formatAskResponse, clampText } from '../src/format.js';
 
 const login: GraphNode = { id: 'function:src/user.ts:login', type: 'function', name: 'login', filePath: 'src/user.ts', loc: '88:2' };
 const issue: GraphNode = { id: 'function:src/token.ts:issue', type: 'function', name: 'issue', filePath: 'src/token.ts', loc: '20:2' };
@@ -73,6 +73,54 @@ describe('format', () => {
     expect(out).toContain('需求说明');
     expect(out).toContain('login (function)');
     expect(out).toContain('这个接口失败怎么处理？');
+  });
+
+  it('clampText：结果总长（含省略标记）不超声明上限，且不劈开代理对', () => {
+    // ASCII：总长 ≤ limit 且带标记
+    const ascii = clampText('a'.repeat(100), 50);
+    expect(ascii.length).toBeLessThanOrEqual(50);
+    expect(ascii).toContain('已省略');
+    // 全 emoji：切点落在代理对中间时回退，正文不得以落单高位代理项结尾
+    const emoji = clampText('😀'.repeat(100), 51);
+    expect(emoji.length).toBeLessThanOrEqual(51);
+    const body = emoji.slice(0, emoji.indexOf('\n...'));
+    expect(body).not.toMatch(/[\uD800-\uDBFF]$/);
+    // 不超限时原样返回
+    expect(clampText('short', 50)).toBe('short');
+  });
+
+  it('formatAskResponse 截断行为：单条证据钳制、省略尾、总长上限、空答案兜底、repoName 行', () => {
+    const bigEvidence = Array.from({ length: 12 }, (_, i) => ({
+      file: `src/f${i}.ts`,
+      line: i + 1,
+      code: 'x'.repeat(5000), // 单条 minified 长行：必须被钳到 EVIDENCE_CODE_LIMIT
+      label: '证据',
+    }));
+    const response: AskResponse = {
+      answer: '答'.repeat(5000), // 超 2600 的长答案
+      evidence: bigEvidence,
+      graph: { nodes: [], edges: [] },
+      intent: 'GENERAL',
+      confidence: 0.5,
+      followUp: ['追问一', '追问二', '追问三', '追问四'],
+      repoName: 'elink-pc',
+    };
+
+    const out = formatAskResponse('q', response);
+    expect(out.length).toBeLessThanOrEqual(8000); // 验收口径：默认工具文本 ≤ 8k（含标记）
+    expect(out).toContain('仓库：elink-pc');
+    expect(out).toContain('另有 2 条代码证据已省略'); // 12 条只展示 10 条
+    expect(out).toContain('追问三');
+    expect(out).not.toContain('追问四'); // followUp 只取前 3
+    // 单条证据被钳：首条渲染行远小于原始 5000 字符
+    const firstEvidenceLine = out.split('\n').find((l) => l.includes('src/f0.ts'))!;
+    expect(firstEvidenceLine.length).toBeLessThan(400);
+
+    // 空答案兜底 + 无文档分支
+    const empty = formatAskResponse('q', { ...response, answer: '  ', evidence: [], docEvidence: undefined });
+    expect(empty).toContain('（空回答）');
+    expect(empty).toContain('（无代码证据）');
+    expect(empty).not.toContain('文档证据');
   });
 
   it('formatAskResponse 的会话 fork 提示：仅在请求 id 与响应 id 不一致时出现', () => {

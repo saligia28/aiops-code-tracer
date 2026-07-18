@@ -53,7 +53,11 @@ async function login(): Promise<void> {
     body: JSON.stringify({ password }),
   });
   if (!res.ok) {
-    throw new AnalyzerError('鉴权失败：ANALYZER_PASSWORD 密码不正确。');
+    // 只有 401 才是密码错；重启/代理期间的 5xx 报"密码不正确"会误导用户去轮换正确密码（review 修复）
+    if (res.status === 401) {
+      throw new AnalyzerError('鉴权失败：ANALYZER_PASSWORD 密码不正确。');
+    }
+    throw new AnalyzerError(`登录失败：分析服务返回 ${res.status}（服务可能正在启动/重启，请稍后重试）。`);
   }
   const setCookie = res.headers.get('set-cookie') ?? '';
   const m = setCookie.match(/auth_token=([^;]+)/);
@@ -61,75 +65,18 @@ async function login(): Promise<void> {
   authCookie = m ? `auth_token=${m[1]}` : null;
 }
 
-export async function analyzerGet<T = unknown>(path: string, query: Query = {}): Promise<T> {
-  const url = new URL(BASE_URL + path);
-  for (const [k, v] of Object.entries(query)) {
-    if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
-  }
-
-  const doFetch = () =>
-    fetchWithTimeout(url, authCookie ? { headers: { cookie: authCookie } } : undefined);
-
-  let res = await doFetch();
-
-  // 401：若配置了密码，则登录后重试一次。
-  if (res.status === 401 && process.env.ANALYZER_PASSWORD) {
-    await login();
-    res = await doFetch();
-  }
-
-  if (!res.ok) {
-    let body: { error?: string; message?: string } | null = null;
-    try {
-      body = (await res.json()) as { error?: string; message?: string };
-    } catch {
-      /* non-JSON body */
-    }
-
-    if (res.status === 401) {
-      throw new AnalyzerError(
-        'API 需要鉴权。请在 MCP 配置的 env 里设置正确的 ANALYZER_PASSWORD。',
-      );
-    }
-    if (res.status === 503 || body?.error === 'GRAPH_NOT_LOADED') {
-      throw new AnalyzerError('当前未加载任何仓库。请先在 Web 界面选中一个项目，再重试。');
-    }
-    if (res.status === 400) {
-      throw new AnalyzerError(`参数错误：${body?.message ?? path}`);
-    }
-    throw new AnalyzerError(`分析服务返回 ${res.status}：${body?.message ?? res.statusText}`);
-  }
-
-  return (await res.json()) as T;
-}
-
-export async function analyzerPost<T = unknown>(
+/**
+ * GET/POST 共享的请求核心：401 登录重试一次 + 错误映射 + JSON 解析。
+ * makeInit 是 thunk——登录后 authCookie 变化，重试时要现拼 headers。
+ * （此前 GET/POST 各持一份 22 行的逐字拷贝，review 实锤过漂移风险。）
+ */
+async function requestJson<T>(
+  url: string | URL,
   path: string,
-  body: unknown,
-  opts: {
-    /**
-     * 单次调用超时覆盖。全局 ANALYZER_TIMEOUT_MS（默认 30s）按快速图谱查询校准，
-     * 走 LLM 管线的端点（/api/ask 最多 3-4 次串行 LLM 调用）必须传更长的预算，
-     * 否则客户端超时后服务端仍会跑完全程白白计费（review 修复）。
-     */
-    timeoutMs?: number;
-  } = {},
+  makeInit: () => RequestInit | undefined,
+  timeoutMs?: number,
 ): Promise<T> {
-  const url = BASE_URL + path;
-
-  const doFetch = () => {
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
-    if (authCookie) headers.cookie = authCookie;
-    return fetchWithTimeout(
-      url,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-      },
-      opts.timeoutMs,
-    );
-  };
+  const doFetch = () => fetchWithTimeout(url, makeInit(), timeoutMs);
 
   let res = await doFetch();
 
@@ -161,5 +108,42 @@ export async function analyzerPost<T = unknown>(
     throw new AnalyzerError(`分析服务返回 ${res.status}：${payload?.message ?? res.statusText}`);
   }
 
-  return (await res.json()) as T;
+  // 200 但非 JSON（反代兜底页等）：转成可行动的 AnalyzerError，而非裸 SyntaxError（review 修复）
+  try {
+    return (await res.json()) as T;
+  } catch {
+    throw new AnalyzerError(`分析服务返回了非 JSON 响应（${path}）。请检查 ANALYZER_BASE_URL 是否指向分析 API 本体。`);
+  }
+}
+
+export async function analyzerGet<T = unknown>(path: string, query: Query = {}): Promise<T> {
+  const url = new URL(BASE_URL + path);
+  for (const [k, v] of Object.entries(query)) {
+    if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
+  }
+  return requestJson<T>(url, path, () => (authCookie ? { headers: { cookie: authCookie } } : undefined));
+}
+
+export async function analyzerPost<T = unknown>(
+  path: string,
+  body: unknown,
+  opts: {
+    /**
+     * 单次调用超时覆盖。全局 ANALYZER_TIMEOUT_MS（默认 30s）按快速图谱查询校准，
+     * 走 LLM 管线的端点（/api/ask 最多 3-4 次串行 LLM 调用）必须传更长的预算，
+     * 否则客户端超时后服务端仍会跑完全程白白计费（review 修复）。
+     */
+    timeoutMs?: number;
+  } = {},
+): Promise<T> {
+  return requestJson<T>(
+    BASE_URL + path,
+    path,
+    () => {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (authCookie) headers.cookie = authCookie;
+      return { method: 'POST', headers, body: JSON.stringify(body) };
+    },
+    opts.timeoutMs,
+  );
 }

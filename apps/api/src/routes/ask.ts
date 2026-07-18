@@ -159,8 +159,20 @@ export function registerAsk(app: FastifyInstance): void {
           if (extractMemory && !fromMcp) void generateMemoriesFromTurn(projectId, convId, question, resp.answer)
           resp.conversationId = convId
         }
+        // 仓库标识（review 修复）：MCP 等长会话消费端靠它发现"Web 端把当前仓库切走了"
+        resp.repoName = currentRepoName ?? undefined
         // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖
         trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
+        // 机器消费端出口清洗（review 修复）：evidence[].code 是未经中和的原始仓库源码行，
+        // answer 是以其为素材的 LLM 输出——直达 agent 的工具结果即指令注入中继面。
+        // 放在落库/trace 之后：入库与观测保留原文；web 通道不动（引用核对要与源码逐字匹配）。
+        if (fromMcp) {
+          resp.answer = sanitizeRetrievedText(resp.answer).text
+          resp.evidence = resp.evidence.map((e) => {
+            const s = sanitizeRetrievedText(e.code)
+            return s.hits > 0 ? { ...e, code: s.text } : e
+          })
+        }
         // 流式模式：答案若未经逐 token 下发（快速路径/规则路径/流式降级），补一帧整体 delta；
         // done 终帧带完整 AskResponse（evidence/graph/docEvidence），前端以此收尾渲染。
         if (sse) {

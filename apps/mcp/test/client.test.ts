@@ -129,6 +129,32 @@ describe('analyzerGet', () => {
     expect(calls.some((c) => c.cookie === 'auth_token=TOKEN456')).toBe(true);
   });
 
+  it('POST maps error statuses to actionable messages（与 GET 共享同一错误核心）', async () => {
+    stubFetch(async () => new Response(JSON.stringify({ error: 'GRAPH_NOT_LOADED' }), { status: 503 }));
+    await expect(analyzerPost('/api/ask', { question: 'q' })).rejects.toThrow('当前未加载任何仓库');
+
+    stubFetch(async () => new Response(JSON.stringify({ message: '缺少 question 参数' }), { status: 400 }));
+    await expect(analyzerPost('/api/ask', {})).rejects.toThrow('参数错误：缺少 question 参数');
+
+    stubFetch(async () => new Response('oops', { status: 500, statusText: 'Internal Server Error' }));
+    await expect(analyzerPost('/api/ask', { question: 'q' })).rejects.toThrow('分析服务返回 500');
+  });
+
+  it('POST 200 但非 JSON（反代兜底页）：转成可行动的 AnalyzerError 而非裸 SyntaxError', async () => {
+    stubFetch(async () => new Response('<html>proxy fallback</html>', { status: 200 }));
+    await expect(analyzerPost('/api/ask', { question: 'q' })).rejects.toThrow('非 JSON 响应');
+  });
+
+  it('login 非 401 失败不再误报密码错（重启期间的 5xx 是服务问题）', async () => {
+    vi.stubEnv('ANALYZER_PASSWORD', 'pw');
+    stubFetch(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/auth/login')) return new Response('boot', { status: 503 });
+      return new Response(JSON.stringify({ message: '未授权' }), { status: 401 });
+    });
+    await expect(analyzerPost('/api/ask', { question: 'q' })).rejects.toThrow('登录失败：分析服务返回 503');
+  });
+
   it('POST honors per-call timeoutMs override（LLM 端点专用长/短预算）', async () => {
     // 永不 resolve、只响应 abort 的 fetch：超时路径必须由 timeoutMs 触发
     stubFetch(

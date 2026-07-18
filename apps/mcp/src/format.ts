@@ -51,16 +51,28 @@ export function formatRepoStatus(currentRepo: string | null, repos: RepoEntry[])
 }
 
 const DEFAULT_ASK_OUTPUT_LIMIT = 8000;
+/** 单条代码证据的展示上限：一行 minified/生成代码可达数万字符，不钳会独占整个输出预算 */
+const EVIDENCE_CODE_LIMIT = 200;
 
-function clampText(text: string, limit: number): string {
+/**
+ * 截断到 limit 以内（含省略标记——结果总长绝不超过声明上限，review 修复）。
+ * 切点若落在代理对高位上回退一位，防止劈开 emoji 产出落单代理项
+ * （严格 JSON 重编码的非 JS 消费端会直接报错，apps/api 侧修过同款问题）。
+ */
+export function clampText(text: string, limit: number): string {
   if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n...（已省略 ${text.length - limit} 字）`;
+  // 用"全文长度"的位数预留标记额度（≥ 实际省略数的位数），保证总长上界成立
+  const markerReserve = `\n...（已省略 ${text.length} 字）`.length;
+  let cut = Math.max(0, limit - markerReserve);
+  const cc = text.charCodeAt(cut - 1);
+  if (cut > 0 && cc >= 0xd800 && cc <= 0xdbff) cut--;
+  return `${text.slice(0, cut)}\n...（已省略 ${text.length - cut} 字）`;
 }
 
 function formatEvidence(evidence: Evidence[], limit = 10): string[] {
   if (evidence.length === 0) return ['（无代码证据）'];
   const shown = evidence.slice(0, limit).map((item) =>
-    `  • ${item.file}:${item.line} [${item.label}] ${item.code.trim()}`,
+    `  • ${item.file}:${item.line} [${item.label}] ${clampText(item.code.trim(), EVIDENCE_CODE_LIMIT)}`,
   );
   if (evidence.length > limit) {
     shown.push(`  ...（另有 ${evidence.length - limit} 条代码证据已省略）`);
@@ -106,6 +118,9 @@ export function formatAskResponse(
   const confidence = Number.isFinite(response.confidence) ? response.confidence.toFixed(2) : String(response.confidence);
   const sections: string[] = [
     `问题：${question}`,
+    // 仓库标识（review 修复）：分析服务的"当前仓库"随 Web 端切换而变，
+    // 不标注的话切库后消费端会拿另一个仓库的结论继续干活而毫无察觉
+    ...(response.repoName ? [`仓库：${response.repoName}`] : []),
     `意图：${response.intent}，置信度：${confidence}`,
   ];
 

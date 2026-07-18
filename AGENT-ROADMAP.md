@@ -209,10 +209,17 @@
 > - 验证：MCP 28 test 绿 + API 92 test 绿；E2E 三项——无状态调用会话/记忆表零增长、
 >   无效 id fork 落库带 source 标记、跨项目 id 被拒且外项目会话零污染。
 >
-> **遗留 TODO（review 打出、本轮未修）**：evidence[].code 未经 P1-E 清洗直达消费端 agent
-> （注入中继面）；单条证据无长度钳制可吃掉 8k 预算；clampText 会劈代理对且超 8k 口径 ~25 字；
-> 输出不标注仓库名（切库后静默答错库，需 AskResponse 加 repoName）；login() 非 401 一律误报密码错；
-> analyzerPost 与 analyzerGet 错误块重复待抽共享核心；formatAskResponse 截断行为零测试。
+> **Review 遗留批次修复（2026-07-18）✅**：
+> - 注入中继面：`source:'mcp'` 请求的出口 answer / evidence[].code 过 P1-E 清洗（放在落库与
+>   reflection 之后——入库/观测留原文，web 通道不动，引用核对仍与源码逐字匹配）。
+> - `AskResponse.repoName`：finalizeResponse 单漏斗统一下发，MCP 输出头部加「仓库：」行——
+>   Web 端切库后消费端立刻可见，不再静默拿另一个仓库的结论干活。
+> - clampText 重写：省略标记计入上限（输出总长 ≤ 8k 口径成立）+ 代理对边界回退；
+>   单条 evidence.code 钳 200 字符（单行 minified 代码不再吃掉整个预算）。
+> - client 重构：GET/POST 共享 requestJson 核心（401 重试 + 错误映射 + 200 非 JSON 转
+>   AnalyzerError，消灭 22 行双拷贝漂移面）；login() 只在 401 报密码错，5xx 报服务状态。
+> - 验证：MCP 33 test 绿（+5：POST 错误分支/非 JSON/login 状态区分/clampText/截断行为）、
+>   API 92 test 绿、全仓 typecheck 过；E2E——mcp 响应带 repoName 且保持无状态。
 
 **实现顺序建议**：
 
