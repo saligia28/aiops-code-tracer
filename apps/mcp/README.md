@@ -42,7 +42,7 @@ pnpm --filter @aiops/mcp build
 | `repo_status` | 查看当前加载的是哪个仓库及可用仓库列表。建议在一串分析开头先调它确认目标。是唯一不依赖"已加载图谱"也能用的工具。 |
 | `explain_code_logic(question, conversationId?)` | 用自然语言分析当前仓库中的业务/代码逻辑，返回回答、代码证据、文档证据与图谱摘要。适合在改代码前先获取任务上下文。 |
 | `prepare_fix_context(question)` | 面向 bug 修复 / 需求改动的**任务前置分析**：返回结构化修改上下文——入口文件、关键流程、相关文件、接口调用、疑似修改点、验证建议、代码证据。改代码前先拿"从哪改"的锚。走 LLM、耗时数十秒、无状态。 |
-| `get_impact_scope(symbol, depth?)` | 一次拿到某符号的**完整影响面**：上游调用方（改动波及谁）+ 下游依赖（改动依赖什么）。改方法前评估波及范围。纯图谱、零 LLM、快——等价 `trace_callers` + `trace_callees` 合并一屏。 |
+| `get_impact_scope(symbol \| file, depth?)` | 一次拿到某符号或某文件的**完整影响面**：上游调用方（改动波及谁）+ 下游依赖（改动依赖什么）。改方法/改文件前评估波及范围。文件模式聚合文件内全部符号、只看跨文件影响；短文件名唯一命中可用，多命中返回候选。纯图谱、零 LLM、快。 |
 | `search_symbols(q, limit?)` | 按名字搜符号，返回精确文件位置。 |
 | `get_symbol(name)` | 某符号详情 + 深度 1 的直接邻居。 |
 | `trace_callees(symbol, depth?)` | **「它调用了谁」**——依赖链 / 下游追踪。 |

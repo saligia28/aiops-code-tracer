@@ -302,7 +302,14 @@
 > - 验证：MCP 46 test 绿（+13：analysisPacket 组装/降级/格式 10 + 两工具映射/合并/未找到 3）、
 >   API 98 test 绿（+2：entry 命中 + 无锚点不硬造）、`pnpm --filter @aiops/mcp build`、全仓
 >   `pnpm typecheck` 通过；未改现有 `/api/ask`、`/api/agent/ask` 行为；工具数 7 → 9。
-> - **遗留 TODO**：② `get_impact_scope` 的 `file` 入参 v1 未做（只支持 symbol）。
+> - ~~遗留 TODO：② `get_impact_scope` 的 `file` 入参 v1 未做~~ **已落地（2026-07-21）**：
+>   `/api/why`、`/api/trace` 加 `file` 参数——服务端对文件内实体符号聚合 trace（≤40 根 /
+>   200 节点 / 300 边上限），只保留跨文件边（内部调用在影响面场景是噪声，本文件节点仅作
+>   跨界边锚点保留）；短文件名唯一后缀匹配可用，多命中返回 FILE_AMBIGUOUS + 候选列表
+>   （fixture 有 3 个 List.vue，绝不静默选一个）。MCP 工具 symbol|file 二选一（handler 守互斥，
+>   zod raw shape 做不了跨字段约束）。验证：路由级测试 traceRoute.file.test.ts 6 用例
+>   （跨文件聚合/消歧/唯一短名/NOT_FOUND/双参 400/symbol 老路径回归）+ MCP 3 用例，
+>   API 109 test、MCP 58 test 绿。
 >
 > **进度（2026-07-20）· 第三刀已落地**（原遗留①③）：
 > - **riskPoints 等 LLM 判断字段 prompt 下沉**：`/api/ask` 接 `taskProfile:'fix_context'`——

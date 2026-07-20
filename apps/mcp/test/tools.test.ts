@@ -171,4 +171,41 @@ describe('tools', () => {
     expect(out.content[0].text).toContain('search_symbols');
     expect(out.isError).toBeFalsy();
   });
+
+  it('get_impact_scope file 模式：两个端点都带 file 参数，输出标注聚合口径', async () => {
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === '/api/why') {
+        return { file: 'src/api/orderVoid.ts', depth: 3, sourceSymbols: 2, nodes: [{ id: 'function:List.vue:handleVoid', type: 'function', name: 'handleVoid', filePath: 'src/views/orderManage/orderVoid/List.vue', loc: '31:4' }], edges: [] };
+      }
+      return { file: 'src/api/orderVoid.ts', depth: 3, sourceSymbols: 2, nodes: [], edges: [] };
+    });
+
+    const out = await getImpactScope.handler({ file: 'src/api/orderVoid.ts', depth: 2 });
+
+    expect(mockGet).toHaveBeenCalledWith('/api/why', { file: 'src/api/orderVoid.ts', depth: 2 });
+    expect(mockGet).toHaveBeenCalledWith('/api/trace', { file: 'src/api/orderVoid.ts', depth: 2 });
+    const t = out.content[0].text;
+    expect(t).toContain('文件 "src/api/orderVoid.ts"');
+    expect(t).toContain('聚合 2 个符号');
+    expect(t).toContain('handleVoid');
+  });
+
+  it('get_impact_scope 短文件名多命中：候选列表原样透出，指引换完整路径', async () => {
+    mockGet.mockResolvedValue({
+      file: 'List.vue', depth: 3, nodes: [], edges: [],
+      message: 'FILE_AMBIGUOUS',
+      candidates: ['src/views/a/List.vue', 'src/views/b/List.vue'],
+    });
+    const out = await getImpactScope.handler({ file: 'List.vue' });
+    const t = out.content[0].text;
+    expect(t).toContain('命中多个路径');
+    expect(t).toContain('src/views/a/List.vue');
+    expect(t).toContain('src/views/b/List.vue');
+  });
+
+  it('get_impact_scope 入参互斥：symbol 与 file 同传/都不传直接报错，不发请求', async () => {
+    await expect(getImpactScope.handler({ symbol: 'x', file: 'y.ts' })).rejects.toThrow('只能提供一个');
+    await expect(getImpactScope.handler({})).rejects.toThrow('只能提供一个');
+    expect(mockGet).not.toHaveBeenCalled();
+  });
 });

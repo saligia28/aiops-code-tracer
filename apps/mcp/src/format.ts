@@ -44,12 +44,17 @@ export interface ImpactSide {
   nodes: GraphNode[];
   edges: GraphEdge[];
   message?: string;
+  /** file 入参短名多命中时的候选路径（FILE_AMBIGUOUS 时下发） */
+  candidates?: string[];
+  /** file 入参时：聚合了文件内多少个实体符号 */
+  sourceSymbols?: number;
 }
 
 /**
  * get_impact_scope 的输出：把上游影响面（谁调用了它）+ 下游依赖面（它调用了谁）合成一屏。
- * 纯图谱组合 trace_callers/trace_callees，无 LLM——"改一个方法前先看波及范围"。
- * 两侧都 SYMBOL_NOT_FOUND 才判未找到（单侧空是正常的：叶子节点无下游、入口无上游）。
+ * 纯图谱组合 trace_callers/trace_callees，无 LLM——"改一个方法/文件前先看波及范围"。
+ * 两侧都 NOT_FOUND 才判未找到（单侧空是正常的：叶子节点无下游、入口无上游）；
+ * file 短名多命中时返回候选列表交调用方消歧（绝不静默选一个）。
  */
 export function formatImpactScope(
   symbol: string,
@@ -57,13 +62,28 @@ export function formatImpactScope(
   downstream: ImpactSide,
   limit = DEFAULT_ASK_OUTPUT_LIMIT,
 ): string {
-  const upNotFound = upstream.message === 'SYMBOL_NOT_FOUND';
-  const downNotFound = downstream.message === 'SYMBOL_NOT_FOUND';
-  if (upNotFound && downNotFound) {
-    return `未找到符号 "${symbol}"。先用 search_symbols 确认名字。`;
+  // 文件消歧：两侧同参数必然同判，取任一侧候选即可
+  if (upstream.message === 'FILE_AMBIGUOUS' || downstream.message === 'FILE_AMBIGUOUS') {
+    const candidates = upstream.candidates ?? downstream.candidates ?? [];
+    return [
+      `文件名 "${symbol}" 命中多个路径，请改用完整相对路径重试：`,
+      ...candidates.map((c) => `  • ${c}`),
+    ].join('\n');
   }
+  const notFound = (m?: string): boolean => m === 'SYMBOL_NOT_FOUND' || m === 'FILE_NOT_FOUND';
+  const upNotFound = notFound(upstream.message);
+  const downNotFound = notFound(downstream.message);
+  if (upNotFound && downNotFound) {
+    return upstream.message === 'FILE_NOT_FOUND'
+      ? `未找到文件 "${symbol}"。请确认相对路径（可用 get_file_graph 验证，或用 search_symbols 找到符号后看其所在文件）。`
+      : `未找到符号 "${symbol}"。先用 search_symbols 确认名字。`;
+  }
+  const isFile = upstream.sourceSymbols !== undefined || downstream.sourceSymbols !== undefined;
+  const subject = isFile
+    ? `文件 "${symbol}"（聚合 ${upstream.sourceSymbols ?? downstream.sourceSymbols} 个符号，仅跨文件影响）`
+    : `符号 "${symbol}"`;
   const sections = [
-    `符号 "${symbol}" 的影响面评估（改动前先看）：`,
+    `${subject} 的影响面评估（改动前先看）：`,
     '',
     `▲ 上游影响面（谁调用了它 = 改动会波及谁，深度 ${upstream.depth}）：`,
     upNotFound || upstream.nodes.length === 0
