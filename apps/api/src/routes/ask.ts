@@ -61,18 +61,35 @@ import {
   selectStartNode,
 } from '../services/askService.js'
 
+/**
+ * 修改前分析模式的输出契约（P1-MCP 第三刀）：taskProfile='fix_context' 时追加到 systemPrompt。
+ * 三个小节是 MCP 侧 AnalysisPacket 的解析锚（analysisPacket.parseFixSections）——
+ * 小节标题与条目格式改动必须两边同步。风险点是真·LLM 判断，此前规则组装只能诚实留空。
+ */
+const FIX_CONTEXT_APPENDIX = `
+- 修改前分析模式（本次请求专属）：在上述输出之后，再追加以下三个小节。小节标题独占一行、以中文冒号结尾，条目以"- "开头：
+  疑似修改点：
+  - 文件:行号 —— 为什么要动这里（只列材料能支撑的，没把握就少列，绝不编造行号）
+  风险点：
+  - 本次改动可能波及的共享逻辑/状态/调用方与边界情况；材料看不出来的明确写"证据不足"
+  验证建议：
+  - 改完后如何验证（复现路径 / 接口入参返回核对 / 状态检查），每条要可执行`
+
 export function registerAsk(app: FastifyInstance): void {
   setTraceServiceLogger(app.log)
   app.post('/api/ask', async (request, reply) => {
     if (!ensureGraph(reply)) return
-    const { question, conversationId, stream, source } = request.body as {
+    const { question, conversationId, stream, source, taskProfile } = request.body as {
       question: string
       conversationId?: string
       stream?: boolean
       /** 调用来源标记：'mcp' = 机器消费端（无 conversationId 则无状态问答，且恒不抽取记忆） */
       source?: string
+      /** 任务画像：'fix_context' = 修改前分析（P1-MCP 第三刀）——systemPrompt 追加结构化小节要求 */
+      taskProfile?: string
     }
     const fromMcp = source === 'mcp'
+    const fixContext = taskProfile === 'fix_context'
     if (!question || !question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' })
     }
@@ -443,7 +460,7 @@ export function registerAsk(app: FastifyInstance): void {
   关键代码：列出 3-8 条 文件:行号 + 该行做了什么
   证据不足：如有未确认的部分，明确说明
 - 语言要面向业务同学，避免术语堆砌
-- 如果问题是"页面用了哪些接口"，按"接口清单"逐条列出 METHOD + endpoint`
+- 如果问题是"页面用了哪些接口"，按"接口清单"逐条列出 METHOD + endpoint${fixContext ? FIX_CONTEXT_APPENDIX : ''}`
 
         const entitiesInfo: string[] = []
         if (analysis.entities.pageName) entitiesInfo.push(`页面：${analysis.entities.pageName}`)

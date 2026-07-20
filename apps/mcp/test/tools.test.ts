@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../src/client.js', () => ({
   analyzerGet: vi.fn(),
   analyzerPost: vi.fn(),
+  getRepoLock: vi.fn(() => ''),
   AnalyzerError: class extends Error {},
 }));
 
@@ -131,7 +132,7 @@ describe('tools', () => {
     // 无状态：无 conversationId，source:'mcp'，ask 专用长超时（默认 120s）
     expect(mockPost).toHaveBeenCalledWith(
       '/api/ask',
-      { question: '订单作废按钮点击后做了什么？', source: 'mcp' },
+      { question: '订单作废按钮点击后做了什么？', source: 'mcp', taskProfile: 'fix_context' },
       { timeoutMs: 120_000 },
     );
     const t = out.content[0].text;

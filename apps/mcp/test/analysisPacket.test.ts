@@ -153,12 +153,58 @@ describe('formatAnalysisPacket（输出格式）', () => {
     expect(out).toContain('疑似修改点');
   });
 
-  it('tier-3 出处显式标注：修改点标"非 LLM 判断"，风险点标 v1 降级', () => {
+  it('tier-3 出处显式标注：启发式修改点标"非 LLM 判断"，无 LLM 小节时风险点标降级', () => {
     expect(out).toContain('非 LLM 判断');
-    expect(out).toContain('v1 暂不做风险推断');
+    expect(out).toContain('无 LLM 风险点输出');
   });
 
   it('输出总长受控 ≤ 8k（含省略标记）', () => {
     expect(out.length).toBeLessThanOrEqual(8000);
+  });
+});
+
+describe('parseFixSections + LLM 小节合并（第三刀：riskPoints 等 prompt 下沉）', () => {
+  const FIX_ANSWER =
+    ORDER_VOID_RESPONSE.answer +
+    '\n\n疑似修改点：\n' +
+    '- src/views/orderManage/orderVoid/List.vue:31 —— 作废前置校验在这里，改状态条件先动它\n' +
+    '- 无文件锚的一条建议（不应进结构化字段）\n' +
+    '风险点：\n' +
+    '- voidableStatus 同时被批量作废共用，单独改单条路径会造成行为分叉\n' +
+    '- 证据不足：未看到接口幂等处理\n' +
+    '验证建议：\n' +
+    '1. 用 status!==2 的订单点作废，应被前置校验拦下\n' +
+    '2. 核对 POST /api/order/void 的入参 id 与返回码\n';
+
+  const withFixSections: AskResponse = { ...ORDER_VOID_RESPONSE, answer: FIX_ANSWER };
+
+  it('三小节解析进结构化字段，来源标 llm；无文件锚的修改点条目不硬凑', () => {
+    const packet = assembleAnalysisPacket('订单作废按钮点击后做了什么？', withFixSections);
+    expect(packet.riskPoints).toHaveLength(2);
+    expect(packet.riskPoints[0]).toContain('voidableStatus');
+    expect(packet.verificationHints).toHaveLength(2);
+    expect(packet.verificationHints[1]).toContain('/api/order/void');
+    // LLM 修改点排最前，reason 带"为什么改这里"
+    expect(packet.suggestedEditLocations[0].file).toBe('src/views/orderManage/orderVoid/List.vue');
+    expect(packet.suggestedEditLocations[0].line).toBe(31);
+    expect(packet.suggestedEditLocations[0].reason).toContain('前置校验');
+    expect(packet.suggestedEditLocations.every((e) => e.file)).toBe(true);
+    expect(packet.sources).toEqual({ suggestedEdits: 'llm', verificationHints: 'llm', riskPoints: 'llm' });
+  });
+
+  it('formatter 按来源换文案：LLM 判断不再标"启发式"，风险点正常展示', () => {
+    const packet = assembleAnalysisPacket('订单作废按钮点击后做了什么？', withFixSections);
+    const text = formatAnalysisPacket(packet);
+    expect(text).toContain('LLM 基于材料判断');
+    expect(text).not.toContain('无 LLM 风险点输出');
+    expect(text).toContain('voidableStatus');
+  });
+
+  it('模型未按格式输出小节（或走了规则路径）：回退启发式，riskPoints 诚实留空', () => {
+    const packet = assembleAnalysisPacket('订单作废按钮点击后做了什么？', ORDER_VOID_RESPONSE);
+    expect(packet.riskPoints).toEqual([]);
+    expect(packet.sources.riskPoints).toBe('none');
+    expect(packet.sources.suggestedEdits).toBe('heuristic');
+    expect(packet.sources.verificationHints).toBe('heuristic');
   });
 });

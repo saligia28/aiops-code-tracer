@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AskResponse } from '@aiops/shared-types';
-import { analyzerPost } from '../client.js';
+import { analyzerPost, getRepoLock } from '../client.js';
 import { assembleAnalysisPacket } from '../analysisPacket.js';
 import { formatAnalysisPacket } from '../format.js';
 import { text, type ToolDescriptor } from './types.js';
@@ -28,11 +28,20 @@ export const prepareFixContext: ToolDescriptor = {
     const { question } = args as { question: string };
     const data = await analyzerPost<AskResponse>(
       '/api/ask',
-      // 无 conversationId + source:'mcp' = 服务端无状态问答（不落库、不抽取记忆）
-      { question, source: 'mcp' },
+      // 无 conversationId + source:'mcp' = 服务端无状态问答（不落库、不抽取记忆）；
+      // taskProfile:'fix_context' = systemPrompt 追加三小节输出契约（疑似修改点/风险点/验证建议，
+      // 第三刀——riskPoints 等 LLM 判断字段由此下沉，MCP 侧 parseFixSections 解析）
+      { question, source: 'mcp', taskProfile: 'fix_context' },
       { timeoutMs: ASK_TIMEOUT_MS },
     );
     const packet = assembleAnalysisPacket(question, data);
-    return text(formatAnalysisPacket(packet));
+    // 锁仓 post-check：pre-check 通过后、分析完成前仓库仍可能被切走——结果已花了 LLM 钱，
+    // 不丢弃，但必须显式警告（消费端据此决定是否采信）
+    const lock = getRepoLock();
+    const warn =
+      lock && data.repoName && data.repoName !== lock
+        ? `⚠️ 分析过程中仓库被切换：本结果来自 ${data.repoName}，而非锁定的 ${lock}，请勿直接采信。\n\n`
+        : '';
+    return text(warn + formatAnalysisPacket(packet));
   },
 };

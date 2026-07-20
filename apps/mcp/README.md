@@ -99,6 +99,7 @@ pnpm --filter @aiops/mcp build
 | `ANALYZER_TIMEOUT_MS` | `30000` | 单次 HTTP 请求超时（毫秒），按快速图谱查询校准 |
 | `ANALYZER_ASK_TIMEOUT_MS` | `120000` | 走 LLM 分析管线的工具（`explain_code_logic` / `prepare_fix_context`）专用超时——它们最多 3-4 次串行 LLM 调用，30s 必然不够。注意 Claude Code 侧的 MCP 工具超时（`MCP_TOOL_TIMEOUT`）也需不小于此值。 |
 | `ANALYZER_PASSWORD` | （空） | 当 API 开启了 `AUTH_PASSWORD` 鉴权时，设置为相同的登录密码。MCP 会在收到 401 时自动登录拿 cookie 并重试。未开启鉴权时留空即可。 |
+| `ANALYZER_REPO` | （空） | 锁定分析目标仓库（填 `repo_status` 显示的仓库名）。设置后每次工具调用先核对分析服务的「当前仓库」，不一致直接报错——防止 Web 端切换项目让进行中的模型任务静默拿到另一个仓库的结论。留空则跟随 Web 当前仓库。 |
 
 ---
 

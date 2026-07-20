@@ -70,12 +70,45 @@ async function login(): Promise<void> {
  * makeInit 是 thunk——登录后 authCookie 变化，重试时要现拼 headers。
  * （此前 GET/POST 各持一份 22 行的逐字拷贝，review 实锤过漂移风险。）
  */
+/** env 锁仓（P1-MCP 第三刀）：每次调用现读，测试可逐用例覆盖。 */
+export function getRepoLock(): string {
+  return (process.env.ANALYZER_REPO ?? '').trim();
+}
+
+/** 锁仓校验豁免路径：repos 查询自身（防递归）与登录。 */
+function repoLockExempt(path: string): boolean {
+  return path.startsWith('/api/repos') || path.startsWith('/api/auth');
+}
+
+/**
+ * 锁仓 pre-check：MCP 与 Web 共享"当前仓库"，Web 端切库会让正在运行的模型任务
+ * 静默拿到另一个仓库的结论。设置 ANALYZER_REPO 后，每次请求先核对当前仓库，
+ * 不一致直接报错（比"结果可能来自错误仓库"的事后提示强一档）。
+ * 竞态窗口（校验后、请求完成前切库）由 ask 工具的 response.repoName post-check 兜底。
+ */
+async function assertRepoLock(): Promise<void> {
+  const lock = getRepoLock();
+  if (!lock) return;
+  const data = await requestJson<{ currentRepo: string | null }>(
+    new URL(BASE_URL + '/api/repos'),
+    '/api/repos',
+    () => (authCookie ? { headers: { cookie: authCookie } } : undefined),
+  );
+  if (data.currentRepo !== lock) {
+    throw new AnalyzerError(
+      `仓库锁定不匹配：MCP 锁定分析 ${lock}（env ANALYZER_REPO），但分析服务当前加载的是 ${data.currentRepo ?? '（无）'}。` +
+        `请在 Web 界面切回 ${lock} 后重试，或调整/移除 ANALYZER_REPO。`,
+    );
+  }
+}
+
 async function requestJson<T>(
   url: string | URL,
   path: string,
   makeInit: () => RequestInit | undefined,
   timeoutMs?: number,
 ): Promise<T> {
+  if (!repoLockExempt(path)) await assertRepoLock();
   const doFetch = () => fetchWithTimeout(url, makeInit(), timeoutMs);
 
   let res = await doFetch();

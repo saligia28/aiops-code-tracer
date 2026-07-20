@@ -250,27 +250,33 @@ export function formatAnalysisPacket(packet: AnalysisPacket, opts: { limit?: num
     );
   }
 
-  // tier-3：疑似修改点（接地启发式，非 LLM 判断——显式标注让消费端核对）
+  // tier-3：疑似修改点——标注来源（LLM 判断 vs 启发式），消费端据此定信任度
   if (packet.suggestedEditLocations.length > 0) {
     sections.push(
       '',
-      '疑似修改点（基于入口+证据的启发式，非 LLM 判断，请核对）：',
+      packet.sources.suggestedEdits === 'llm'
+        ? '疑似修改点（LLM 基于材料判断，启发式补位，请核对行号）：'
+        : '疑似修改点（基于入口+证据的启发式，非 LLM 判断，请核对）：',
       ...packet.suggestedEditLocations.map((s) => `  • ${fileLoc(s.file, s.line)} —— ${s.reason}`),
     );
   }
 
-  // tier-3：验证建议（接地启发式）
+  // tier-3：验证建议
   if (packet.verificationHints.length > 0) {
-    sections.push('', '验证建议（基于接口/入口的启发式）：', ...packet.verificationHints.map((h) => `  • ${h}`));
+    sections.push(
+      '',
+      packet.sources.verificationHints === 'llm' ? '验证建议（LLM 基于材料判断）：' : '验证建议（基于接口/入口的启发式）：',
+      ...packet.verificationHints.map((h) => `  • ${h}`),
+    );
   }
 
-  // tier-3：风险点（v1 降级——真·LLM 判断字段，规则组不出来，诚实留缺而非硬凑空话）
+  // tier-3：风险点——只来自 LLM 小节（fix_context prompt 契约）；无小节诚实留缺，不硬凑
   sections.push(
     '',
     '风险点：',
     packet.riskPoints.length > 0
       ? packet.riskPoints.map((r) => `  • ${r}`).join('\n')
-      : '  （v1 暂不做风险推断：属 LLM 判断字段，规则投影只会产出空话；计划后续走 /api/ask 按 source 加输出段落下沉）',
+      : '  （无 LLM 风险点输出——可能走了非 LLM 回答路径或模型未按格式输出小节；规则不做硬凑）',
   );
 
   sections.push('', `代码证据（${packet.evidence.length}）：`, ...formatEvidence(packet.evidence));

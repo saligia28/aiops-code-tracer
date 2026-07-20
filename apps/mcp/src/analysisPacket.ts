@@ -30,14 +30,81 @@ export interface AnalysisPacket {
   relatedFiles: string[];
   /** 接口调用：图谱 apiCall / 路由节点的 method + endpoint。 */
   apiCalls: Array<{ method?: string; endpoint?: string; file?: string; line?: number }>;
-  /** 风险点：LLM 判断字段，v1 留空（见模块头注的降级说明）。 */
+  /** 风险点：来自答案的「风险点」小节（taskProfile=fix_context 的 prompt 契约）；无小节则空。 */
   riskPoints: string[];
-  /** 疑似修改点：接地启发式（入口 + 证据文件），非 LLM 判断。 */
+  /** 疑似修改点：LLM 小节优先，接地启发式（入口 + 证据文件）补位。 */
   suggestedEditLocations: Array<{ file: string; line?: number; reason: string }>;
-  /** 验证建议：接地启发式（接口 / 入口），非 LLM 判断。 */
+  /** 验证建议：LLM 小节优先，无则接地启发式（接口 / 入口）。 */
   verificationHints: string[];
+  /**
+   * tier-3 字段来源（formatter 据此写标注，消费端据此定信任度）：
+   * llm = 答案小节解析（模型基于材料判断）；heuristic = 规则启发式；none = 无内容。
+   */
+  sources: {
+    suggestedEdits: 'llm' | 'heuristic' | 'none';
+    verificationHints: 'llm' | 'heuristic' | 'none';
+    riskPoints: 'llm' | 'none';
+  };
   /** 原始代码证据（透传 AskResponse.evidence）。 */
   evidence: Evidence[];
+}
+
+/** 三小节标题（与 ask.ts FIX_CONTEXT_APPENDIX 的 prompt 契约同步，改动须两边一致）。 */
+const FIX_SECTION_TITLES = ['疑似修改点', '风险点', '验证建议'] as const;
+type FixSectionTitle = (typeof FIX_SECTION_TITLES)[number];
+
+const SECTION_HEADER_RE = new RegExp(`^[\\s#>*]*(${FIX_SECTION_TITLES.join('|')})[：:]\\s*$`);
+/** 任意「xxx：」形式的独行标题（用于终结当前小节，容忍模型自创小节） */
+const ANY_HEADER_RE = /^[\s#>*]*[^\s\-•·].{0,24}[：:]\s*$/;
+const BULLET_RE = /^\s*(?:[-•·]|\d+[.、)])\s*(.+)$/;
+const FILE_LINE_RE = /([\w@./-]+\.(?:vue|ts|js|tsx|jsx|java|py|go))\s*[:：]\s*(\d+)?/;
+
+export interface FixSections {
+  editLocations: Array<{ file: string; line?: number; reason: string }>;
+  riskPoints: string[];
+  verificationHints: string[];
+}
+
+/**
+ * 从 LLM 答案中解析「修改前分析模式」的三个小节（prompt 契约见 ask.ts FIX_CONTEXT_APPENDIX）。
+ * 未走 LLM 路径 / 模型未遵循格式时返回 null——调用方回退接地启发式，绝不硬凑。
+ */
+export function parseFixSections(answer: string): FixSections | null {
+  const out: Record<FixSectionTitle, string[]> = { 疑似修改点: [], 风险点: [], 验证建议: [] };
+  let current: FixSectionTitle | null = null;
+
+  for (const rawLine of answer.split('\n')) {
+    const header = rawLine.match(SECTION_HEADER_RE);
+    if (header) {
+      current = header[1] as FixSectionTitle;
+      continue;
+    }
+    if (!current) continue;
+    const bullet = rawLine.match(BULLET_RE);
+    if (bullet) {
+      const item = bullet[1].trim();
+      if (item) out[current].push(item);
+      continue;
+    }
+    // 非条目行：其他小节标题或普通段落 → 当前小节结束（容忍小节间空行）
+    if (rawLine.trim() && ANY_HEADER_RE.test(rawLine)) current = null;
+  }
+
+  const editLocations: FixSections['editLocations'] = [];
+  for (const item of out['疑似修改点']) {
+    const m = item.match(FILE_LINE_RE);
+    if (!m) continue; // 无文件锚的修改点不进结构化字段（原文仍在 answer 里）
+    editLocations.push({
+      file: m[1],
+      line: m[2] ? Number.parseInt(m[2], 10) : undefined,
+      reason: item,
+    });
+  }
+
+  const riskPoints = out['风险点'];
+  const verificationHints = out['验证建议'];
+  if (editLocations.length === 0 && riskPoints.length === 0 && verificationHints.length === 0) return null;
+  return { editLocations, riskPoints, verificationHints };
 }
 
 /** 从 "line:col" 形式的 loc 抠出行号；非法则 undefined。 */
@@ -104,7 +171,9 @@ export function assembleAnalysisPacket(question: string, response: AskResponse):
     flowSteps = evidence.slice(0, 8).map((e) => ({ title: e.label, file: e.file, line: e.line, evidence: e.code }));
   }
 
-  // ===== tier-3：suggestedEditLocations（接地启发式：入口 + 承载关键证据的文件）=====
+  // ===== tier-3：LLM 小节优先（taskProfile=fix_context 的 prompt 契约），启发式补位 =====
+  const parsed = parseFixSections(response.answer ?? '');
+
   const suggestedEditLocations: AnalysisPacket['suggestedEditLocations'] = [];
   const seenEdit = new Set<string>();
   const pushEdit = (file: string | undefined, line: number | undefined, reason: string): void => {
@@ -114,21 +183,29 @@ export function assembleAnalysisPacket(question: string, response: AskResponse):
     seenEdit.add(key);
     suggestedEditLocations.push({ file, line, reason });
   };
+  // LLM 判断的修改点排最前（模型基于材料给的"为什么改这里"比启发式的"承载证据"信息量大）
+  for (const e of parsed?.editLocations ?? []) pushEdit(e.file, e.line, e.reason);
   if (response.entry) pushEdit(response.entry.file, response.entry.line, `入口：${response.entry.reason}`);
   for (const e of evidence.slice(0, 4)) pushEdit(e.file, e.line, `承载证据「${e.label}」`);
 
-  // ===== tier-3：verificationHints（接地启发式：接口 / 入口；无接地则空，不硬造）=====
-  const verificationHints: string[] = [];
+  const heuristicHints: string[] = [];
   for (const a of apiCalls.slice(0, 3)) {
-    verificationHints.push(`核对接口 ${(a.method ?? '').toUpperCase()} ${a.endpoint} 的入参与返回是否符合改动预期`.replace(/\s+/g, ' ').trim());
+    heuristicHints.push(`核对接口 ${(a.method ?? '').toUpperCase()} ${a.endpoint} 的入参与返回是否符合改动预期`.replace(/\s+/g, ' ').trim());
   }
   if (response.entry) {
     const loc = response.entry.line ? `:${response.entry.line}` : '';
-    verificationHints.push(`在 ${response.entry.file}${loc}（${response.entry.symbol ?? '入口'}）打断点，确认触发路径与改动生效`);
+    heuristicHints.push(`在 ${response.entry.file}${loc}（${response.entry.symbol ?? '入口'}）打断点，确认触发路径与改动生效`);
   }
+  const verificationHints = parsed?.verificationHints.length ? parsed.verificationHints : heuristicHints;
 
-  // ===== tier-3：riskPoints —— v1 不硬凑（真·LLM 判断），留空由 formatter 标注降级 =====
-  const riskPoints: string[] = [];
+  const riskPoints = parsed?.riskPoints ?? [];
+
+  const sources: AnalysisPacket['sources'] = {
+    suggestedEdits:
+      parsed?.editLocations.length ? 'llm' : suggestedEditLocations.length > 0 ? 'heuristic' : 'none',
+    verificationHints: parsed?.verificationHints.length ? 'llm' : heuristicHints.length > 0 ? 'heuristic' : 'none',
+    riskPoints: riskPoints.length > 0 ? 'llm' : 'none',
+  };
 
   return {
     question,
@@ -141,6 +218,7 @@ export function assembleAnalysisPacket(question: string, response: AskResponse):
     riskPoints,
     suggestedEditLocations,
     verificationHints,
+    sources,
     evidence,
   };
 }

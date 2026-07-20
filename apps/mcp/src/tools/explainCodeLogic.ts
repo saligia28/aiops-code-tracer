@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AskResponse } from '@aiops/shared-types';
-import { analyzerPost } from '../client.js';
+import { analyzerPost, getRepoLock } from '../client.js';
 import { formatAskResponse } from '../format.js';
 import { text, type ToolDescriptor } from './types.js';
 
@@ -41,6 +41,12 @@ export const explainCodeLogic: ToolDescriptor = {
       },
       { timeoutMs: ASK_TIMEOUT_MS },
     );
-    return text(formatAskResponse(question, data, { requestedConversationId: conversationId }));
+    // 锁仓 post-check：pre-check 后仓库仍可能被切走，结果不丢弃但显式警告
+    const lock = getRepoLock();
+    const warn =
+      lock && data.repoName && data.repoName !== lock
+        ? `⚠️ 分析过程中仓库被切换：本结果来自 ${data.repoName}，而非锁定的 ${lock}，请勿直接采信。\n\n`
+        : '';
+    return text(warn + formatAskResponse(question, data, { requestedConversationId: conversationId }));
   },
 };

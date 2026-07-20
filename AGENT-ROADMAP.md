@@ -302,10 +302,21 @@
 > - 验证：MCP 46 test 绿（+13：analysisPacket 组装/降级/格式 10 + 两工具映射/合并/未找到 3）、
 >   API 98 test 绿（+2：entry 命中 + 无锚点不硬造）、`pnpm --filter @aiops/mcp build`、全仓
 >   `pnpm typecheck` 通过；未改现有 `/api/ask`、`/api/agent/ask` 行为；工具数 7 → 9。
-> - **遗留 TODO**：① tier-3 的 riskPoints/更强 suggestedEdit 走 `/api/ask` systemPrompt 按 source
->   加输出段落下沉（第三刀，prompt 改动非管线改动）；② `get_impact_scope` 的 `file` 入参 v1 未做
->   （只支持 symbol）；③ 仓库目标稳定性第二刀（MCP `projectId/repoName` 参数或启动 env 锁仓）未做；
+> - **遗留 TODO**：② `get_impact_scope` 的 `file` 入参 v1 未做（只支持 symbol）；
 >   ④ prepare_fix_context 的真实服务器 + LLM 活体 E2E 未跑（entry/组装/降级已由确定性测试覆盖）。
+>
+> **进度（2026-07-20）· 第三刀已落地**（原遗留①③）：
+> - **riskPoints 等 LLM 判断字段 prompt 下沉**：`/api/ask` 接 `taskProfile:'fix_context'`——
+>   systemPrompt 追加三小节输出契约（疑似修改点/风险点/验证建议，条目格式即解析锚），
+>   prompt 改动非管线改动，不传该字段的调用零变化。MCP `parseFixSections` 解析三节进
+>   AnalysisPacket：LLM 修改点排最前、验证建议 LLM 优先启发式回退、riskPoints 只认 LLM 小节
+>   （无小节诚实留空）；新增 `sources` 字段标注每个 tier-3 字段来源（llm/heuristic/none），
+>   formatter 按来源换文案——消费端能分清"模型判断"和"规则补位"。
+> - **env 锁仓（仓库目标稳定性）**：`ANALYZER_REPO` 设置后共享请求核心做 pre-check
+>   （每次调用先核对 `/api/repos` 当前仓库，不一致直接报错；repos/auth 路径豁免防递归），
+>   ask 类工具再用 `response.repoName` post-check 兜竞态窗口（结果不丢弃、加"请勿直接采信"警告）。
+> - 验证：MCP 53 test 绿（+7：三节解析/来源标注/回退 + 锁仓四态），API 全量绿，
+>   全仓 typecheck 过；README env 表已同步。
 
 **实现顺序建议**：
 

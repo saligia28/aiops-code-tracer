@@ -168,3 +168,48 @@ describe('analyzerGet', () => {
     await expect(analyzerPost('/api/ask', { question: 'q' }, { timeoutMs: 20 })).rejects.toThrow('查询超时（>20ms）');
   });
 });
+
+describe('ANALYZER_REPO 锁仓（P1-MCP 第三刀）', () => {
+  it('锁定仓库与服务当前仓库不一致：请求前直接报错（不发真实查询）', async () => {
+    vi.stubEnv('ANALYZER_REPO', 'repo-locked');
+    const seen: string[] = [];
+    stubFetch(async (input) => {
+      seen.push(String(input));
+      if (String(input).includes('/api/repos')) {
+        return new Response(JSON.stringify({ currentRepo: 'repo-other', repos: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: 1 }), { status: 200 });
+    });
+
+    await expect(analyzerGet('/api/search', { q: 'login' })).rejects.toThrow('仓库锁定不匹配');
+    // 只发了 /api/repos 校验，真实查询没发出去
+    expect(seen.some((u) => u.includes('/api/search'))).toBe(false);
+  });
+
+  it('锁定仓库与当前仓库一致：请求照常放行', async () => {
+    vi.stubEnv('ANALYZER_REPO', 'repo-a');
+    stubFetch(async (input) => {
+      if (String(input).includes('/api/repos')) {
+        return new Response(JSON.stringify({ currentRepo: 'repo-a', repos: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: 1 }), { status: 200 });
+    });
+    await expect(analyzerGet('/api/search', { q: 'login' })).resolves.toEqual({ ok: 1 });
+  });
+
+  it('豁免路径：/api/repos 自身即使不一致也可查（否则 repo_status 没法用来排障）', async () => {
+    vi.stubEnv('ANALYZER_REPO', 'repo-locked');
+    stubFetch(async () => new Response(JSON.stringify({ currentRepo: 'repo-other', repos: [] }), { status: 200 }));
+    await expect(analyzerGet('/api/repos')).resolves.toEqual({ currentRepo: 'repo-other', repos: [] });
+  });
+
+  it('未设置锁：零额外请求，行为与从前一致', async () => {
+    const seen: string[] = [];
+    stubFetch(async (input) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({ ok: 1 }), { status: 200 });
+    });
+    await expect(analyzerGet('/api/search', { q: 'x' })).resolves.toEqual({ ok: 1 });
+    expect(seen.length).toBe(1);
+  });
+});
