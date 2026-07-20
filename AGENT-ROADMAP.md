@@ -85,10 +85,12 @@
 > agent 路由（agent.ts 末尾通配 `reply.raw.write`）已透传到前端。超轮次不再硬报错，改
 > `forceFinalAnswer` 带"按计划逐条汇报完成/未完成项"指令优雅收尾；简单问题 `shouldPlan=false`
 > 直通、省一次 LLM 调用与 ~2s 延迟。
+> **前端 checklist 已接（2026-07-20）**：AnswerView 消费 `plan` 事件渲染「执行计划」卡片
+> （服务端暂无逐步完成状态——只如实展示步骤序号，不伪造勾选进度）；agent 路由把 planSteps
+> 落进 assistant meta、useConversation 还原，刷新/切会话后计划卡片仍在；agentRoute.plan.test.ts
+> 路由级测试固化「SSE 透传 + meta 持久化」（mock agentLoop 事件剧本，零 LLM 全离线）。
+>
 > **遗留 TODO（本轮只据实修口径，故不标 ✅）**：
-> - **前端 checklist 未接**：AnswerView 不消费 `plan` 事件（apps/web 全局无 planSteps 消费点），
->   commit ed28c9b 的"前端渲染 checklist"表述超前，实际只到"事件已透传"——想要"对用户可见的
->   checklist = 强产品体验"这一价值点，还差前端一刀。
 > - **每轮 step 状态自报未做**：计划是一次性注入的 `string[]`，非原案的 `{steps:[{goal,done}]}`
 >   状态机（planner.ts 头注已声明为 TODO：待评测显示模型跑偏再加）。
 > - **总超时路径仍硬截断**：优雅收尾只覆盖了"超轮次"分支；`AGENT_TOTAL_TIMEOUT_MS` 触发时

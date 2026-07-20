@@ -61,6 +61,7 @@ export interface ConversationTurn {
   aborted?: boolean;
   steps?: AgentStep[];
   stepsCollapsed?: boolean;
+  planSteps?: string[];
   isSystemDivider?: boolean;
   systemText?: string;
 }
@@ -134,6 +135,9 @@ function messagesToTurns(
       if (meta.steps !== undefined) {
         target.steps = meta.steps as AgentStep[];
         target.stepsCollapsed = true;
+      }
+      if (meta.planSteps !== undefined) {
+        target.planSteps = meta.planSteps as string[];
       }
       if (meta.aborted !== undefined) {
         target.aborted = meta.aborted as boolean;

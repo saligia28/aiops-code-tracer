@@ -444,6 +444,40 @@
 }
 
 /* Agent 步骤 */
+/* Agent 执行计划卡片（P1-C）：与 agent-steps 同语言，但常驻展开——计划就 3~7 行，
+   折叠反而多一次点击；无逐步完成状态，故用序号而非勾选框 */
+.agent-plan {
+  margin-bottom: 12px;
+  border: 1px solid #e8ebf0;
+  border-radius: 12px;
+  background: #fafbfd;
+  overflow: hidden;
+}
+
+.agent-plan-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px 4px;
+  color: #5b6472;
+}
+
+.plan-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.agent-plan-list {
+  margin: 0;
+  padding: 4px 14px 10px 34px;
+}
+
+.agent-plan-list li {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #5b6472;
+}
+
 .agent-steps {
   margin-bottom: 12px;
   border: 1px solid #e8ebf0;

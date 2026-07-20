@@ -186,6 +186,22 @@
             </svg>
           </div>
           <div class="answer-body">
+            <!-- Agent 执行计划（P1-C）：plan 事件一次性下发，服务端暂无逐步完成状态——
+                 只如实展示计划本身，不伪造勾选进度 -->
+            <div v-if="turn.planSteps && turn.planSteps.length > 0" class="agent-plan">
+              <div class="agent-plan-header">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
+                  <rect x="9" y="3" width="6" height="4" rx="1" />
+                  <path d="M9 12h6M9 16h6" />
+                </svg>
+                <span class="plan-label">执行计划（{{ turn.planSteps.length }} 步）</span>
+              </div>
+              <ol class="agent-plan-list">
+                <li v-for="(planStep, pi) in turn.planSteps" :key="pi">{{ planStep }}</li>
+              </ol>
+            </div>
+
             <!-- Agent 思考步骤 -->
             <div v-if="turn.steps && turn.steps.length > 0" class="agent-steps">
               <div
@@ -368,6 +384,8 @@ interface ConversationTurn {
   // Agent 模式
   steps?: AgentStep[];
   stepsCollapsed?: boolean;
+  /** Agent 执行计划（P1-C plan 事件），一次性下发的步骤清单 */
+  planSteps?: string[];
   // 系统分隔消息
   isSystemDivider?: boolean;
   systemText?: string;
@@ -715,6 +733,10 @@ async function fetchAgentAnswer(q: string) {
                 setActiveConversation(event.data.conversationId as string);
                 syncConversationList(event.data.conversationId as string);
               }
+              break;
+
+            case 'plan':
+              turn.planSteps = (event.data.planSteps as string[]) ?? [];
               break;
 
             case 'thinking':

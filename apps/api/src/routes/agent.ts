@@ -68,9 +68,13 @@ export function registerAgent(app: FastifyInstance): void {
     const steps: Array<Record<string, unknown>> = [];
     let finalAnswer = '';
     let finalFollowUp: string[] = [];
+    // P1-C：执行计划单独落 meta（不进 steps——前端按独立卡片渲染，刷新/切会话后可还原）
+    let planSteps: string[] | undefined;
 
     const sendEvent = (event: AgentEvent) => {
-      if (event.type === 'thinking') {
+      if (event.type === 'plan') {
+        planSteps = event.data.planSteps;
+      } else if (event.type === 'thinking') {
         steps.push({ type: 'thinking', thought: event.data.thought });
       } else if (event.type === 'tool_call') {
         steps.push({ type: 'tool_call', toolName: event.data.toolName, toolArgs: event.data.toolArgs });
@@ -120,7 +124,7 @@ export function registerAgent(app: FastifyInstance): void {
           role: 'assistant',
           content: finalAnswer,
           mode: 'agent',
-          meta: { followUp: finalFollowUp, steps },
+          meta: { followUp: finalFollowUp, steps, ...(planSteps ? { planSteps } : {}) },
         });
       } catch (err) {
         app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`);
