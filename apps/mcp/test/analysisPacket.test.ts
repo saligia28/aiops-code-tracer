@@ -208,3 +208,44 @@ describe('parseFixSections + LLM 小节合并（第三刀：riskPoints 等 promp
     expect(packet.sources.verificationHints).toBe('heuristic');
   });
 });
+
+describe('活体 E2E 回放修复（真实模型输出形态）', () => {
+  it('短文件名 + L 前缀行号范围：归一到 relatedFiles 唯一命中的全路径、取范围起始行；answer 主体裁掉小节区', () => {
+    const e2eStyle: AskResponse = {
+      ...ORDER_VOID_RESPONSE,
+      answer:
+        '结论：handleVoid 先校验 status 再调接口。\n\n' +
+        '疑似修改点：\n' +
+        '- `List.vue:L31-L40` —— handleVoid 前置校验，改状态条件先动它\n' +
+        '风险点：\n' +
+        '- 证据不足：未看到批量作废路径\n' +
+        '验证建议：\n' +
+        '- 用 status!==2 的订单点作废验证拦截\n',
+    };
+    const packet = assembleAnalysisPacket('q', e2eStyle);
+    expect(packet.suggestedEditLocations[0].file).toBe('src/views/orderManage/orderVoid/List.vue');
+    expect(packet.suggestedEditLocations[0].line).toBe(31);
+    // 小节内容已进结构化字段：answer 主体不再重复携带（省预算）
+    expect(packet.answer).not.toContain('疑似修改点');
+    expect(packet.answer).toContain('结论');
+    expect(packet.riskPoints[0]).toContain('证据不足');
+  });
+});
+
+describe('短名归一的多命中消歧（第二把活体打出：Vue 仓库满地 List.vue）', () => {
+  it('relatedFiles 多个 List.vue 命中时，入口文件优先消歧', () => {
+    const multiListVue: AskResponse = {
+      ...ORDER_VOID_RESPONSE,
+      evidence: [
+        ...ORDER_VOID_RESPONSE.evidence,
+        { file: 'src/views/other/List.vue', line: 9, code: 'noise()', label: '同名噪声' },
+      ],
+      answer:
+        '结论：x。\n\n疑似修改点：\n- `List.vue:31` —— 前置校验\n风险点：\n- 无\n验证建议：\n- 手测\n',
+    };
+    const packet = assembleAnalysisPacket('q', multiListVue);
+    // 两个 */List.vue 并存 → 用 entry（orderVoid/List.vue）消歧，而非放弃展开
+    expect(packet.suggestedEditLocations[0].file).toBe('src/views/orderManage/orderVoid/List.vue');
+    expect(packet.suggestedEditLocations[0].line).toBe(31);
+  });
+});

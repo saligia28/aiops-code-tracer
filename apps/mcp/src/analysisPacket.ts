@@ -57,12 +57,15 @@ const SECTION_HEADER_RE = new RegExp(`^[\\s#>*]*(${FIX_SECTION_TITLES.join('|')}
 /** 任意「xxx：」形式的独行标题（用于终结当前小节，容忍模型自创小节） */
 const ANY_HEADER_RE = /^[\s#>*]*[^\s\-•·].{0,24}[：:]\s*$/;
 const BULLET_RE = /^\s*(?:[-•·]|\d+[.、)])\s*(.+)$/;
-const FILE_LINE_RE = /([\w@./-]+\.(?:vue|ts|js|tsx|jsx|java|py|go))\s*[:：]\s*(\d+)?/;
+// 行号容忍 L 前缀与范围（活体 E2E 实测模型爱写 `List.vue:L196-L210`，取范围起始行）
+const FILE_LINE_RE = /([\w@./-]+\.(?:vue|ts|js|tsx|jsx|java|py|go))\s*[:：]\s*L?(\d+)?/;
 
 export interface FixSections {
   editLocations: Array<{ file: string; line?: number; reason: string }>;
   riskPoints: string[];
   verificationHints: string[];
+  /** 答案中首个小节标题的下标——answer 主体到此为止（小节内容已进结构化字段，别重复占预算） */
+  sectionStart: number;
 }
 
 /**
@@ -72,10 +75,15 @@ export interface FixSections {
 export function parseFixSections(answer: string): FixSections | null {
   const out: Record<FixSectionTitle, string[]> = { 疑似修改点: [], 风险点: [], 验证建议: [] };
   let current: FixSectionTitle | null = null;
+  let sectionStart = -1;
+  let offset = 0;
 
   for (const rawLine of answer.split('\n')) {
+    const lineOffset = offset;
+    offset += rawLine.length + 1;
     const header = rawLine.match(SECTION_HEADER_RE);
     if (header) {
+      if (sectionStart < 0) sectionStart = lineOffset;
       current = header[1] as FixSectionTitle;
       continue;
     }
@@ -104,7 +112,7 @@ export function parseFixSections(answer: string): FixSections | null {
   const riskPoints = out['风险点'];
   const verificationHints = out['验证建议'];
   if (editLocations.length === 0 && riskPoints.length === 0 && verificationHints.length === 0) return null;
-  return { editLocations, riskPoints, verificationHints };
+  return { editLocations, riskPoints, verificationHints, sectionStart };
 }
 
 /** 从 "line:col" 形式的 loc 抠出行号；非法则 undefined。 */
@@ -174,6 +182,17 @@ export function assembleAnalysisPacket(question: string, response: AskResponse):
   // ===== tier-3：LLM 小节优先（taskProfile=fix_context 的 prompt 契约），启发式补位 =====
   const parsed = parseFixSections(response.answer ?? '');
 
+  // 短文件名归一（活体 E2E 实测模型爱写 `List.vue:196` 短名）：入口文件优先消歧
+  // （Vue 仓库满地都是 List.vue，多命中很常见，而修改点绝大多数就在入口页），
+  // 其次 relatedFiles 唯一后缀命中；仍歧义则保留原样（宁可短名也不猜错文件）
+  const normalizeFile = (file: string): string => {
+    if (file.includes('/')) return file;
+    const entryFile = response.entry?.file;
+    if (entryFile && (entryFile === file || entryFile.endsWith(`/${file}`))) return entryFile;
+    const hits = relatedFiles.filter((f) => f === file || f.endsWith(`/${file}`));
+    return hits.length === 1 ? hits[0] : file;
+  };
+
   const suggestedEditLocations: AnalysisPacket['suggestedEditLocations'] = [];
   const seenEdit = new Set<string>();
   const pushEdit = (file: string | undefined, line: number | undefined, reason: string): void => {
@@ -184,7 +203,7 @@ export function assembleAnalysisPacket(question: string, response: AskResponse):
     suggestedEditLocations.push({ file, line, reason });
   };
   // LLM 判断的修改点排最前（模型基于材料给的"为什么改这里"比启发式的"承载证据"信息量大）
-  for (const e of parsed?.editLocations ?? []) pushEdit(e.file, e.line, e.reason);
+  for (const e of parsed?.editLocations ?? []) pushEdit(normalizeFile(e.file), e.line, e.reason);
   if (response.entry) pushEdit(response.entry.file, response.entry.line, `入口：${response.entry.reason}`);
   for (const e of evidence.slice(0, 4)) pushEdit(e.file, e.line, `承载证据「${e.label}」`);
 
@@ -207,9 +226,14 @@ export function assembleAnalysisPacket(question: string, response: AskResponse):
     riskPoints: riskPoints.length > 0 ? 'llm' : 'none',
   };
 
+  // 小节内容已进结构化字段：answer 主体裁到首个小节标题为止，别在证据包里重复占预算
+  const rawAnswer = response.answer ?? '';
+  const answer =
+    parsed && parsed.sectionStart > 0 ? rawAnswer.slice(0, parsed.sectionStart).trimEnd() : rawAnswer;
+
   return {
     question,
-    answer: response.answer ?? '',
+    answer,
     repoName: response.repoName,
     entry: response.entry,
     flowSteps,

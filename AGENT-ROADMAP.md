@@ -302,8 +302,7 @@
 > - 验证：MCP 46 test 绿（+13：analysisPacket 组装/降级/格式 10 + 两工具映射/合并/未找到 3）、
 >   API 98 test 绿（+2：entry 命中 + 无锚点不硬造）、`pnpm --filter @aiops/mcp build`、全仓
 >   `pnpm typecheck` 通过；未改现有 `/api/ask`、`/api/agent/ask` 行为；工具数 7 → 9。
-> - **遗留 TODO**：② `get_impact_scope` 的 `file` 入参 v1 未做（只支持 symbol）；
->   ④ prepare_fix_context 的真实服务器 + LLM 活体 E2E 未跑（entry/组装/降级已由确定性测试覆盖）。
+> - **遗留 TODO**：② `get_impact_scope` 的 `file` 入参 v1 未做（只支持 symbol）。
 >
 > **进度（2026-07-20）· 第三刀已落地**（原遗留①③）：
 > - **riskPoints 等 LLM 判断字段 prompt 下沉**：`/api/ask` 接 `taskProfile:'fix_context'`——
@@ -317,6 +316,14 @@
 >   ask 类工具再用 `response.repoName` post-check 兜竞态窗口（结果不丢弃、加"请勿直接采信"警告）。
 > - 验证：MCP 53 test 绿（+7：三节解析/来源标注/回退 + 锁仓四态），API 全量绿，
 >   全仓 typecheck 过；README env 表已同步。
+>
+> **活体 E2E（2026-07-20，原遗留④）**：真实服务器 + DeepSeek 跑 fix_context 两把
+> （elink-pc「超出参考价判断逻辑」改前分析）——三小节遵循率 2/2 全中（修改点 2~3 条全命中
+> isPriceInRange/processPriceValidation 真实逻辑，风险点含 outOfRangeKey 联动分析与诚实的
+> "证据不足"，验证建议含边界情况清单），packet.sources 全 llm。活体打出 3 个解析缺陷当场修：
+> ① 模型爱写 `List.vue:L196-L210`——行号解析容忍 L 前缀与范围（取起始行）；② 短文件名归一
+> 到全路径，且入口文件优先消歧（Vue 仓库满地 List.vue，多命中很常见）；③ answer 主体裁到
+> 首个小节标题为止（小节已进结构化字段，不再重复占预算）。回放测试固化三个修复，MCP 55 test 绿。
 
 **实现顺序建议**：
 
