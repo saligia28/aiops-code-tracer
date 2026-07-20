@@ -91,7 +91,10 @@
 >   checklist = 强产品体验"这一价值点，还差前端一刀。
 > - **每轮 step 状态自报未做**：计划是一次性注入的 `string[]`，非原案的 `{steps:[{goal,done}]}`
 >   状态机（planner.ts 头注已声明为 TODO：待评测显示模型跑偏再加）。
-> - **验收未闭环**：2 条长任务评测用例 + judge coverage 维度 + planner on/off 对照实验尚未落。
+> - **总超时路径仍硬截断**：优雅收尾只覆盖了"超轮次"分支；`AGENT_TOTAL_TIMEOUT_MS` 触发时
+>   仍发 `error` 事件硬报错（agentLoop.ts ~82-84），未按 plan 汇报——原案"超轮数/超时"只落了前半。
+> - **验收未闭环**：2 条长任务评测用例 + judge coverage 维度 + planner on/off 对照实验尚未落；
+>   planner 本身零单测。
 
 ---
 
@@ -128,7 +131,10 @@
 > **遗留 TODO**：① 流式模式反思只记录不重试（token 已推给用户，重答=撤回答案的割裂体验；代码
 > TODO：前端支持"答案修正"折叠交互后放开）；② 验收数字（首 token <2s）机制已通（SSE 首帧即
 > answer_delta），未在真实流量上量化；③ agent 循环历史仍折叠式压缩，未接 P2-H 的 LLM 摘要
-> （见 P2-H 遗留③）。
+> （见 P2-H 遗留③）；④ **agent 管线停止按钮服务端不生效**：/api/agent/ask 无 AbortController/
+> close 监听，agent/llmWithTools 只有内部超时、不接外部 signal——前端停止只断连接，服务端
+> 循环与 LLM 调用继续跑完（缺口里"两条管线都不能取消"只修了 ask 一条）；⑤ 流式/中断路径
+> 零自动化测试（点停止服务端真实中止仅有代码链路与手工佐证）。
 
 ---
 
