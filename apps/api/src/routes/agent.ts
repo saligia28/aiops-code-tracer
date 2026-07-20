@@ -48,6 +48,13 @@ export function registerAgent(app: FastifyInstance): void {
       'X-Accel-Buffering': 'no',
     });
 
+    // 中断贯穿（P1-D 遗留④）：客户端断开 → abort 循环与进行中的 LLM 调用。
+    // 与 ask.ts 同款——监听响应侧 close 且未正常 end（request.raw 的 close 在请求体读完即触发，不可用）
+    const abortCtl = new AbortController();
+    reply.raw.on('close', () => {
+      if (!reply.raw.writableEnded) abortCtl.abort();
+    });
+
     // 首事件回带会话 id，供前端落活动会话
     if (convId) {
       reply.raw.write(`data: ${JSON.stringify({ type: 'conversation', data: { conversationId: convId } })}\n\n`);
@@ -73,7 +80,8 @@ export function registerAgent(app: FastifyInstance): void {
         finalAnswer = event.data.answer ?? finalAnswer;
         finalFollowUp = event.data.followUp ?? finalFollowUp;
       }
-      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      // 断连后不再写死 socket（事件仍计入 steps，供中止前已产生轨迹的落库语义不变）
+      if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
 
     try {
@@ -83,6 +91,7 @@ export function registerAgent(app: FastifyInstance): void {
         graphStore,
         repoPath: currentRepoPath,
         onEvent: sendEvent,
+        signal: abortCtl.signal,
         llm: {
           provider: getCurrentLlmProvider(),
           model: getCurrentLlmModel(),
@@ -100,6 +109,8 @@ export function registerAgent(app: FastifyInstance): void {
     }
 
     trace.span('agent_loop', tLoop, { steps: steps.length });
+    // 中止收尾：观测记 cancelled（与 ask 管线同款语义），不算成功完成
+    if (abortCtl.signal.aborted) trace.error(new Error('client_cancelled'));
     trace.end({ answer: finalAnswer, evidence: [], intent: 'AGENT', confidence: 1, answeredByLlm: true });
 
     // 落库 assistant 消息（含 agent 轨迹）

@@ -60,9 +60,11 @@ export async function callChatCompletionWithTools(
     apiKey: string;
     timeoutMs?: number;
     maxTokens?: number;
+    /** 外部中止信号（客户端断连）——与内部超时先到先杀（P1-D 遗留④：agent 管线 abort 贯穿） */
+    signal?: AbortSignal;
   },
 ): Promise<ChatCompletionResult> {
-  const { provider, model, baseUrl, apiKey, timeoutMs = 60000, maxTokens = 4096 } = opts;
+  const { provider, model, baseUrl, apiKey, timeoutMs = 60000, maxTokens = 4096, signal } = opts;
   const isOllama = provider === 'ollama' || provider === 'local';
 
   const url = resolveChatCompletionUrl(baseUrl);
@@ -72,6 +74,9 @@ export async function callChatCompletionWithTools(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', onExternalAbort);
 
   try {
     const resp = await fetch(url, {
@@ -133,6 +138,7 @@ export async function callChatCompletionWithTools(
     };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
 }
 

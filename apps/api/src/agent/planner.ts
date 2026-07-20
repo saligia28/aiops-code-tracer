@@ -21,6 +21,8 @@ export interface PlanOptions {
   baseUrl: string
   apiKey: string
   timeoutMs: number
+  /** 外部中止信号（客户端断连）——规划调用同样不该在断连后白跑 */
+  signal?: AbortSignal
 }
 
 /**
@@ -55,6 +57,7 @@ export async function generatePlan(question: string, llm: PlanOptions): Promise<
       baseUrl: llm.baseUrl,
       apiKey: llm.apiKey,
       timeoutMs: llm.timeoutMs,
+      signal: llm.signal,
     })
     const text = result.content ?? ''
     const start = text.indexOf('{')

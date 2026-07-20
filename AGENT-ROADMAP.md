@@ -131,10 +131,15 @@
 > **遗留 TODO**：① 流式模式反思只记录不重试（token 已推给用户，重答=撤回答案的割裂体验；代码
 > TODO：前端支持"答案修正"折叠交互后放开）；② 验收数字（首 token <2s）机制已通（SSE 首帧即
 > answer_delta），未在真实流量上量化；③ agent 循环历史仍折叠式压缩，未接 P2-H 的 LLM 摘要
-> （见 P2-H 遗留③）；④ **agent 管线停止按钮服务端不生效**：/api/agent/ask 无 AbortController/
-> close 监听，agent/llmWithTools 只有内部超时、不接外部 signal——前端停止只断连接，服务端
-> 循环与 LLM 调用继续跑完（缺口里"两条管线都不能取消"只修了 ask 一条）；⑤ 流式/中断路径
-> 零自动化测试（点停止服务端真实中止仅有代码链路与手工佐证）。
+> （见 P2-H 遗留③）。
+>
+> **遗留④⑤已修（2026-07-20）**：agent 管线 abort 贯穿——/api/agent/ask 挂响应侧 close 监听
+> （与 ask 同款 writableEnded 守卫），signal 透传 agentLoop（轮首检查 + 主调用/规划器/强制收尾
+> 全接）+ llmWithTools 外部中止与内部超时先到先杀 + sendEvent 断连后不写死 socket + trace 记
+> client_cancelled；中止后循环静默退出（不发事件，落库沿用 finalAnswer 非空守卫，不写半截答案）。
+> 中止语义补自动化测试 agentLoop.abort.test.ts（mock LLM/工具）：预中止零调用零事件、轮间中止
+> 不再发起下一轮、中止期 AbortError 静默退出、正常路径 done 回归护栏——流式/中断不再零测试
+> （ask 侧 token 级流式仍无自动化，记在②一并看）。
 
 ---
 

@@ -31,6 +31,11 @@ export interface AgentLoopOptions {
   graphStore: GraphStore | null
   repoPath: string
   onEvent: (event: AgentEvent) => void
+  /**
+   * 外部中止信号（客户端断连，P1-D 遗留④）：轮首检查 + 全部 LLM 调用透传。
+   * 中止后循环静默退出（不发事件——连接已死，没有观众）。
+   */
+  signal?: AbortSignal
   /** LLM 配置 */
   llm: {
     provider: LlmProvider
@@ -42,7 +47,9 @@ export interface AgentLoopOptions {
 }
 
 export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
-  const { question, graphStore, repoPath, onEvent, llm } = opts
+  const { question, graphStore, repoPath, onEvent, llm, signal } = opts
+
+  if (signal?.aborted) return
 
   const tools: ToolDefinition[] = getOpenAITools()
   const messages: ChatMessage[] = [
@@ -63,6 +70,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       baseUrl: llm.baseUrl,
       apiKey: llm.apiKey,
       timeoutMs: SINGLE_LLM_TIMEOUT_MS,
+      signal,
     })
     if (planSteps) {
       messages.splice(1, 0, { role: 'system', content: renderPlanForPrompt(planSteps) })
@@ -78,6 +86,9 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
   let stalledTurns = 0
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
+    // 客户端断连：静默停循环（连接已死，事件没有观众；trace 由路由层收尾）
+    if (signal?.aborted) return
+
     // 超时检查
     if (Date.now() - startTime > TOTAL_TIMEOUT_MS) {
       onEvent({ type: 'error', data: { error: `达到最大推理时间（${formatDuration(TOTAL_TIMEOUT_MS)}）` } })
@@ -96,8 +107,11 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
         apiKey: llm.apiKey,
         timeoutMs: SINGLE_LLM_TIMEOUT_MS,
         maxTokens: llm.maxTokens,
+        signal,
       })
     } catch (err) {
+      // 断连引发的 AbortError 不是错误，静默退出即可
+      if (signal?.aborted) return
       onEvent({
         type: 'error',
         data: { error: `LLM 调用失败: ${err instanceof Error ? err.message : String(err)}` },
@@ -187,7 +201,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       const allRepeat = toolResults.length > 0 && toolResults.every(r => r.isRepeat)
       stalledTurns = allRepeat ? stalledTurns + 1 : 0
       if (stalledTurns >= STALL_TURN_LIMIT) {
-        await forceFinalAnswer(messages, question, llm, onEvent)
+        await forceFinalAnswer(messages, question, llm, onEvent, undefined, signal)
         return
       }
 
@@ -217,6 +231,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
     messages, question, llm, onEvent,
     '【系统指令】已达到最大探索轮次。请立即停止调用任何工具，基于以上已收集的信息用中文给出最终回答：' +
     '若存在执行计划，逐条说明每一步的完成情况与结论；未完成的步骤明确标注"未完成"及原因。',
+    signal,
   )
 }
 
@@ -248,7 +263,9 @@ async function forceFinalAnswer(
   llm: AgentLoopOptions['llm'],
   onEvent: (event: AgentEvent) => void,
   instruction?: string,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return
   messages.push({
     role: 'user',
     content:
@@ -265,6 +282,7 @@ async function forceFinalAnswer(
       apiKey: llm.apiKey,
       timeoutMs: SINGLE_LLM_TIMEOUT_MS,
       maxTokens: llm.maxTokens,
+      signal,
     })
     const answer =
       finalResult.content?.trim() ||
@@ -272,6 +290,7 @@ async function forceFinalAnswer(
     onEvent({ type: 'answer_delta', data: { delta: answer } })
     onEvent({ type: 'done', data: { answer, followUp: generateFollowUp(question) } })
   } catch (err) {
+    if (signal?.aborted) return
     onEvent({
       type: 'error',
       data: { error: `强制收尾失败: ${err instanceof Error ? err.message : String(err)}` },
