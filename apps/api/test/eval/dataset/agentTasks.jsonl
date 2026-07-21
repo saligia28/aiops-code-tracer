@@ -1,0 +1,7 @@
+# P1-C 长任务评测数据集 · 每行一个 JSON。'#' 与空行跳过。
+# 走 /api/agent/ask（agent 模式），考察"梳理完整链路"这类长任务的完整度。
+# 字段：question（发给 agent）；coverageChecklist[]（答案应逐一讲清的链路环节，judge 评 coverage）；
+#       mustMention[]（确定性必提，可空）；referenceAnswer（judge 评 correct 用）。
+# 对照：PLANNER_DISABLE=1 关规划器，同用例跑两遍看轮数与 coverage 差异。
+{"id":"t-price-check-flow","question":"帮我完整梳理订单会议核价列表页从进入页面到加载出核价数据的完整链路：页面入口在哪、数据怎么拉取、超出参考价的判断在哪一步、涉及哪些接口，逐环节说明。","coverageChecklist":["页面入口文件（qsOrderMeetingPriceCheck/List.vue）","列表数据的获取方法（如 getTableData）","超出参考价/价格校验的判断逻辑（isPriceInRange 或 processPriceValidation）","调用的后端接口 endpoint"],"mustMention":["qsOrderMeetingPriceCheck"],"referenceAnswer":"入口 src/views/costManagement/qsOrderMeetingPriceCheck/List.vue；getTableData 拉取列表并逐条 processPriceValidation 校验，isPriceInRange 判断价格是否在参考价区间；数据来自 POST 核价列表接口。"}
+{"id":"t-book-warehouse-flow","question":"梳理约仓发货页面从点击发货按钮到完成发货的完整流程：按钮在什么条件下可见、点击后触发哪个方法、经过哪些状态变化、最终调用什么接口，逐步说明。","coverageChecklist":["页面入口文件（BookWarehouseSend.vue）","发货按钮的可见条件（status 相关判断）","点击触发的处理方法","调用的后端发货接口"],"mustMention":["BookWarehouseSend"],"referenceAnswer":"入口 src/views/deliveryManagement/tailoringDeliver/BookWarehouseSend.vue；发货按钮按单据 status 条件显示，点击触发提交方法并调用后端发货接口。"}

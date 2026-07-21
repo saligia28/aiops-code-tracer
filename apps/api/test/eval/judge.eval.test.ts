@@ -44,7 +44,7 @@ describe('L3 · judge JSON 稳健解析', () => {
 
 describe('L3 · 多数票聚合', () => {
   const mk = (faithful: boolean, score: number, codeFirst: boolean | null = null): JudgeVerdict => ({
-    faithful, correct: null, codeFirst, score, reasons: { faithful: '' },
+    faithful, correct: null, codeFirst, coverage: null, score, reasons: { faithful: '' },
   });
 
   it('布尔取多数，score 取中位', () => {
@@ -56,5 +56,30 @@ describe('L3 · 多数票聚合', () => {
   it('codeFirst 全 null 保持 null；混票取非 null 多数', () => {
     expect(aggregateVotes([mk(true, 5), mk(true, 5)]).codeFirst).toBeNull();
     expect(aggregateVotes([mk(true, 5, true), mk(true, 5, true), mk(true, 5, null)]).codeFirst).toBe(true);
+  });
+});
+
+describe('L3 · coverage 维度（P1-C 长任务完整度）', () => {
+  const checklist = ['页面入口', '触发方法', '接口调用', '状态变化'];
+
+  it('coveredPoints 序号 → 命中数/未覆盖项；无 checklist 时 coverage=null', () => {
+    const v = parseJudgeJson('{"faithful":true,"coveredPoints":[1,2,3],"score":7,"reasons":{"faithful":"x"}}', checklist);
+    expect(v?.coverage).toEqual({ covered: 3, total: 4, missing: ['状态变化'] });
+    // 不传 checklist：coverage 恒 null（短问答不受影响）
+    expect(parseJudgeJson('{"faithful":true,"coveredPoints":[1,2],"score":7,"reasons":{"faithful":"x"}}')?.coverage).toBeNull();
+  });
+
+  it('越界/重复序号被过滤，不虚增命中', () => {
+    const v = parseJudgeJson('{"faithful":true,"coveredPoints":[1,1,9,0,3],"score":6,"reasons":{"faithful":"x"}}', checklist);
+    expect(v?.coverage).toEqual({ covered: 2, total: 4, missing: ['触发方法', '状态变化'] });
+  });
+
+  it('聚合取命中数中位的那一票（保 missing 一致）', () => {
+    const mkCov = (covered: number, missing: string[]): JudgeVerdict => ({
+      faithful: true, correct: null, codeFirst: null,
+      coverage: { covered, total: 4, missing }, score: 7, reasons: { faithful: '' },
+    });
+    const v = aggregateVotes([mkCov(2, ['接口调用', '状态变化']), mkCov(4, []), mkCov(3, ['状态变化'])]);
+    expect(v.coverage).toEqual({ covered: 3, total: 4, missing: ['状态变化'] });
   });
 });

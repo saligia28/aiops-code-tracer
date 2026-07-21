@@ -90,13 +90,27 @@
 > 落进 assistant meta、useConversation 还原，刷新/切会话后计划卡片仍在；agentRoute.plan.test.ts
 > 路由级测试固化「SSE 透传 + meta 持久化」（mock agentLoop 事件剧本，零 LLM 全离线）。
 >
-> **遗留 TODO（本轮只据实修口径，故不标 ✅）**：
+> **验收闭环已落地（2026-07-21）**：
+> - **planner 单测**（planner.test.ts 14 用例）：shouldPlan 信号词/字数阈值/PLANNER_DISABLE 门；
+>   generatePlan mock LLM——合法 JSON 解析、步数上限 7/下限 2、空白步过滤、非 JSON/超时/null 静默降级。
+> - **judge coverage 维度**（answerJudge v5）：JudgeInput 加 coverageChecklist，rubric 逐项判
+>   "答案是否实质讲清该链路环节"，产出命中率 + 未覆盖项；短问答不传则 coverage=null 零影响；
+>   确定性单测覆盖越界序号过滤、聚合取命中中位票。
+> - **长任务数据集 + agent 评测模式**（dataset/agentTasks.jsonl 2 条 + run.ts `eval -- agent`）：
+>   走 /api/agent/ask SSE 收 done、计 tool_call 轮数，judge 评 coverage；PLANNER_DISABLE=1 对照。
+> - **on/off 对照真实数字**（elink-pc 活体，DeepSeek）：
+>   规划器 ON 平均工具调用 **39.0 次**、覆盖率 50%（4/8）；OFF 平均 **60.0 次**、覆盖率 50%（4/8）。
+>   **结论：planner 的明确收益是效率——平均工具调用降 ~35%（60→39，"少走冤枉路"的价值主张坐实）；
+>   覆盖率在 2 条小样本上无显著差异且因 judge/agent 双重噪声在用例间翻转（需更大样本才能判完整度收益）。**
+>   平均分因 agent 答案无结构化 evidence 被 judge 系统性拉低，仅供横向对照，已在 run.ts 输出注明。
+>
+> **仍遗留（据实标注，本轮未做）**：
 > - **每轮 step 状态自报未做**：计划是一次性注入的 `string[]`，非原案的 `{steps:[{goal,done}]}`
 >   状态机（planner.ts 头注已声明为 TODO：待评测显示模型跑偏再加）。
 > - **总超时路径仍硬截断**：优雅收尾只覆盖了"超轮次"分支；`AGENT_TOTAL_TIMEOUT_MS` 触发时
 >   仍发 `error` 事件硬报错（agentLoop.ts ~82-84），未按 plan 汇报——原案"超轮数/超时"只落了前半。
-> - **验收未闭环**：2 条长任务评测用例 + judge coverage 维度 + planner on/off 对照实验尚未落；
->   planner 本身零单测。
+> - **样本量**：长任务用例仅 2 条，覆盖率对照方差大；扩到 5+ 条才能对"planner 提升完整度"下结论
+>   （当前只能确认效率收益）。
 
 ---
 

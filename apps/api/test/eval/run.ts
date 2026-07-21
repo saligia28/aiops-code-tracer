@@ -273,8 +273,113 @@ async function answers(): Promise<void> {
   console.log('');
 }
 
+// ============ P1-C 长任务完整度（agent 模式） ============
+
+interface AgentTaskCase {
+  id: string;
+  question: string;
+  coverageChecklist: string[];
+  mustMention?: string[];
+  referenceAnswer?: string;
+}
+
+/**
+ * 走 /api/agent/ask（SSE），收集 done 事件的最终答案 + 计有效轮数（tool_call 事件数）。
+ * 轮数是 planner on/off 对照的核心指标：planner 的价值主张是"少走冤枉路"。
+ */
+async function askAgent(question: string): Promise<{ answer: string; toolCalls: number } | null> {
+  try {
+    const resp = await fetch(`${API_BASE}/api/agent/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(authCookie ? { cookie: authCookie } : {}) },
+      body: JSON.stringify({ question }),
+    });
+    if (!resp.ok || !resp.body) return null;
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let answer = '';
+    let toolCalls = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const ev = JSON.parse(line.slice(6)) as { type: string; data?: Record<string, unknown> };
+          if (ev.type === 'tool_call') toolCalls++;
+          else if (ev.type === 'done') answer = (ev.data?.answer as string) ?? answer;
+        } catch {
+          /* 跳过半截行 */
+        }
+      }
+    }
+    return { answer, toolCalls };
+  } catch {
+    return null;
+  }
+}
+
+async function agentTasks(): Promise<void> {
+  if (!canUseLlm()) {
+    console.error('LLM 未配置（.env），judge 无法运行。');
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    await fetch(`${API_BASE}/api/health`);
+  } catch {
+    console.error(`API 服务不可达（${API_BASE}）。先起服务。`);
+    process.exitCode = 1;
+    return;
+  }
+  await loginIfNeeded();
+
+  const cases = loadJsonl<AgentTaskCase>('./dataset/agentTasks.jsonl');
+  const plannerOff = process.env.PLANNER_DISABLE === '1';
+  console.log(`P1-C 长任务完整度  用例=${cases.length}  规划器=${plannerOff ? 'OFF（对照）' : 'ON'}  （agent 模式 + judge coverage 3 票）\n`);
+
+  let covSum = 0, covTotal = 0, toolSum = 0, done = 0;
+  const scores: number[] = [];
+  for (const c of cases) {
+    const resp = await askAgent(c.question);
+    if (!resp || !resp.answer) {
+      console.log(`  ⚠️ ${c.id} agent 无答案，跳过`);
+      continue;
+    }
+    done++;
+    toolSum += resp.toolCalls;
+    const men = c.mustMention ? checkMentions(resp.answer, c.mustMention) : { ok: true, missing: [] };
+    const judged = await judgeAnswer({
+      question: c.question,
+      answer: resp.answer,
+      evidence: [],
+      referenceAnswer: c.referenceAnswer,
+      coverageChecklist: c.coverageChecklist,
+    });
+    const cov = judged?.verdict.coverage;
+    if (cov) { covSum += cov.covered; covTotal += cov.total; }
+    if (judged) scores.push(judged.verdict.score);
+
+    console.log(`  ${c.id}   工具调用 ${resp.toolCalls} 次`);
+    console.log(`    必提 ${men.ok ? '✅' : `❌ 缺: ${men.missing.join(', ')}`}` +
+      (cov ? `   覆盖 ${cov.covered}/${cov.total}${cov.missing.length ? ` (缺: ${cov.missing.join('、')})` : ''}` : '   覆盖 —') +
+      (judged ? `   评分 ${judged.verdict.score}/10` : '   judge 失败'));
+  }
+
+  const covPct = covTotal ? ((covSum / covTotal) * 100).toFixed(0) : '-';
+  console.log(`\n  汇总（规划器 ${plannerOff ? 'OFF' : 'ON'}）：完成 ${done}/${cases.length}   覆盖率 ${covPct}%（${covSum}/${covTotal}）   平均工具调用 ${done ? (toolSum / done).toFixed(1) : '-'} 次   平均分 ${scores.length ? mean(scores).toFixed(1) : '-'}\n`);
+  console.log(`  读数提示：长任务主指标是【覆盖率】与【平均工具调用】（planner 价值=少走冤枉路）；`);
+  console.log(`  平均分含 faithful 维度，而 agent 答案不产出结构化 evidence（judge 无引用可依），故 score 系统性偏低，仅供横向对照、不宜绝对解读。`);
+  console.log(`  对照实验：分别在默认 与 PLANNER_DISABLE=1 下跑 \`eval -- agent\`，比对覆盖率与平均工具调用数。\n`);
+}
+
 const [mode, ...rest] = argv;
 if (mode === 'discover') discover(rest.join(' '));
 else if (mode === 'semantic') await semantic();
 else if (mode === 'answers') await answers();
+else if (mode === 'agent') await agentTasks();
 else report();

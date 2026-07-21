@@ -75,15 +75,30 @@ export interface JudgeInput {
    * 传入后 rubric 认它为合法依据；不传则维持旧口径（evidence-only，偏严）。
    */
   codeContext?: string;
+  /**
+   * 覆盖点清单（P1-C 长任务专属，v5）：任务要求答案讲清的链路环节
+   *（如"页面入口""触发方法""接口调用""状态变化"）。judge 逐项判答案是否讲到，
+   * 产出 coverage 命中率——长任务"完整度"的量化维度，短问答不传则 coverage=null。
+   */
+  coverageChecklist?: string[];
+}
+
+/** 覆盖度评估（P1-C）：命中的覆盖点 / 总数 + 未覆盖项，无 checklist 时整体为 null。 */
+export interface CoverageVerdict {
+  covered: number;
+  total: number;
+  missing: string[];
 }
 
 export interface JudgeVerdict {
   faithful: boolean;
   correct: boolean | null;
   codeFirst: boolean | null;
+  /** 覆盖度（仅长任务、提供了 coverageChecklist 时非 null）。 */
+  coverage: CoverageVerdict | null;
   /** 0-10 总评分。 */
   score: number;
-  reasons: { faithful: string; correct?: string; codeFirst?: string };
+  reasons: { faithful: string; correct?: string; codeFirst?: string; coverage?: string };
 }
 
 /**
@@ -96,8 +111,10 @@ export interface JudgeVerdict {
  * v4：口径对齐——faithful 的合法依据扩展到「相关代码上下文」（答案的真实信息源）。
  * v3 只认 evidence 清单，实测把"源码里真实存在但没挤进 12 条清单"的细节误判为编造
  *（L2 引用核对 100% 而 judge 判不忠实的矛盾即此）。行号型论断仍须严格对上。
+ * v5：加 coverage 维度（P1-C 长任务完整度）——提供【覆盖点清单】时逐项判答案是否讲清，
+ * 输出命中列表；未提供则 coverage 段整体缺省。仅追加维度，不改 faithful/correct/basis 判据。
  */
-const PROMPT_VERSION = 'v4';
+const PROMPT_VERSION = 'v5';
 
 function buildJudgeMessages(input: JudgeInput): Array<{ role: 'system' | 'user'; content: string }> {
   const evidenceBlock = input.evidence
@@ -115,6 +132,10 @@ function buildJudgeMessages(input: JudgeInput): Array<{ role: 'system' | 'user';
   }
   if (input.docSnippet) sections.push(`【相关文档片段】（可能过时，与代码冲突时以代码为准）\n${input.docSnippet}`);
   if (input.referenceAnswer) sections.push(`【参考答案】（人工标注的核心结论）\n${input.referenceAnswer}`);
+  const hasCoverage = Array.isArray(input.coverageChecklist) && input.coverageChecklist.length > 0;
+  if (hasCoverage) {
+    sections.push(`【覆盖点清单】（答案应逐一讲清的链路环节）\n${input.coverageChecklist!.map((c, i) => `${i + 1}. ${c}`).join('\n')}`);
+  }
   sections.push(`【待评审答案】\n${input.answer.slice(0, 3000)}`);
 
   return [
@@ -127,17 +148,23 @@ function buildJudgeMessages(input: JudgeInput): Array<{ role: 'system' | 'user';
         '3. basis（答案的结论以什么为准）：仅当提供了【相关文档片段】时判定，看的是「结论」而非「是否提及」：',
         '   "code"=结论以代码证据为准（答案提及文档、甚至指出文档过时，只要结论站在代码一边，就是 code）；',
         '   "doc"=结论采信了文档的说法；"mixed"=结论在两者间摇摆、未明确取舍；未提供文档片段时输出 "n/a"。',
-        '4. score：0-10 总评（考虑以上各项与表达清晰度）。',
+        hasCoverage
+          ? '4. coveredPoints（覆盖度）：仅当提供了【覆盖点清单】时判定——逐一检查每个覆盖点，答案是否实质讲清了该环节（讲清=有具体文件/方法/条件/结论，不是仅提及名词）。输出实质讲清了的覆盖点【序号】数组（从 1 计）。'
+          : '4. coveredPoints：未提供覆盖点清单，输出空数组 []。',
+        '5. score：0-10 总评（考虑以上各项与表达清晰度）。',
         '只输出一个 JSON 对象，不要任何其他文字、不要 markdown 代码块：',
-        '{"faithful":bool,"correct":bool|null,"basis":"code"|"doc"|"mixed"|"n/a","score":number,"reasons":{"faithful":"一句话","correct":"一句话或省略","basis":"一句话或省略"}}',
+        '{"faithful":bool,"correct":bool|null,"basis":"code"|"doc"|"mixed"|"n/a","coveredPoints":number[],"score":number,"reasons":{"faithful":"一句话","correct":"一句话或省略","basis":"一句话或省略","coverage":"一句话或省略"}}',
       ].join('\n'),
     },
     { role: 'user', content: sections.join('\n\n') },
   ];
 }
 
-/** 从 LLM 输出里稳健抠出 JSON（容忍 ```json 围栏/前后杂文）。解析失败返回 null。 */
-export function parseJudgeJson(text: string): JudgeVerdict | null {
+/**
+ * 从 LLM 输出里稳健抠出 JSON（容忍 ```json 围栏/前后杂文）。解析失败返回 null。
+ * coverageChecklist 传入时，把模型返回的 coveredPoints 序号映射为 coverage 命中/未覆盖。
+ */
+export function parseJudgeJson(text: string, coverageChecklist?: string[]): JudgeVerdict | null {
   const cleaned = text.replace(/```(?:json)?/gi, '');
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
@@ -145,6 +172,7 @@ export function parseJudgeJson(text: string): JudgeVerdict | null {
   try {
     const raw = JSON.parse(cleaned.slice(start, end + 1)) as Partial<JudgeVerdict> & {
       basis?: string;
+      coveredPoints?: unknown;
       reasons?: Record<string, string>;
     };
     if (typeof raw.faithful !== 'boolean') return null;
@@ -159,16 +187,30 @@ export function parseJudgeJson(text: string): JudgeVerdict | null {
       faithful: raw.faithful,
       correct: typeof raw.correct === 'boolean' ? raw.correct : null,
       codeFirst,
+      coverage: computeCoverage(coverageChecklist, raw.coveredPoints),
       score: Number.isFinite(score) ? Math.max(0, Math.min(10, score)) : 0,
       reasons: {
         faithful: raw.reasons?.faithful ?? '',
         correct: raw.reasons?.correct,
         codeFirst: raw.reasons?.codeFirst ?? raw.reasons?.basis,
+        coverage: raw.reasons?.coverage,
       },
     };
   } catch {
     return null;
   }
+}
+
+/** coveredPoints（1-based 序号数组）→ CoverageVerdict；无 checklist 则 null。 */
+function computeCoverage(checklist: string[] | undefined, coveredPoints: unknown): CoverageVerdict | null {
+  if (!Array.isArray(checklist) || checklist.length === 0) return null;
+  const hit = new Set(
+    (Array.isArray(coveredPoints) ? coveredPoints : [])
+      .map((n) => Number(n))
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= checklist.length),
+  );
+  const missing = checklist.filter((_, i) => !hit.has(i + 1));
+  return { covered: hit.size, total: checklist.length, missing };
 }
 
 /** 多数票聚合：布尔取多数，score 取中位；correct/codeFirst 对 null 与非 null 混票时取非 null 多数侧。 */
@@ -181,10 +223,18 @@ export function aggregateVotes(votes: JudgeVerdict[]): JudgeVerdict {
   const scores = votes.map((v) => v.score).sort((a, b) => a - b);
   const median = scores[Math.floor(scores.length / 2)] ?? 0;
   const pick = votes[0];
+  // coverage 取「命中数中位」那一票（保留其 missing 列表的一致性），全为 null 则 null
+  const covVotes = votes.map((v) => v.coverage).filter((c): c is CoverageVerdict => c !== null);
+  let coverage: CoverageVerdict | null = null;
+  if (covVotes.length > 0) {
+    const sorted = [...covVotes].sort((a, b) => a.covered - b.covered);
+    coverage = sorted[Math.floor(sorted.length / 2)];
+  }
   return {
     faithful: majority(votes.map((v) => v.faithful)) ?? false,
     correct: majority(votes.map((v) => v.correct)),
     codeFirst: majority(votes.map((v) => v.codeFirst)),
+    coverage,
     score: median,
     reasons: pick?.reasons ?? { faithful: '' },
   };
@@ -198,7 +248,7 @@ function cacheKey(input: JudgeInput, votes: number): string {
   const h = crypto.createHash('sha1');
   // judge 后端标识必须进 key：换独立 judge 模型后不能复用旧模型的票
   const judgeBackend = judgeHasOwnLlm ? `${JUDGE_LLM_BASE_URL}#${JUDGE_LLM_MODEL}` : 'main-llm';
-  h.update([PROMPT_VERSION, judgeBackend, String(votes), input.question, input.answer, input.referenceAnswer ?? '', input.docSnippet ?? '', input.codeContext ?? '', JSON.stringify(input.evidence.map((e) => `${e.file}:${e.line}`))].join(' '));
+  h.update([PROMPT_VERSION, judgeBackend, String(votes), input.question, input.answer, input.referenceAnswer ?? '', input.docSnippet ?? '', input.codeContext ?? '', (input.coverageChecklist ?? []).join('|'), JSON.stringify(input.evidence.map((e) => `${e.file}:${e.line}`))].join(' '));
   return h.digest('hex');
 }
 
@@ -249,7 +299,7 @@ export async function judgeAnswer(input: JudgeInput, votes = 3): Promise<{ verdi
     for (let i = collected.length; i < votes; i++) {
       const text = await judgeLlmCall(messages);
       if (!text) continue;
-      const verdict = parseJudgeJson(text);
+      const verdict = parseJudgeJson(text, input.coverageChecklist);
       if (verdict) collected.push(verdict);
     }
     if (collected.length > 0) {

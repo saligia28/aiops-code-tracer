@@ -30,6 +30,8 @@ export interface PlanOptions {
  * 判定宁可保守——误跳过只是少个 checklist，误规划则白付一次 LLM 调用。
  */
 export function shouldPlan(question: string): boolean {
+  // PLANNER_DISABLE=1：整体关规划器（P1-C 验收的 on/off 对照实验用；生产默认不设）
+  if (process.env.PLANNER_DISABLE === '1') return false
   if (question.length >= 60) return true
   return /(梳理|链路|流程|全流程|报告|排查|从头|完整|整体|所有|逐个|对比|重构|方案|架构|如何实现|怎么实现)/.test(question)
 }
