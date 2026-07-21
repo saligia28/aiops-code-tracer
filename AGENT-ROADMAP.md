@@ -467,10 +467,30 @@ impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产
 > + 基线哈希 + 验证命令 + **显眼的"只读提案、未改仓库、应用需人工审批"横幅**；失败把 reason 翻成友好中文）+
 > 路由注册 + Home 加低调入口"✎ 生成修改提案"。沿用应用既有设计语言（蓝 accent/圆角卡片/scoped）。
 > 前端无组件测试，vue-tsc typecheck + vite build 过（ProposePatch 作懒加载 chunk 产出）。
-> - **未做**：① **活体冒烟**（真实 DeepSeek + 已加载仓库对已知改点出提案，仍不 apply）——纯离线已证，
->   活体是最后一环，需运行中的服务端 + 配好的 LLM（用户方便时一起验，可含前端视觉走查）；
->   ② 上下文级集成（从答案/prepare_fix_context 结果一键带 question+files 跳转预填，免手填）——UX 增强，非阻塞；
->   ③ 之后才是第二刀 apply/HITL（审批门）。
+>
+> **进度（2026-07-21）· 第二刀 apply/HITL 审批门 ✅ 已落地**：系统第一次真的写被分析仓库。
+> 三条安全岔路取推荐（有状态持久化 / 原始字节快照回滚 / 仅 Web HITL 不给 MCP apply）。
+> - **存储**（DB v5：`patch_proposals` + `patch_apply_audit`；`db/patchStore.ts`）：propose 成功即落库
+>   （status=proposed），apply 按 id 审批——审批的正是校验过的原件；snapshot_json 在 apply 时写入。
+> - **确定性核心**（`services/patch/applyPatch.ts`，临时库+临时 git 仓库离线全测）三道闸：
+>   ① 落盘前重校验基线哈希（堵生成→审批时间窗，文件变了就拒 BASELINE_MISMATCH）
+>   ② 再跑一次 git apply --check ③ 落盘前存原始字节快照 → `gitApply`（新增，无 --check 的真写）落盘。
+>   回滚=写回原始字节（无条件成功、不依赖 git 状态）+ **漂移检测**（落盘后被人动过则拒绝回滚不覆盖）。
+> - **审批门路由**（`/api/apply-patch`、`/api/rollback`）三重闸：ALLOW_APPLY env 权限位（默认关＝只读部署
+>   无写盘可能）+ confirm:true 人工二次确认 + 核心内基线重校验；语义 HTTP 码。**MCP 不暴露 apply/rollback**。
+> - **Web UI**：ProposePatch 视图加"应用此提案"→内联二次确认→落盘；成功转"已落盘 + ↩ 回滚"；
+>   403 未开权限翻成友好提示。composable 加 apply/rollback + 状态机。
+> - **验证**：patch 模块 +13 确定性单测（apply 核心 7：真落盘/回滚还原字节/基线不符拒落盘+审计佐证/
+>   重复 apply/回滚漂移检测/NOT_FOUND；apply 路由 6：权限门/确认门/未知 id/完整审批落盘→回滚 E2E），
+>   API 全套 207 test 绿、三包 typecheck + build 全过。**验收达成**（离线）：提案→批准→落盘→回滚可用、
+>   基线变化 apply 被拒有审计佐证。
+> - **活体冒烟 ✅（2026-07-21）**：真实 deepseek-chat 走完整闭环 propose→apply→rollback（临时 git 仓库 +
+>   临时 DB，app.inject 免 auth）。**propose 一次成功**（attempts=1）——模型对"订单作废 id 为空应抛错"产出
+>   SEARCH/REPLACE，管线合成的 diff 首次即过 `git apply --check`（`-  if (!id) return` → `+  if (!id)
+>   throw new Error('订单 ID 不能为空')`）；apply 真落盘（字节 diff 确认）、rollback 逐字节还原。**坐实方案 B**：
+>   行号记账交给代码后，真实 LLM 首生成就可应用，G0 存在的根因（LLM 数不对 @@ 行号）被经验性绕开。
+> - **未做（非阻塞）**：① 上下文级预填（从答案/prepare_fix_context 一键带 question+files 跳转，免手填）UX 增强；
+>   ② 前端视觉走查（起 dev server 人眼过一遍 apply/回滚交互）；③ 第三刀沙箱执行（远期）。
 
 ---
 

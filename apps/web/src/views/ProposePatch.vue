@@ -107,6 +107,33 @@
         <span class="meta-k">建议验证命令</span>
         <pre v-for="(c, i) in result.proposal.verifyCommands" :key="i" class="verify-cmd">$ {{ c }}</pre>
       </div>
+
+      <!-- 审批门：apply / 回滚（唯一写盘入口，需二次确认） -->
+      <div class="apply-section">
+        <div class="notice error" v-if="applyError">{{ applyError }}</div>
+
+        <template v-if="applyState === 'idle'">
+          <button v-if="!confirming" class="apply-btn" @click="confirming = true">应用此提案（落盘到仓库）</button>
+          <div v-else class="confirm-box">
+            <p>⚠️ 这会<strong>真实修改</strong>仓库中的 {{ result.proposal.files.length }} 个文件。落盘后可一键回滚。</p>
+            <div class="confirm-actions">
+              <button class="danger-btn" @click="doApply">确认落盘</button>
+              <button class="ghost-btn" @click="confirming = false">取消</button>
+            </div>
+          </div>
+        </template>
+
+        <div v-else-if="applyState === 'applying'" class="apply-status"><span class="spinner dark" /> 落盘中...</div>
+
+        <div v-else-if="applyState === 'applied'" class="apply-status applied">
+          <span>✅ 已落盘到仓库</span>
+          <button class="ghost-btn" @click="doRollback">↩ 回滚</button>
+        </div>
+
+        <div v-else-if="applyState === 'rolling'" class="apply-status"><span class="spinner dark" /> 回滚中...</div>
+
+        <div v-else-if="applyState === 'rolled'" class="apply-status rolled">↩ 已回滚到落盘前状态</div>
+      </div>
     </div>
   </div>
 </template>
@@ -119,12 +146,13 @@ import { useProposePatch } from '@/composables/useProposePatch';
 
 const router = useRouter();
 const { currentRepo } = useCurrentRepo();
-const { result, loading, error, propose } = useProposePatch();
+const { result, loading, error, applyState, applyError, propose, apply, rollback } = useProposePatch();
 
 const question = ref('');
 const fileInput = ref('');
 const files = ref<string[]>([]);
 const copied = ref(false);
+const confirming = ref(false);
 
 function addFile(): void {
   const f = fileInput.value.trim();
@@ -134,7 +162,24 @@ function addFile(): void {
 
 function handleSubmit(): void {
   if (!question.value.trim() || files.value.length === 0 || loading.value) return;
+  confirming.value = false;
   void propose(question.value.trim(), [...files.value]);
+}
+
+function currentProposalId(): string {
+  const r = result.value;
+  return r && r.ok ? r.proposal.proposalId : '';
+}
+
+function doApply(): void {
+  confirming.value = false;
+  const id = currentProposalId();
+  if (id) void apply(id);
+}
+
+function doRollback(): void {
+  const id = currentProposalId();
+  if (id) void rollback(id);
 }
 
 async function copyDiff(): Promise<void> {
@@ -581,5 +626,103 @@ code {
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
   font-size: 12.5px;
   overflow-x: auto;
+}
+
+.apply-section {
+  margin-top: 20px;
+}
+
+.apply-btn {
+  width: 100%;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid #4f6ef7;
+  background: #fff;
+  color: #4f6ef7;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.apply-btn:hover {
+  background: #f0f3ff;
+}
+
+.confirm-box {
+  border: 1px solid #ffd8a8;
+  background: #fff8e1;
+  border-radius: 12px;
+  padding: 16px 20px;
+}
+
+.confirm-box p {
+  font-size: 14px;
+  color: #8a6d1a;
+  line-height: 1.6;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.danger-btn {
+  padding: 9px 22px;
+  border-radius: 10px;
+  border: none;
+  background: #e03131;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.danger-btn:hover {
+  background: #c92a2a;
+}
+
+.ghost-btn {
+  padding: 9px 18px;
+  border-radius: 10px;
+  border: 1px solid #e2e4ea;
+  background: #fff;
+  color: #5a5e72;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.ghost-btn:hover {
+  border-color: #4f6ef7;
+  color: #4f6ef7;
+}
+
+.apply-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: #f4f5f7;
+  color: #5a5e72;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.apply-status.applied {
+  background: #e8f5e9;
+  color: #2e7d32;
+  justify-content: space-between;
+}
+
+.apply-status.rolled {
+  background: #eef0f5;
+  color: #5a5e72;
+}
+
+.spinner.dark {
+  border: 2px solid rgba(79, 110, 247, 0.25);
+  border-top-color: #4f6ef7;
 }
 </style>

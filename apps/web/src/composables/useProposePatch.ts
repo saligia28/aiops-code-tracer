@@ -2,9 +2,10 @@ import { ref } from 'vue';
 import http from '@/lib/http';
 
 // ============================================================
-// propose_patch（P2-G · 写侧第一刀）前端调用
-// /api/propose-patch 返回 200 + 判别式 body：ok=true 带提案，ok=false 带 reason；
-// 只有结构性坏请求(400)/崩溃(500)才抛（走 error）。
+// propose_patch（P2-G）前端调用
+// 第一刀 /api/propose-patch：200 + 判别式 body（ok=true 带提案，ok=false 带 reason），仅 400/500 走 error。
+// 第二刀 /api/apply-patch、/api/rollback（审批门）：语义 HTTP 码（403 未开权限/404/409/422），
+//   失败走 axios catch，从 response 取服务端 message。
 // ============================================================
 
 export interface ProposalFile {
@@ -27,20 +28,34 @@ export type ProposeResult =
   | { ok: true; proposal: Proposal; attempts?: number; note?: string }
   | { ok: false; reason: string; detail?: string; attempts?: number };
 
+export type ApplyState = 'idle' | 'applying' | 'applied' | 'rolling' | 'rolled';
+
+function extractApplyError(e: unknown): string {
+  const err = e as { response?: { status?: number; data?: { message?: string } } };
+  if (err?.response?.status === 403) {
+    return err.response.data?.message || '落盘功能未开启（需服务端设置 ALLOW_APPLY=true）';
+  }
+  return err?.response?.data?.message || '操作失败，请稍后重试';
+}
+
 export function useProposePatch() {
   const result = ref<ProposeResult | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
 
+  const applyState = ref<ApplyState>('idle');
+  const applyError = ref<string | null>(null);
+
   async function propose(question: string, files: string[]): Promise<void> {
     loading.value = true;
     error.value = null;
     result.value = null;
+    applyState.value = 'idle';
+    applyError.value = null;
     try {
       const res = await http.post('/api/propose-patch', { question, files });
       result.value = res.data as ProposeResult;
     } catch (e: unknown) {
-      // 400/500：结构性坏请求或崩溃（其余负结果是 200 + ok:false，不走这里）
       const err = e as { response?: { data?: { message?: string } }; message?: string };
       error.value = err?.response?.data?.message || err?.message || '请求失败';
     } finally {
@@ -48,10 +63,35 @@ export function useProposePatch() {
     }
   }
 
-  function reset(): void {
-    result.value = null;
-    error.value = null;
+  async function apply(proposalId: string): Promise<void> {
+    applyState.value = 'applying';
+    applyError.value = null;
+    try {
+      const res = await http.post('/api/apply-patch', { proposalId, confirm: true });
+      if (res.data?.ok) {
+        applyState.value = 'applied';
+      } else {
+        applyState.value = 'idle';
+        applyError.value = res.data?.message || '落盘失败';
+      }
+    } catch (e) {
+      applyState.value = 'idle';
+      applyError.value = extractApplyError(e);
+    }
   }
 
-  return { result, loading, error, propose, reset };
+  async function rollback(proposalId: string): Promise<void> {
+    applyState.value = 'rolling';
+    applyError.value = null;
+    try {
+      const res = await http.post('/api/rollback', { proposalId });
+      applyState.value = res.data?.ok ? 'rolled' : 'applied';
+      if (!res.data?.ok) applyError.value = res.data?.message || '回滚失败';
+    } catch (e) {
+      applyState.value = 'applied';
+      applyError.value = extractApplyError(e);
+    }
+  }
+
+  return { result, loading, error, applyState, applyError, propose, apply, rollback };
 }

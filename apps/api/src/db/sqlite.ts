@@ -102,6 +102,43 @@ function migrate(database: Database.Database): void {
     });
     toV4();
   }
+
+  // v5（写侧第二刀 / P2-G apply·HITL）：补丁提案持久化 + 落盘审计。
+  //   patch_proposals   propose 时落库（status=proposed），apply 按 id 审批——审批的正是校验过的原件；
+  //                     snapshot_json 在 apply 时写入（每个文件的原始字节 base64 + 落盘后 sha），回滚据此写回。
+  //   patch_apply_audit apply/rollback/apply_rejected 的审计流水（谁何时改了什么、结果、是否回滚）。
+  if (current < 5) {
+    const toV5 = database.transaction(() => {
+      database.exec(`
+        CREATE TABLE patch_proposals (
+          id             TEXT PRIMARY KEY,
+          repo_name      TEXT NOT NULL,
+          question       TEXT NOT NULL,
+          unified_diff   TEXT NOT NULL,
+          files_json     TEXT NOT NULL,
+          verify_json    TEXT NOT NULL,
+          status         TEXT NOT NULL DEFAULT 'proposed',
+          validated_at   TEXT NOT NULL,
+          created_at     INTEGER NOT NULL,
+          applied_at     INTEGER,
+          rolled_back_at INTEGER,
+          snapshot_json  TEXT
+        );
+        CREATE INDEX idx_patch_repo ON patch_proposals(repo_name, created_at DESC);
+        CREATE TABLE patch_apply_audit (
+          id          TEXT PRIMARY KEY,
+          proposal_id TEXT NOT NULL,
+          action      TEXT NOT NULL,
+          result      TEXT NOT NULL,
+          detail      TEXT,
+          at          INTEGER NOT NULL
+        );
+        CREATE INDEX idx_patch_audit ON patch_apply_audit(proposal_id, at);
+      `);
+      database.pragma('user_version = 5');
+    });
+    toV5();
+  }
 }
 
 /**

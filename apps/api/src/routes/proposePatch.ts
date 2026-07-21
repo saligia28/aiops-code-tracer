@@ -3,31 +3,37 @@ import crypto from 'node:crypto';
 import { currentRepoPath, currentRepoName } from '../context.js';
 import { canUseLlm, callChatCompletion } from '../services/llmService.js';
 import { proposePatch } from '../services/patch/proposePatch.js';
+import { applyPatch, rollbackPatch } from '../services/patch/applyPatch.js';
+import { insertProposal } from '../db/patchStore.js';
 
 // ============================================================
-// POST /api/propose-patch（P2-G1 · 写侧第一刀，只读提案不落盘）
-// 调用方先经 prepare_fix_context 选定目标文件，这里只负责：读当前原文 → LLM 生成 →
-// 确定性 gate 硬校验 → 回结构化提案。全程不写被分析仓库；无 apply 端点即无写盘路径。
-//
-// 响应约定：已处理的结果（含"打不上/无改动/LLM 不可用/未加载仓库"等负结果）一律
-// **HTTP 200 + 判别式 body**（{ok:true,...} | {ok:false,reason,...}），让 MCP/前端按 ok
-// 字段判，而非跟 HTTP 错误映射较劲（MCP client 把 503 一律当"未加载仓库"会串味）。
-// 只有结构性坏请求（400）与未预期崩溃（500）才走非 2xx。
+// 补丁提案端点（P2-G）
+// 第一刀 /api/propose-patch：读原文 → LLM 生成 → 确定性 gate → 回结构化提案（只读，不落盘）。
+//   已处理结果一律 200 + 判别式 body（{ok:true}|{ok:false,reason}），只有结构性坏请求 400/崩溃
+//   500 才非 2xx（否则 MCP client 把 503 一律当"未加载仓库"串味）。成功即落库，返回 proposalId。
+// 第二刀 /api/apply-patch、/api/rollback：审批门——系统唯一写被分析仓库的路径。三重闸：
+//   ① ALLOW_APPLY env 权限位（默认关，只读部署无写盘可能）
+//   ② confirm:true 人工二次确认（apply）
+//   ③ 落盘前重校验基线 + 再跑 git apply --check（在 applyPatch 核心内）
+//   MCP 侧不暴露 apply/rollback——HITL 的本意是人来把关。
 // ============================================================
+
+/** 落盘总开关（默认关）：只读部署下 apply/rollback 直接 403，从根上没有写盘可能。 */
+function applyEnabled(): boolean {
+  const v = (process.env.ALLOW_APPLY ?? '').trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes';
+}
 
 export function registerProposePatch(app: FastifyInstance): void {
   app.post('/api/propose-patch', async (request, reply) => {
     const body = request.body as { question?: string; files?: string[]; evidenceRefs?: unknown[] };
 
-    // 结构性坏请求 → 400（调用方契约违背）
     if (!body?.question || !body.question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' });
     }
     if (!Array.isArray(body.files) || body.files.length === 0) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: 'files 需为非空数组（先经 prepare_fix_context 选定目标文件）' });
     }
-
-    // 已处理的负结果 → 200 + 判别式 body（见文件头注释）
     if (!currentRepoPath) {
       return { ok: false, reason: 'NO_REPO', detail: '未加载分析仓库（请先在 Web 界面选中一个项目）' };
     }
@@ -35,7 +41,6 @@ export function registerProposePatch(app: FastifyInstance): void {
       return { ok: false, reason: 'LLM_UNAVAILABLE', detail: 'LLM 未配置或不可用' };
     }
 
-    // 断连即中止：客户端超时断开后别再空烧 LLM（与 ask 路由同口径，监听响应侧 close）
     const abortCtl = new AbortController();
     reply.raw.on('close', () => {
       if (!reply.raw.writableEnded) abortCtl.abort();
@@ -59,6 +64,21 @@ export function registerProposePatch(app: FastifyInstance): void {
       );
 
       if (result.ok) {
+        // 落库（status=proposed）：apply 按 id 审批，审批的正是这份校验过的原件。
+        // 落库失败不阻断预览（用户仍看得到 diff），但会在 apply 时 404——记日志便于排查。
+        try {
+          insertProposal({
+            id: result.proposal.proposalId,
+            repoName: result.proposal.repoName,
+            question: result.proposal.question,
+            unifiedDiff: result.proposal.unifiedDiff,
+            files: result.proposal.files.map((f) => ({ file: f.file, baselineSha256: f.baselineSha256, reason: f.reason })),
+            verifyCommands: result.proposal.verifyCommands,
+            validatedAt: result.proposal.validatedAt,
+          });
+        } catch (err) {
+          app.log.error(`提案落库失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
         return {
           ok: true,
           proposal: result.proposal,
@@ -70,6 +90,59 @@ export function registerProposePatch(app: FastifyInstance): void {
     } catch (err) {
       app.log.error(`propose-patch 失败: ${err instanceof Error ? err.message : String(err)}`);
       return reply.code(500).send({ error: 'PROPOSE_FAILED', message: '提案生成失败，请稍后重试' });
+    }
+  });
+
+  // ---- 审批门：apply（唯一写盘路径）----
+  app.post('/api/apply-patch', async (request, reply) => {
+    if (!applyEnabled()) {
+      return reply.code(403).send({ error: 'APPLY_DISABLED', message: '落盘功能未开启（需服务端设置 ALLOW_APPLY=true）' });
+    }
+    const body = request.body as { proposalId?: string; confirm?: boolean };
+    if (!body?.proposalId) {
+      return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 proposalId' });
+    }
+    if (body.confirm !== true) {
+      return reply.code(400).send({ error: 'CONFIRM_REQUIRED', message: '需显式 confirm:true（人工二次确认后方可落盘）' });
+    }
+    if (!currentRepoPath) {
+      return reply.code(409).send({ error: 'NO_REPO', message: '未加载分析仓库' });
+    }
+    try {
+      const result = await applyPatch(body.proposalId, currentRepoPath);
+      if (result.ok) {
+        return { ok: true, appliedFiles: result.appliedFiles, note: '已落盘；如需撤销可一键回滚' };
+      }
+      const code = result.reason === 'NOT_FOUND' ? 404 : result.reason === 'BAD_STATUS' ? 409 : 422;
+      return reply.code(code).send({ ok: false, error: result.reason, message: result.detail });
+    } catch (err) {
+      app.log.error(`apply-patch 失败: ${err instanceof Error ? err.message : String(err)}`);
+      return reply.code(500).send({ error: 'APPLY_FAILED', message: '落盘失败，请稍后重试' });
+    }
+  });
+
+  // ---- 回滚：写回落盘前的原始字节（撤销 apply）----
+  app.post('/api/rollback', async (request, reply) => {
+    if (!applyEnabled()) {
+      return reply.code(403).send({ error: 'APPLY_DISABLED', message: '落盘功能未开启（需服务端设置 ALLOW_APPLY=true）' });
+    }
+    const body = request.body as { proposalId?: string };
+    if (!body?.proposalId) {
+      return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 proposalId' });
+    }
+    if (!currentRepoPath) {
+      return reply.code(409).send({ error: 'NO_REPO', message: '未加载分析仓库' });
+    }
+    try {
+      const result = await rollbackPatch(body.proposalId, currentRepoPath);
+      if (result.ok) {
+        return { ok: true, restoredFiles: result.restoredFiles, note: '已回滚到落盘前状态' };
+      }
+      const code = result.reason === 'NOT_FOUND' ? 404 : result.reason === 'BAD_STATUS' ? 409 : 422;
+      return reply.code(code).send({ ok: false, error: result.reason, message: result.detail });
+    } catch (err) {
+      app.log.error(`rollback 失败: ${err instanceof Error ? err.message : String(err)}`);
+      return reply.code(500).send({ error: 'ROLLBACK_FAILED', message: '回滚失败，请稍后重试' });
     }
   });
 }
