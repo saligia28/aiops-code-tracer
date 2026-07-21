@@ -8,12 +8,14 @@ import { repoStatus } from './repoStatus.js';
 import { explainCodeLogic } from './explainCodeLogic.js';
 import { prepareFixContext } from './prepareFixContext.js';
 import { getImpactScope } from './getImpactScope.js';
+import { proposePatch } from './proposePatch.js';
 
 export const allTools: ToolDescriptor[] = [
   repoStatus,
   explainCodeLogic,
   prepareFixContext,
   getImpactScope,
+  proposePatch,
   searchSymbols,
   getSymbol,
   traceCallees,

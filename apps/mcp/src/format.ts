@@ -303,3 +303,80 @@ export function formatAnalysisPacket(packet: AnalysisPacket, opts: { limit?: num
 
   return clampText(sections.join('\n'), limit);
 }
+
+// ============================================================
+// propose_patch（P2-G · 写侧第一刀）响应格式化
+// /api/propose-patch 返回 200 + 判别式 body：ok=true 带提案，ok=false 带 reason。
+// 类型在此本地声明（与 API 侧 PatchProposal 结构对齐）；前端接入时再考虑提到 shared-types。
+// ============================================================
+
+export interface ProposalFileView {
+  file: string;
+  baselineSha256: string;
+  reason: string;
+}
+
+export interface ProposalView {
+  proposalId: string;
+  repoName: string;
+  question: string;
+  unifiedDiff: string;
+  files: ProposalFileView[];
+  verifyCommands: string[];
+  validatedAt: string;
+}
+
+export type ProposePatchResponse =
+  | { ok: true; proposal: ProposalView; attempts?: number; note?: string }
+  | { ok: false; reason: string; detail?: string; attempts?: number };
+
+function formatProposalFailure(reason: string, detail?: string, attempts?: number): string {
+  const attemptStr = attempts ? `（尝试 ${attempts} 次）` : '';
+  const d = detail ? `：${detail}` : '';
+  switch (reason) {
+    case 'PATCH_NOT_APPLICABLE':
+      return `未能生成可干净应用的补丁${attemptStr}${d}。\n建议：用 prepare_fix_context 重新定位更精确的目标文件，或把诉求写得更具体。`;
+    case 'NO_CHANGE':
+      return `分析未产生任何改动${d}。可能诉求已满足，或目标文件选得不对。`;
+    case 'LLM_UNAVAILABLE':
+      return `LLM 不可用${d}。请检查分析服务的 LLM 配置。`;
+    case 'NO_REPO':
+      return `未加载分析仓库${d}。请先在 Web 界面选中一个项目。`;
+    case 'INVALID_INPUT':
+      return `目标文件无效${d}。只允许修改仓库内已存在的文本文件（相对路径）。`;
+    default:
+      return `提案生成失败（${reason}）${d}。`;
+  }
+}
+
+/**
+ * 格式化补丁提案。成功时展示 diff + 基线 + 验证命令，并显式声明"只读提案、需人工审批"；
+ * 失败时把 reason 翻成可行动的中文指引（"打不上"是正常负结果，不是错误）。
+ */
+export function formatProposal(data: ProposePatchResponse, opts: { limit?: number } = {}): string {
+  const limit = opts.limit ?? DEFAULT_ASK_OUTPUT_LIMIT;
+  if (!data.ok) {
+    return formatProposalFailure(data.reason, data.detail, data.attempts);
+  }
+  const p = data.proposal;
+  const sections: string[] = [
+    '✅ 已生成可应用的修改提案（已通过 git apply --check；未改动仓库任何文件）',
+    `仓库：${p.repoName}    提案 id：${p.proposalId}`,
+    `诉求：${p.question}`,
+    '',
+    `涉及文件（${p.files.length}）：`,
+    ...p.files.map(
+      (f) => `  • ${f.file}  [基线 ${f.baselineSha256.slice(0, 12)}…]${f.reason ? ` —— ${f.reason}` : ''}`,
+    ),
+    '',
+    '统一 diff：',
+    '```diff',
+    p.unifiedDiff.replace(/\n+$/, ''),
+    '```',
+  ];
+  if (p.verifyCommands.length > 0) {
+    sections.push('', '验证命令：', ...p.verifyCommands.map((c) => `  $ ${c}`));
+  }
+  sections.push('', '⚠️ 这是【只读提案】，尚未应用。应用需人工审批（本工具不落盘）。');
+  return clampText(sections.join('\n'), limit);
+}

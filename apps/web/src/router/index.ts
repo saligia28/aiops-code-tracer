@@ -30,6 +30,11 @@ const router = createRouter({
       name: 'IndexManager',
       component: () => import('@/views/IndexManager.vue'),
     },
+    {
+      path: '/propose-patch',
+      name: 'ProposePatch',
+      component: () => import('@/views/ProposePatch.vue'),
+    },
   ],
 });
 

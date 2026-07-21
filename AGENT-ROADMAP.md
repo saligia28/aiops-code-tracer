@@ -397,7 +397,8 @@ impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产
 2. **`git apply --check` 是硬验收 gate**：LLM 生成 hunk 最常见的失败是行号漂移/上下文不匹配/缩进错——
    一个打不上的 diff 对下游 apply 阶段毫无价值。服务端生成后必须 `git apply --check` 干净通过才回传，
    不过关就带失败原因让 agent 重生成（有界重试）。apps/api 目前无 git apply 基础设施，需新建
-   （倾向 `execFile('git', ['apply', '--check', ...])` + 临时 patch 文件，避免 shell 注入）。
+   （用 `spawn('git', ['apply', '--check', '-'])` 经 stdin 喂 diff——**不落任何临时 patch 文件**，
+   连临时写盘都不产生，"未审批绝不写盘"从校验层就成立；参数数组传递天然免 shell 注入）。
 3. **基线哈希锚定，防"基于旧内容改新文件"**：图谱/prepare_fix_context 都是"上次索引时"快照，真实文件
    可能已变。proposal 必须携带每个目标文件的**基线内容哈希**；第二刀 apply 前先校验文件未变，变了就
    拒绝并要求重新分析——这是把"可能猜错"挡在落盘之外的关键（正是不做自动落盘的核心理由）。
@@ -418,6 +419,58 @@ impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产
 
 **工作量**：第一刀 2~3 天（服务端端点 + git apply 校验 + MCP 转发 + 前端预览 + 测试）；审批门 2~3 天。
 **依赖**：无硬依赖；读侧证据（prepare_fix_context 的 entry/suggestedEditLocations）是天然输入。
+
+> **进度（2026-07-21）· P2-G0 确定性地基 ✅ 已落地**：先做后端可验证闭环，不接 LLM / 不接路由 / 不接
+> MCP / 不接前端——纯确定性校验核心，`apps/api/src/services/patch/`：
+> - **Proposal v1 契约**（`types.ts`）：`unifiedDiff` 是唯一可执行载荷，"改哪些文件/几个 hunk"一律从
+>   diff 解析，不另存可能矛盾的第二份结构化副本；`PatchFileChange` 带 `baselineSha256`。
+> - **路径安全**（`pathSafety.ts`）：挡绝对路径 / `..` 穿越 / 归一化后逃逸 / **symlink 逃逸**（对最近已存在
+>   祖先 realpath 判定，复用 tools.ts 的 resolve+startsWith 惯例再硬化两处）。
+> - **基线哈希**（`baseline.ts`）：sha256 基于**原始字节，绝不换行归一化**（CRLF≠LF 视为已变）。
+> - **diff 解析 + v1 策略**（`diffParser.ts`）：只允许改已声明文本文件，挡增/删/改名/拷贝/二进制/越界文件，
+>   封顶文件数/hunk 数/字节数；解析器处理"被删内容行 `-- foo`（diff 呈 `--- foo`）伪装文件头"的陷阱。
+> - **git apply --check 硬 gate**（`gitApplyCheck.ts`）：`spawn` + stdin 喂 diff，**全程零写盘**（连临时
+>   patch 都不产生）；只 `--check` 不 apply、无 `--3way`（严格上下文匹配）。
+> - **确定性编排**（`validateProposal.ts`）：策略 → 路径 → 基线锚定 → gate → **竞态复检**（gate 后再算一次
+>   基线，覆盖生成→校验时间窗）；全程只读仓库。
+> - **验证**：35 个确定性单测（临时 git 仓库 + orderVoid 风格改点，含"全过程仓库文件字节不变"的硬证据），
+>   API 全套 161 test 绿（+35）、typecheck 过。
+> **进度（2026-07-21）· P2-G1 `/api/propose-patch` ✅ 后端闭环已落地**：LLM 首次入场，但严格停在
+> 人工审批前（无 apply 端点＝无写盘路径）。关键决策：**diff 的行号记账交给代码、不交给 LLM**——
+> LLM 只产出锚定的 SEARCH/REPLACE 编辑，代码在内存里合成精确 diff，直击"LLM 数不对 @@ 行号"的根因。
+> - **内存 diff 合成**（`diffSynth.ts`）：LCS 行 diff → git 可应用 unified diff，自己算 `@@` 行号与上下文、
+>   处理无末尾换行标记；不引第三方 diff 依赖。12 个用例全部**往返真实 `git apply` 验证**（synth→apply→逐字节等于 new）。
+> - **SEARCH/REPLACE 契约**（`editBlocks.ts`）：解析 + 应用，要求**唯一精确匹配**，找不到/多处匹配都给
+>   可反馈原因（绝不模糊匹配——那是"改错地方"的温床）。
+> - **提示**（`prompt.ts`）：沿用 ask 的安全边界口径（文件内容是"待修改的数据"非指令）；内容逐字给出
+>   **不做注入中和**（中和会改内容致 SEARCH 匹配不上，真正防线是下游确定性 gate）。
+> - **编排**（`proposePatch.ts`）：读当前字节 → LLM → 内存应用 → synth diff → G0 gate 硬校验 →
+>   失败把原因塞回下一轮（**有界重试 ≤2**）→ 终失败 `PATCH_NOT_APPLICABLE`；LLM/时间/id 全依赖注入，
+>   编排逻辑离线确定性可测。
+> - **路由**（`routes/proposePatch.ts` + `index.ts` 注册）：`POST /api/propose-patch {question, files[], evidenceRefs?}`，
+>   断连即中止（同 ask 口径）。**响应约定：已处理结果一律 HTTP 200 + 判别式 body**
+>   （`{ok:true,proposal,...}` | `{ok:false,reason,...}`），只有结构性坏请求 400、崩溃 500 才非 2xx——
+>   否则 MCP client 把 503 一律映射成"未加载仓库"会串味。成功带 `note: 未修改仓库任何文件`。
+> - **验证**：patch 模块 68 个确定性单测（含 mock LLM 打通 成功/重试后成功/放弃/LLM 不可用/越界文件/
+>   无变化/非法入参 七条编排路径 + 路由守卫 3 条，成功路径断言仓库字节零改动），API 全套 194 test 绿、typecheck + build 过。
+>
+> **进度（2026-07-21）· MCP 转发 `propose_patch` ✅ 已落地**：`apps/mcp/src/tools/proposePatch.ts` —
+> 参数校验（question + files[1..10]）→ `analyzerPost('/api/propose-patch')` 转发（专用 120s 超时）→
+> `formatProposal` 渲染。复用 `ANALYZER_REPO` 锁仓（`analyzerPost` 内建 pre-check + 工具做 repoName
+> post-check 兜生成期间切库）；formatter 成功展示 diff+基线+验证命令并**显式声明"只读提案、需人工审批"**，
+> 失败把 reason 翻成可行动中文（"打不上"是正常负结果非 error）。响应类型本地声明（前端接入再提 shared-types）。
+> MCP 61 test 绿（+3：成功格式化/打不上负结果/锁仓告警）、typecheck + build 过。
+>
+> **进度（2026-07-21）· Web diff 预览 ✅ 已落地**：`apps/web` — `composables/useProposePatch.ts`
+> （POST /api/propose-patch，200 判别式 body 直接用 ok 判，仅 400/500 走 error）+ `views/ProposePatch.vue`
+> （独立视图 `/propose-patch`：诉求输入 + 目标文件 chips → 生成提案；成功渲染 diff（行级 +/- 着色，GitHub 风）
+> + 基线哈希 + 验证命令 + **显眼的"只读提案、未改仓库、应用需人工审批"横幅**；失败把 reason 翻成友好中文）+
+> 路由注册 + Home 加低调入口"✎ 生成修改提案"。沿用应用既有设计语言（蓝 accent/圆角卡片/scoped）。
+> 前端无组件测试，vue-tsc typecheck + vite build 过（ProposePatch 作懒加载 chunk 产出）。
+> - **未做**：① **活体冒烟**（真实 DeepSeek + 已加载仓库对已知改点出提案，仍不 apply）——纯离线已证，
+>   活体是最后一环，需运行中的服务端 + 配好的 LLM（用户方便时一起验，可含前端视觉走查）；
+>   ② 上下文级集成（从答案/prepare_fix_context 结果一键带 question+files 跳转预填，免手填）——UX 增强，非阻塞；
+>   ③ 之后才是第二刀 apply/HITL（审批门）。
 
 ---
 

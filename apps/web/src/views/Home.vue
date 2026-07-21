@@ -37,6 +37,9 @@
           @click="question = s; handleAsk()"
         >{{ s }}</button>
       </div>
+      <div class="tool-links" v-if="!hasHistory">
+        <button class="tool-link" @click="router.push({ name: 'ProposePatch' })">✎ 生成修改提案</button>
+      </div>
     </div>
 
     <div class="stats-bar" v-if="!hasHistory && indexStatus">
@@ -258,6 +261,28 @@ onMounted(() => {
 
 .suggestion-chip:hover {
   border-color: #4f6ef7;
+  color: #4f6ef7;
+  background: #f0f3ff;
+}
+
+.tool-links {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+
+.tool-link {
+  background: none;
+  border: none;
+  color: #8b8fa3;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.tool-link:hover {
   color: #4f6ef7;
   background: #f0f3ff;
 }

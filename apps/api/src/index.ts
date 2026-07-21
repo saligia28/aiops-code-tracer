@@ -28,6 +28,7 @@ import { registerTraceError } from './routes/traceError.js';
 import { registerAgent } from './routes/agent.js';
 import { registerConversations } from './routes/conversations.js';
 import { registerMemories } from './routes/memories.js';
+import { registerProposePatch } from './routes/proposePatch.js';
 
 // ============================================================
 // 创建应用 & 注册插件
@@ -78,6 +79,7 @@ registerTraceError(app);
 registerAgent(app);
 registerConversations(app);
 registerMemories(app);
+registerProposePatch(app);
 
 // ============================================================
 // WebSocket 进度推送

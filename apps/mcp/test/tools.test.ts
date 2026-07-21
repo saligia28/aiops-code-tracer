@@ -7,20 +7,24 @@ vi.mock('../src/client.js', () => ({
   AnalyzerError: class extends Error {},
 }));
 
-import { analyzerGet, analyzerPost } from '../src/client.js';
+import { analyzerGet, analyzerPost, getRepoLock } from '../src/client.js';
 import { searchSymbols } from '../src/tools/searchSymbols.js';
 import { traceCallees } from '../src/tools/traceCallees.js';
 import { traceCallers } from '../src/tools/traceCallers.js';
 import { explainCodeLogic } from '../src/tools/explainCodeLogic.js';
 import { prepareFixContext } from '../src/tools/prepareFixContext.js';
 import { getImpactScope } from '../src/tools/getImpactScope.js';
+import { proposePatch } from '../src/tools/proposePatch.js';
 import { allTools } from '../src/tools/index.js';
 
 const mockGet = analyzerGet as unknown as ReturnType<typeof vi.fn>;
 const mockPost = analyzerPost as unknown as ReturnType<typeof vi.fn>;
+const mockRepoLock = getRepoLock as unknown as ReturnType<typeof vi.fn>;
 beforeEach(() => {
   mockGet.mockReset();
   mockPost.mockReset();
+  mockRepoLock.mockReset();
+  mockRepoLock.mockReturnValue('');
 });
 
 describe('tools', () => {
@@ -30,6 +34,7 @@ describe('tools', () => {
         'explain_code_logic',
         'prepare_fix_context',
         'get_impact_scope',
+        'propose_patch',
         'get_file_graph',
         'get_symbol',
         'repo_status',
@@ -207,5 +212,59 @@ describe('tools', () => {
     await expect(getImpactScope.handler({ symbol: 'x', file: 'y.ts' })).rejects.toThrow('只能提供一个');
     await expect(getImpactScope.handler({})).rejects.toThrow('只能提供一个');
     expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('propose_patch posts to /api/propose-patch with {question,files} + 专用长超时，格式化提案', async () => {
+    mockPost.mockResolvedValue({
+      ok: true,
+      proposal: {
+        proposalId: 'pp-1',
+        repoName: 'eval-fixture',
+        question: '订单作废 id 为空应抛错',
+        unifiedDiff: 'diff --git a/src/api/orderVoid.ts b/src/api/orderVoid.ts\n--- a/src/api/orderVoid.ts\n+++ b/src/api/orderVoid.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n',
+        files: [{ file: 'src/api/orderVoid.ts', baselineSha256: 'abc123def4567890', reason: '空 id 改抛错' }],
+        verifyCommands: ['pnpm -C apps/api test'],
+        validatedAt: '2026-07-21T00:00:00.000Z',
+      },
+      attempts: 1,
+    });
+
+    const out = await proposePatch.handler({ question: '订单作废 id 为空应抛错', files: ['src/api/orderVoid.ts'] });
+
+    expect(mockPost).toHaveBeenCalledWith(
+      '/api/propose-patch',
+      { question: '订单作废 id 为空应抛错', files: ['src/api/orderVoid.ts'] },
+      { timeoutMs: 120_000 },
+    );
+    const t = out.content[0].text;
+    expect(t).toContain('已生成可应用的修改提案');
+    expect(t).toContain('src/api/orderVoid.ts');
+    expect(t).toContain('```diff');
+    expect(t).toContain('人工审批'); // 明确"只读提案、需审批"
+    expect(out.isError).toBeFalsy();
+  });
+
+  it('propose_patch 把"打不上"当正常负结果（PATCH_NOT_APPLICABLE，非 error）', async () => {
+    mockPost.mockResolvedValue({ ok: false, reason: 'PATCH_NOT_APPLICABLE', detail: 'GIT_APPLY_FAILED: ...', attempts: 2 });
+    const out = await proposePatch.handler({ question: '改点东西', files: ['a.ts'] });
+    const t = out.content[0].text;
+    expect(t).toContain('未能生成可干净应用的补丁');
+    expect(t).toContain('prepare_fix_context'); // 给可行动指引
+    expect(out.isError).toBeFalsy();
+  });
+
+  it('propose_patch 锁仓 post-check：生成期间仓库被切走则显式告警', async () => {
+    mockRepoLock.mockReturnValue('locked-repo');
+    mockPost.mockResolvedValue({
+      ok: true,
+      proposal: {
+        proposalId: 'pp-2', repoName: 'other-repo', question: 'x', unifiedDiff: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n',
+        files: [{ file: 'a.ts', baselineSha256: 'deadbeef', reason: '' }], verifyCommands: [], validatedAt: 'T',
+      },
+      attempts: 1,
+    });
+    const out = await proposePatch.handler({ question: 'x', files: ['a.ts'] });
+    expect(out.content[0].text).toContain('仓库被切换');
+    expect(out.content[0].text).toContain('other-repo');
   });
 });
