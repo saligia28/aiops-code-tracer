@@ -386,13 +386,38 @@
 **缺口**：工具全只读——是安全优势，也是"能干活的 Agent"的能力边界。
 
 **方案**（三步走，每步独立可用）：
-1. `propose_patch` 工具：agent 产出结构化 diff（文件+hunk），**只生成不落盘**；SSE 下发，前端 diff 预览。
-2. 审批门：`/api/agent/apply` 需用户显式确认（新权限位 + 二次确认 UI）；应用前
-   `git stash`/分支快照，提供一键回滚。
-3. 沙箱执行（远期）：apply 后在隔离 worktree 跑 lint/test，结果回传 agent 决定是否保留。
 
-**验收**：E2E——agent 提出修改 → 用户批准 → 落盘 → 回滚可用；未批准绝不写盘（审计日志佐证）。
-**工作量**：3~5 天。 **依赖**：P1-C（长任务规划）体验更佳，非硬依赖。
+**第一刀 · `propose_patch` 只读提案（不落盘）** —— P1 读侧已稳定（explain/prepare_fix_context/
+impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产出**结构化、可审查、可校验**的修改
+提案，但停在人工审批之前。三条加固是这一刀的地基（否则只是"看起来结构化"）：
+
+1. **落点在服务端，不在 MCP 层**：新建 `/api/propose-patch` 端点——它要读文件**逐行当前原文**
+   （不是图谱快照）、调 LLM 生成、并在 `currentRepoPath` 上跑 `git apply --check` 校验；这些能力
+   MCP 层没有（MCP 只有符号/图谱通道）。MCP 侧只加一个转发工具。
+2. **`git apply --check` 是硬验收 gate**：LLM 生成 hunk 最常见的失败是行号漂移/上下文不匹配/缩进错——
+   一个打不上的 diff 对下游 apply 阶段毫无价值。服务端生成后必须 `git apply --check` 干净通过才回传，
+   不过关就带失败原因让 agent 重生成（有界重试）。apps/api 目前无 git apply 基础设施，需新建
+   （倾向 `execFile('git', ['apply', '--check', ...])` + 临时 patch 文件，避免 shell 注入）。
+3. **基线哈希锚定，防"基于旧内容改新文件"**：图谱/prepare_fix_context 都是"上次索引时"快照，真实文件
+   可能已变。proposal 必须携带每个目标文件的**基线内容哈希**；第二刀 apply 前先校验文件未变，变了就
+   拒绝并要求重新分析——这是把"可能猜错"挡在落盘之外的关键（正是不做自动落盘的核心理由）。
+
+   proposal 结构（草案）：`{ file, baselineSha, hunks: [{ oldStart, oldLines, newLines, context }],
+   reason, evidenceRefs: Evidence[], verifyCommands: string[] }`；SSE 下发，前端 diff 预览。
+
+**第二刀 · 审批门 `/api/agent/apply`**：需用户显式确认（新权限位 + 二次确认 UI）；apply 前
+校验基线哈希未变 + 再跑一次 `git apply --check`；应用走 `git stash`/分支快照，提供一键回滚。
+
+**第三刀 · 沙箱执行（远期）**：apply 后在隔离 worktree 跑 lint/test，结果回传 agent 决定是否保留。
+
+**验收**：
+- 第一刀：propose_patch 产出的每个 hunk 都能 `git apply --check` 干净通过（**硬 gate**）；proposal 带
+  基线哈希 + 证据引用 + 验证命令；输出大小受控；**未审批绝不写任何文件**（无 apply 端点即无写盘路径）；
+  fixture repo E2E——对一个已知改点（如 orderVoid 的某方法）提案能打上且指向真实文件。
+- 第二刀：E2E——提案 → 批准 → 落盘 → 回滚可用；基线变化时 apply 被拒（审计日志佐证）。
+
+**工作量**：第一刀 2~3 天（服务端端点 + git apply 校验 + MCP 转发 + 前端预览 + 测试）；审批门 2~3 天。
+**依赖**：无硬依赖；读侧证据（prepare_fix_context 的 entry/suggestedEditLocations）是天然输入。
 
 ---
 
@@ -463,7 +488,8 @@
 
 ## P3（远期，单人项目暂缓）
 
-- **I · 多 Agent 协作**：规划者/执行者分离、并行子任务。等 P1-C 落地后看真实需求。
+- **I · 多 Agent 协作**：规划者/执行者分离、并行子任务。P1-C 已落地，规划器价值以效率坐实
+  （工具调用降 ~35%），是否值得拆分执行者需更大长任务样本上看瓶颈再定。
 - **J · 数据飞轮自动化**：线上 faithful=0 的 trace 自动回流成评测候选用例（Langfuse API 拉取 →
   人工确认入库）。半天可做，价值取决于线上流量，有真实用户后再上。
 - **K · 水平扩展**：索引进程内存态 + better-sqlite3 单机 → 多实例需外置（pg + 向量库）。
@@ -472,13 +498,22 @@
 
 ---
 
-## 推荐路径（按目标选）
+## 当前状态与推荐路径（2026-07-21 更新）
 
-| 你的目标 | 建议顺序 |
+**P1 已收口**：A（反思进循环）/ B（文档证据通道）/ C（Planning，含前端 checklist + 验收对照）/
+D（流式+中断，两条管线 abort 贯穿）/ E（提示注入防御）全部落地并有测试/活体验证；
+P1-MCP 三刀（explain_code_logic / prepare_fix_context / get_impact_scope，含 file 入参与 env 锁仓）收口。
+P2 侧 F（记忆 v2）/ H（上下文工程）已落地。
+
+**下一步：P2-G propose_patch（写侧第一刀，只读提案不落盘）** —— 读侧证据链已稳定，是让 agent
+「基于证据提出可审查修改」的最小安全步。核心不是 diff 格式，而是三条地基：服务端落点 + `git apply
+--check` 硬 gate + 基线哈希锚定（见 P2-G 方案）。**明确不做**：自动落盘/自动改代码——审批门（第二刀）
+落地前无任何写盘路径。
+
+| 目标 | 建议顺序 |
 |---|---|
-| **面试深度**（评测→自修正的完整故事） | A → B → E |
-| **产品完整度**（给人用起来爽） | D → C → A |
-| **安全/工程叙事** | E → G → H |
+| **能干活的 Agent**（读→提案→审批闭环） | P2-G 第一刀 propose_patch → 第二刀 apply/HITL |
+| **完整度深挖**（P1-C 的效率收益已证，补完整度） | 长任务样本 5+ 条 → planner 完整度对照重跑 |
+| **规模化/远期** | P3（多 Agent I / 数据飞轮 J / 水平扩展 K） |
 
-我的默认推荐：**A → B**（合计 ~3 天，全部复用现有资产，且把"评测驱动"的故事讲到闭环），
-然后按体感选 C 或 D。
+默认推荐：**P2-G 第一刀**——读侧已稳，写侧提案是能力跃迁的起点，且严格停在人工审批前，风险可控。
