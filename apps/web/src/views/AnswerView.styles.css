@@ -1,9 +1,10 @@
 .answer-page {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   background: #f9fafb;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 /* 顶部导航 */
@@ -975,5 +976,12 @@
     inset: 0;
     z-index: 20;
     background: rgba(15, 23, 42, 0.28);
+  }
+}
+
+/* 桌面端隐藏问答页第二层的重复品牌，全局上下文栏已提供品牌入口 */
+@media (min-width: 769px) {
+  .top-bar .brand {
+    display: none;
   }
 }
