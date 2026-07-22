@@ -4,6 +4,8 @@
       class="llm-trigger"
       :class="triggerStateClass"
       type="button"
+      aria-controls="model-selector-panel"
+      :aria-expanded="expanded"
       @click="toggleExpanded"
     >
       <span class="trigger-dot" />
@@ -21,7 +23,7 @@
       </span>
     </button>
 
-    <div v-if="expanded" class="llm-panel" :class="panelModeClass">
+    <div v-if="expanded" id="model-selector-panel" class="llm-panel" :class="panelModeClass">
       <div class="panel-header">
         <div class="panel-title">模型切换</div>
         <button class="panel-close" type="button" @click="expanded = false">收起</button>
@@ -258,14 +260,10 @@ onUnmounted(() => {
 
 /* ---- 浮窗容器 ---- */
 .llm-floating {
-  position: fixed;
-  bottom: 80px;
-  right: 16px;
+  position: relative;
   z-index: 1200;
   display: flex;
-  flex-direction: column-reverse;
   align-items: flex-end;
-  gap: 8px;
 }
 
 .llm-floating.is-expanded {
@@ -397,6 +395,9 @@ onUnmounted(() => {
 
 /* ---- 展开面板 ---- */
 .llm-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
   width: 340px;
   padding: 14px;
   border: 1.5px solid rgba(224, 228, 238, 0.95);
@@ -501,10 +502,15 @@ onUnmounted(() => {
 
 @media (max-width: 768px) {
   .llm-floating {
+    position: fixed;
     bottom: calc(88px + env(safe-area-inset-bottom, 0px));
     right: 16px;
     left: auto;
+    z-index: 1200;
+    display: flex;
+    flex-direction: column-reverse;
     align-items: flex-end;
+    gap: 8px;
   }
 
   /* 触发按钮变圆形 */
@@ -535,6 +541,9 @@ onUnmounted(() => {
 
   /* 面板从右侧弹出，宽度自适应 */
   .llm-panel {
+    position: static;
+    top: auto;
+    right: auto;
     width: min(340px, calc(100vw - 32px));
     max-width: none;
     margin-bottom: 8px;
