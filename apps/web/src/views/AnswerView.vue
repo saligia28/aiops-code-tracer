@@ -19,10 +19,7 @@
         </svg>
       </button>
       <div class="brand" @click="$router.push('/')">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="12" cy="12" r="10" />
-          <path d="M8 12l2.5 2.5L16 9" />
-        </svg>
+        <ProjectIcon :size="28" />
         <span>逻瞳</span>
       </div>
       <!-- 模式切换 -->
@@ -180,10 +177,7 @@
         <!-- AI 回答 -->
         <div class="answer-section">
           <div class="ai-avatar">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M8 12l2.5 2.5L16 9" />
-            </svg>
+            <ProjectIcon :size="26" />
           </div>
           <div class="answer-body">
             <!-- Agent 执行计划（P1-C）：plan 事件一次性下发，服务端暂无逐步完成状态——
@@ -336,6 +330,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
+import ProjectIcon from '@/components/ProjectIcon.vue';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
 import { useProject } from '@/composables/useProject';
 import {

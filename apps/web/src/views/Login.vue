@@ -3,10 +3,7 @@
     <div class="login-card">
       <div class="login-header">
         <div class="logo-icon">
-          <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="12" cy="12" r="10" />
-            <path d="M8 12l2.5 2.5L16 9" />
-          </svg>
+          <ProjectIcon :size="44" />
         </div>
         <h1>逻瞳</h1>
         <p class="login-subtitle">代码智能分析平台</p>
@@ -36,6 +33,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
+import ProjectIcon from '@/components/ProjectIcon.vue';
 import { useAuth } from '@/composables/useAuth';
 
 const router = useRouter();
@@ -97,7 +95,9 @@ onMounted(() => {
 }
 
 .logo-icon {
-  color: #4f6ef7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   margin-bottom: 12px;
 }
 

@@ -3,10 +3,7 @@
     <div class="home-header" :class="{ compact: hasHistory }">
       <div class="logo-area">
         <div class="logo-icon">
-          <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="12" cy="12" r="10" />
-            <path d="M8 12l2.5 2.5L16 9" />
-          </svg>
+          <ProjectIcon :size="40" />
         </div>
         <h1>逻瞳</h1>
       </div>
@@ -66,6 +63,7 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import http from '@/lib/http';
+import ProjectIcon from '@/components/ProjectIcon.vue';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
 import { setPendingQuestion } from '@/composables/usePendingQuestion';
 
@@ -150,7 +148,9 @@ onMounted(() => {
 }
 
 .logo-icon {
-  color: #4f6ef7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .logo-area h1 {
