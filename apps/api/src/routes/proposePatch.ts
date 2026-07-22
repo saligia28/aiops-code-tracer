@@ -4,7 +4,8 @@ import { currentRepoPath, currentRepoName } from '../context.js';
 import { canUseLlm, callChatCompletion } from '../services/llmService.js';
 import { proposePatch } from '../services/patch/proposePatch.js';
 import { applyPatch, rollbackPatch } from '../services/patch/applyPatch.js';
-import { insertProposal } from '../db/patchStore.js';
+import { runVerify, getVerifyCommand } from '../services/patch/verifyRunner.js';
+import { insertProposal, getProposal, appendAudit } from '../db/patchStore.js';
 
 // ============================================================
 // 补丁提案端点（P2-G）
@@ -143,6 +144,47 @@ export function registerProposePatch(app: FastifyInstance): void {
     } catch (err) {
       app.log.error(`rollback 失败: ${err instanceof Error ? err.message : String(err)}`);
       return reply.code(500).send({ error: 'ROLLBACK_FAILED', message: '回滚失败，请稍后重试' });
+    }
+  });
+
+  // ---- 沙箱验证（第三刀 · 就地后验）：apply 后在真实环境跑配置的 lint/test ----
+  // 命令来自 env VERIFY_COMMAND（可信），不跑 LLM/提案里的命令。测试失败(passed=false)不是
+  // 传输错误——verify 跑完了、结论是不过，仍 200；pass/fail 在 body。
+  app.post('/api/verify', async (request, reply) => {
+    if (!applyEnabled()) {
+      return reply.code(403).send({ error: 'APPLY_DISABLED', message: '落盘/验证功能未开启（需服务端设置 ALLOW_APPLY=true）' });
+    }
+    const body = request.body as { proposalId?: string };
+    if (!body?.proposalId) {
+      return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 proposalId' });
+    }
+    if (!currentRepoPath) {
+      return reply.code(409).send({ error: 'NO_REPO', message: '未加载分析仓库' });
+    }
+    const proposal = getProposal(body.proposalId);
+    if (!proposal) {
+      return reply.code(404).send({ error: 'NOT_FOUND', message: `提案不存在：${body.proposalId}` });
+    }
+    if (proposal.status !== 'applied') {
+      return reply.code(409).send({ error: 'BAD_STATUS', message: `提案状态为 ${proposal.status}，需先 apply 再验证` });
+    }
+    if (!getVerifyCommand()) {
+      return { ran: false, reason: 'VERIFY_NOT_CONFIGURED', message: '服务端未配置 VERIFY_COMMAND（如 pnpm -C apps/api test）' };
+    }
+    try {
+      const result = await runVerify(currentRepoPath);
+      appendAudit(body.proposalId, 'verify', result.passed ? 'ok' : 'fail', `exit=${result.exitCode} timedOut=${result.timedOut}`);
+      return {
+        ran: true,
+        passed: result.passed,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        command: result.command,
+        output: result.output,
+      };
+    } catch (err) {
+      app.log.error(`verify 失败: ${err instanceof Error ? err.message : String(err)}`);
+      return reply.code(500).send({ error: 'VERIFY_FAILED', message: '验证执行失败，请稍后重试' });
     }
   });
 }

@@ -71,6 +71,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   delete process.env.ALLOW_APPLY;
+  delete process.env.VERIFY_COMMAND;
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
@@ -84,8 +85,16 @@ function insertGoodProposal(): string {
   return id;
 }
 
+/** 插一个已 apply 的提案（verify 要求 status=applied）。 */
+function insertAppliedProposal(): string {
+  const id = insertGoodProposal();
+  store.markApplied(id, {}, Date.now());
+  return id;
+}
+
 const apply = (payload: unknown) => app.inject({ method: 'POST', url: '/api/apply-patch', payload });
 const rollback = (payload: unknown) => app.inject({ method: 'POST', url: '/api/rollback', payload });
+const verify = (payload: unknown) => app.inject({ method: 'POST', url: '/api/verify', payload });
 
 describe('/api/apply-patch · 审批门', () => {
   it('ALLOW_APPLY 未开 → 403 APPLY_DISABLED（默认无写盘可能）', async () => {
@@ -132,5 +141,56 @@ describe('/api/rollback · 权限门', () => {
   it('ALLOW_APPLY 未开 → 403', async () => {
     const res = await rollback({ proposalId: insertGoodProposal() });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('/api/verify · 沙箱验证（就地后验）', () => {
+  it('ALLOW_APPLY 未开 → 403', async () => {
+    const res = await verify({ proposalId: insertAppliedProposal() });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('缺 proposalId → 400', async () => {
+    process.env.ALLOW_APPLY = 'true';
+    expect((await verify({})).statusCode).toBe(400);
+  });
+
+  it('未知 proposalId → 404', async () => {
+    process.env.ALLOW_APPLY = 'true';
+    process.env.VERIFY_COMMAND = 'exit 0';
+    expect((await verify({ proposalId: 'nope' })).statusCode).toBe(404);
+  });
+
+  it('提案未 apply → 409（需先 apply 再验证）', async () => {
+    process.env.ALLOW_APPLY = 'true';
+    process.env.VERIFY_COMMAND = 'exit 0';
+    const res = await verify({ proposalId: insertGoodProposal() }); // proposed 态
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('已 apply 但未配置 VERIFY_COMMAND → 200 {ran:false}', async () => {
+    process.env.ALLOW_APPLY = 'true';
+    const res = await verify({ proposalId: insertAppliedProposal() });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ran).toBe(false);
+    expect(res.json().reason).toBe('VERIFY_NOT_CONFIGURED');
+  });
+
+  it('已 apply + 命令通过 → 200 passed:true', async () => {
+    process.env.ALLOW_APPLY = 'true';
+    process.env.VERIFY_COMMAND = 'exit 0';
+    const res = await verify({ proposalId: insertAppliedProposal() });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ran).toBe(true);
+    expect(res.json().passed).toBe(true);
+  });
+
+  it('已 apply + 命令失败 → 200 passed:false（测试不过不是传输错误）', async () => {
+    process.env.ALLOW_APPLY = 'true';
+    process.env.VERIFY_COMMAND = 'echo boom 1>&2; exit 1';
+    const res = await verify({ proposalId: insertAppliedProposal() });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().passed).toBe(false);
+    expect(res.json().output).toContain('boom');
   });
 });

@@ -30,6 +30,17 @@ export type ProposeResult =
 
 export type ApplyState = 'idle' | 'applying' | 'applied' | 'rolling' | 'rolled';
 
+export interface VerifyResult {
+  ran: boolean;
+  passed?: boolean;
+  exitCode?: number | null;
+  timedOut?: boolean;
+  command?: string;
+  output?: string;
+  reason?: string; // VERIFY_NOT_CONFIGURED
+  message?: string;
+}
+
 function extractApplyError(e: unknown): string {
   const err = e as { response?: { status?: number; data?: { message?: string } } };
   if (err?.response?.status === 403) {
@@ -46,12 +57,16 @@ export function useProposePatch() {
   const applyState = ref<ApplyState>('idle');
   const applyError = ref<string | null>(null);
 
+  const verifying = ref(false);
+  const verifyResult = ref<VerifyResult | null>(null);
+
   async function propose(question: string, files: string[]): Promise<void> {
     loading.value = true;
     error.value = null;
     result.value = null;
     applyState.value = 'idle';
     applyError.value = null;
+    verifyResult.value = null;
     try {
       const res = await http.post('/api/propose-patch', { question, files });
       result.value = res.data as ProposeResult;
@@ -93,5 +108,18 @@ export function useProposePatch() {
     }
   }
 
-  return { result, loading, error, applyState, applyError, propose, apply, rollback };
+  async function verify(proposalId: string): Promise<void> {
+    verifying.value = true;
+    verifyResult.value = null;
+    try {
+      const res = await http.post('/api/verify', { proposalId });
+      verifyResult.value = res.data as VerifyResult;
+    } catch (e) {
+      verifyResult.value = { ran: false, message: extractApplyError(e) };
+    } finally {
+      verifying.value = false;
+    }
+  }
+
+  return { result, loading, error, applyState, applyError, verifying, verifyResult, propose, apply, rollback, verify };
 }

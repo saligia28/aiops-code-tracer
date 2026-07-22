@@ -409,7 +409,9 @@ impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产
 **第二刀 · 审批门 `/api/agent/apply`**：需用户显式确认（新权限位 + 二次确认 UI）；apply 前
 校验基线哈希未变 + 再跑一次 `git apply --check`；应用走 `git stash`/分支快照，提供一键回滚。
 
-**第三刀 · 沙箱执行（远期）**：apply 后在隔离 worktree 跑 lint/test，结果回传 agent 决定是否保留。
+**第三刀 · 沙箱执行**：apply 后跑 lint/test，结果回传决定保留/回滚。**已落地（就地后验）**——
+隔离 worktree 对 pnpm monorepo 有 node_modules/脏树硬伤（测试跑不起来），改为就地后验：apply
+到主树 → 真实环境跑配置的验证命令 → pass/fail 回传 → 保留或一键回滚（rollback 即安全网）。见下方进度。
 
 **验收**：
 - 第一刀：propose_patch 产出的每个 hunk 都能 `git apply --check` 干净通过（**硬 gate**）；proposal 带
@@ -490,7 +492,22 @@ impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产
 >   throw new Error('订单 ID 不能为空')`）；apply 真落盘（字节 diff 确认）、rollback 逐字节还原。**坐实方案 B**：
 >   行号记账交给代码后，真实 LLM 首生成就可应用，G0 存在的根因（LLM 数不对 @@ 行号）被经验性绕开。
 > - **未做（非阻塞）**：① 上下文级预填（从答案/prepare_fix_context 一键带 question+files 跳转，免手填）UX 增强；
->   ② 前端视觉走查（起 dev server 人眼过一遍 apply/回滚交互）；③ 第三刀沙箱执行（远期）。
+>   ② 前端视觉走查（起 dev server 人眼过一遍 apply/回滚/验证交互）。
+>
+> **进度（2026-07-21）· 第三刀 沙箱验证（就地后验）✅ 已落地**：把闭环补成 propose→apply→**verify**。
+> 隔离模型取「就地后验」（隔离 worktree 对 pnpm monorepo 有 node_modules/脏树硬伤，测试根本跑不起来）。
+> - **验证运行器**（`services/patch/verifyRunner.ts`）：spawn `sh -c <VERIFY_COMMAND>` 于 repoPath，
+>   退出码判 pass/fail、输出截断（8k）、超时终止。**命令只来自 env `VERIFY_COMMAND`（可信管理员配置），
+>   绝不用 LLM/提案里的命令**（那才有注入风险）；未配置则 ran=false。
+> - **路由** `/api/verify`：ALLOW_APPLY 门 + 提案须 status=applied（验的是已落盘的改动）+ 未配置命令
+>   200 `{ran:false}`；跑完记审计（verify ok/fail）。测试失败(passed=false)仍 200——跑完了、结论不过，不是传输错误。
+> - **Web UI**：applied 态加"运行验证"→ pass/fail 徽标 + 输出（可滚动），与"↩ 回滚"并列。
+> - **验证**：patch 模块 +13 单测（runner 6：退出码/输出捕获/cwd/超时/未配置；verify 路由 7：权限门/
+>   未 apply 409/未配置 ran:false/pass/fail），API 全套 220 test 绿、三包 typecheck + build 过。
+>   verify 路由测试用真实 `sh -c` 执行 stub 命令（exit 0/1），即路径已活体覆盖。
+> - **P2-G 三刀全部收官**：propose（只读）→ apply/rollback（HITL 审批门）→ verify（就地后验）。
+>   **未做（非阻塞）**：全流程活体（真实 LLM + 真 VERIFY_COMMAND 一次跑通 propose→apply→verify→keep/rollback）；
+>   前端视觉走查；第四刀真隔离沙箱（远期，等有非 monorepo 或容器化需求再上）。
 
 ---
 

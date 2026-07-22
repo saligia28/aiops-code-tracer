@@ -125,9 +125,27 @@
 
         <div v-else-if="applyState === 'applying'" class="apply-status"><span class="spinner dark" /> 落盘中...</div>
 
-        <div v-else-if="applyState === 'applied'" class="apply-status applied">
-          <span>✅ 已落盘到仓库</span>
-          <button class="ghost-btn" @click="doRollback">↩ 回滚</button>
+        <div v-else-if="applyState === 'applied'" class="applied-block">
+          <div class="apply-status applied">
+            <span>✅ 已落盘到仓库</span>
+            <div class="applied-actions">
+              <button class="ghost-btn" @click="doVerify" :disabled="verifying">
+                <span v-if="verifying" class="spinner dark" />{{ verifying ? '验证中...' : '运行验证' }}
+              </button>
+              <button class="ghost-btn" @click="doRollback">↩ 回滚</button>
+            </div>
+          </div>
+
+          <div v-if="verifyResult" class="verify-result" :class="verifyVerdictClass">
+            <template v-if="!verifyResult.ran">⚠️ {{ verifyResult.message || '未运行验证（服务端未配置 VERIFY_COMMAND）' }}</template>
+            <template v-else>
+              <div class="verify-head">
+                <strong>{{ verifyResult.passed ? '✅ 验证通过' : verifyResult.timedOut ? '⏱ 验证超时' : '❌ 验证未通过' }}</strong>
+                <code v-if="verifyResult.command">$ {{ verifyResult.command }}</code>
+              </div>
+              <pre v-if="verifyResult.output" class="verify-output">{{ verifyResult.output }}</pre>
+            </template>
+          </div>
         </div>
 
         <div v-else-if="applyState === 'rolling'" class="apply-status"><span class="spinner dark" /> 回滚中...</div>
@@ -146,7 +164,7 @@ import { useProposePatch } from '@/composables/useProposePatch';
 
 const router = useRouter();
 const { currentRepo } = useCurrentRepo();
-const { result, loading, error, applyState, applyError, propose, apply, rollback } = useProposePatch();
+const { result, loading, error, applyState, applyError, verifying, verifyResult, propose, apply, rollback, verify } = useProposePatch();
 
 const question = ref('');
 const fileInput = ref('');
@@ -181,6 +199,17 @@ function doRollback(): void {
   const id = currentProposalId();
   if (id) void rollback(id);
 }
+
+function doVerify(): void {
+  const id = currentProposalId();
+  if (id) void verify(id);
+}
+
+const verifyVerdictClass = computed(() => {
+  const v = verifyResult.value;
+  if (!v || !v.ran) return 'neutral';
+  return v.passed ? 'pass' : 'fail';
+});
 
 async function copyDiff(): Promise<void> {
   const r = result.value;
@@ -724,5 +753,74 @@ code {
 .spinner.dark {
   border: 2px solid rgba(79, 110, 247, 0.25);
   border-top-color: #4f6ef7;
+}
+
+.applied-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.applied-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.applied-actions .ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.verify-result {
+  border-radius: 12px;
+  padding: 14px 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.verify-result.pass {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.verify-result.fail {
+  background: #fdecea;
+  color: #c0392b;
+}
+
+.verify-result.neutral {
+  background: #fff8e1;
+  color: #8a6d1a;
+}
+
+.verify-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.verify-head code {
+  background: rgba(0, 0, 0, 0.06);
+  color: inherit;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.verify-output {
+  margin-top: 10px;
+  max-height: 320px;
+  overflow: auto;
+  background: #1a1a2e;
+  color: #d6d6e0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>
