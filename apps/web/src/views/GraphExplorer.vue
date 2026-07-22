@@ -32,6 +32,10 @@ const canvasRef = ref<HTMLDivElement>();
 
 <style scoped>
 .graph-explorer {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 24px 20px;
 }
 
@@ -42,8 +46,9 @@ const canvasRef = ref<HTMLDivElement>();
 }
 
 .graph-canvas {
+  flex: 1;
+  min-height: 0;
   width: 100%;
-  height: calc(100vh - 200px);
   border: 1px solid #e4e7ed;
   border-radius: 4px;
   display: flex;
