@@ -70,7 +70,9 @@ temp/
 # 文档信息
 docs/
 todo/
+learn/
 
 # AI相关
 .AGENT.md
 .CLAUDE.md
+.superpowers/
