@@ -4,6 +4,8 @@
       class="project-trigger"
       :class="{ 'is-active': expanded, 'is-loading': loading }"
       type="button"
+      aria-controls="project-selector-panel"
+      :aria-expanded="expanded"
       @click="toggleExpanded"
     >
       <span class="trigger-dot" />
@@ -18,7 +20,7 @@
       </span>
     </button>
 
-    <div v-if="expanded" class="project-panel">
+    <div v-if="expanded" id="project-selector-panel" class="project-panel">
       <div class="panel-header">
         <div class="panel-title">项目切换</div>
         <button class="panel-close" type="button" @click="expanded = false">收起</button>
@@ -234,14 +236,10 @@ onUnmounted(() => {
 <!-- scoped 样式：浮窗 + 面板 -->
 <style scoped>
 .project-floating {
-  position: fixed;
-  bottom: 80px;
-  left: 16px;
+  position: relative;
   z-index: 1200;
   display: flex;
-  flex-direction: column-reverse;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: flex-end;
 }
 
 .project-floating.is-expanded {
@@ -332,6 +330,9 @@ onUnmounted(() => {
 
 /* ---- 展开面板 ---- */
 .project-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
   width: 300px;
   padding: 14px;
   border: 1.5px solid rgba(79, 110, 247, 0.3);
@@ -529,10 +530,19 @@ onUnmounted(() => {
 
 @media (max-width: 768px) {
   .project-floating {
+    position: fixed;
     bottom: calc(140px + env(safe-area-inset-bottom, 0px));
     right: 16px;
     left: auto;
+    z-index: 1200;
+    display: flex;
+    flex-direction: column-reverse;
     align-items: flex-end;
+    gap: 8px;
+  }
+
+  .project-floating.is-expanded {
+    z-index: 1210;
   }
 
   /* 触发按钮变圆形 */
@@ -563,6 +573,9 @@ onUnmounted(() => {
 
   /* 面板从右侧弹出，宽度自适应 */
   .project-panel {
+    position: static;
+    top: auto;
+    right: auto;
     width: min(300px, calc(100vw - 32px));
     max-width: none;
     margin-bottom: 8px;
