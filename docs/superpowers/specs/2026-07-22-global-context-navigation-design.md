@@ -96,7 +96,7 @@ AppShell
 两个选择器只用现有的 CSS 断点切换布局，不新增 `embedded` prop 或 JS 视口判断，避免 768/769px 的 CSS 与 JS 状态漂移：
 
 - 基础样式反转为桌面嵌入态：容器 `position: relative`，保留 `z-index: 1200`（展开态 1210）建立高于后置 `AppContent` 的层叠上下文；触发器正常排布；面板 `position: absolute; top: calc(100% + 8px); right: 0` 并继承该层级。
-- 当前基础样式中的 fixed 属性不是继续留在 base，而是整体搬进 `@media (max-width: 768px)`。移动块必须完整重声明 `position: fixed`、项目/模型各自的 `bottom`、`right/left`、`z-index`、`display:flex`、`flex-direction: column-reverse`、`align-items`、`gap`，以及移动面板的 `margin-bottom`，不能依赖桌面 base 继承这些属性。
+- 当前基础样式中的 fixed 属性不是继续留在 base，而是整体搬进 `@media (max-width: 768px)`。移动块必须完整重声明 `position: fixed`、项目/模型各自的 `bottom`、`right/left`、`z-index`、`display:flex`、`flex-direction: column-reverse`、`align-items`、`gap`，不能依赖桌面 base 继承这些属性。桌面 base 已把面板改为绝对定位，因此移动块还必须显式恢复 `.project-panel` / `.llm-panel { position: static; top: auto; right: auto; margin-bottom: 8px; }`，让面板重新成为 `column-reverse` 的 flex 子项并保持当前向上展开方向。
 - 移动端组件祖先必须保持可渲染，不能被 `display: none` 隐藏。
 - 组件模板、请求逻辑和事件协议不拆分，避免为桌面/移动端维护两份行为。
 
