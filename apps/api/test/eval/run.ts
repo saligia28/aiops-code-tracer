@@ -338,40 +338,52 @@ async function agentTasks(): Promise<void> {
   }
   await loginIfNeeded();
 
-  const cases = loadJsonl<AgentTaskCase>('./dataset/agentTasks.jsonl');
+  const allCases = loadJsonl<AgentTaskCase>('./dataset/agentTasks.jsonl');
+  // EVAL_TASK：按 id 子串过滤（小成本验证 harness / 单任务复跑）；EVAL_RUNS：每任务重复跑 K 次压 agent 方差
+  const taskFilter = (process.env.EVAL_TASK ?? '').trim();
+  const cases = taskFilter ? allCases.filter((c) => c.id.includes(taskFilter)) : allCases;
+  const RUNS = Math.max(1, Number(process.env.EVAL_RUNS ?? 1));
   const plannerOff = process.env.PLANNER_DISABLE === '1';
-  console.log(`P1-C 长任务完整度  用例=${cases.length}  规划器=${plannerOff ? 'OFF（对照）' : 'ON'}  （agent 模式 + judge coverage 3 票）\n`);
+  console.log(`P1-C 长任务完整度  用例=${cases.length}${taskFilter ? `（过滤 "${taskFilter}"）` : ''}  规划器=${plannerOff ? 'OFF（对照）' : 'ON'}  每任务 ${RUNS} 次${RUNS > 1 ? '（压 agent 方差）' : ''}  （agent 模式 + judge coverage 3 票）\n`);
 
-  let covSum = 0, covTotal = 0, toolSum = 0, done = 0;
+  let covSum = 0, covTotal = 0, toolSum = 0, runsDone = 0;
   const scores: number[] = [];
   for (const c of cases) {
-    const resp = await askAgent(c.question);
-    if (!resp || !resp.answer) {
-      console.log(`  ⚠️ ${c.id} agent 无答案，跳过`);
+    const covs: number[] = [];
+    const toolCounts: number[] = [];
+    let menPass = 0;
+    let total = c.coverageChecklist.length;
+    for (let r = 0; r < RUNS; r++) {
+      const resp = await askAgent(c.question);
+      if (!resp || !resp.answer) continue;
+      runsDone++;
+      toolSum += resp.toolCalls;
+      toolCounts.push(resp.toolCalls);
+      if (!c.mustMention || checkMentions(resp.answer, c.mustMention).ok) menPass++;
+      const judged = await judgeAnswer({
+        question: c.question,
+        answer: resp.answer,
+        evidence: [],
+        referenceAnswer: c.referenceAnswer,
+        coverageChecklist: c.coverageChecklist,
+      });
+      const cov = judged?.verdict.coverage;
+      if (cov) { covSum += cov.covered; covTotal += cov.total; covs.push(cov.covered); total = cov.total; }
+      else covs.push(0);
+      if (judged) scores.push(judged.verdict.score);
+    }
+    if (covs.length === 0) {
+      console.log(`  ⚠️ ${c.id} 全部无答案，跳过`);
       continue;
     }
-    done++;
-    toolSum += resp.toolCalls;
-    const men = c.mustMention ? checkMentions(resp.answer, c.mustMention) : { ok: true, missing: [] };
-    const judged = await judgeAnswer({
-      question: c.question,
-      answer: resp.answer,
-      evidence: [],
-      referenceAnswer: c.referenceAnswer,
-      coverageChecklist: c.coverageChecklist,
-    });
-    const cov = judged?.verdict.coverage;
-    if (cov) { covSum += cov.covered; covTotal += cov.total; }
-    if (judged) scores.push(judged.verdict.score);
-
-    console.log(`  ${c.id}   工具调用 ${resp.toolCalls} 次`);
-    console.log(`    必提 ${men.ok ? '✅' : `❌ 缺: ${men.missing.join(', ')}`}` +
-      (cov ? `   覆盖 ${cov.covered}/${cov.total}${cov.missing.length ? ` (缺: ${cov.missing.join('、')})` : ''}` : '   覆盖 —') +
-      (judged ? `   评分 ${judged.verdict.score}/10` : '   judge 失败'));
+    const meanCov = mean(covs);
+    const meanTools = toolCounts.length ? mean(toolCounts) : 0;
+    const spread = covs.length > 1 ? `  区间 ${Math.min(...covs)}~${Math.max(...covs)}` : '';
+    console.log(`  ${c.id}   覆盖 ${meanCov.toFixed(1)}/${total}${spread}   工具均 ${meanTools.toFixed(0)} 次   必提 ${menPass}/${covs.length}`);
   }
 
   const covPct = covTotal ? ((covSum / covTotal) * 100).toFixed(0) : '-';
-  console.log(`\n  汇总（规划器 ${plannerOff ? 'OFF' : 'ON'}）：完成 ${done}/${cases.length}   覆盖率 ${covPct}%（${covSum}/${covTotal}）   平均工具调用 ${done ? (toolSum / done).toFixed(1) : '-'} 次   平均分 ${scores.length ? mean(scores).toFixed(1) : '-'}\n`);
+  console.log(`\n  汇总（规划器 ${plannerOff ? 'OFF' : 'ON'}，每任务 ${RUNS} 次）：有效跑 ${runsDone}   覆盖率 ${covPct}%（${covSum}/${covTotal}）   平均工具调用 ${runsDone ? (toolSum / runsDone).toFixed(1) : '-'} 次   平均分 ${scores.length ? mean(scores).toFixed(1) : '-'}\n`);
   console.log(`  读数提示：长任务主指标是【覆盖率】与【平均工具调用】（planner 价值=少走冤枉路）；`);
   console.log(`  平均分含 faithful 维度，而 agent 答案不产出结构化 evidence（judge 无引用可依），故 score 系统性偏低，仅供横向对照、不宜绝对解读。`);
   console.log(`  对照实验：分别在默认 与 PLANNER_DISABLE=1 下跑 \`eval -- agent\`，比对覆盖率与平均工具调用数。\n`);
