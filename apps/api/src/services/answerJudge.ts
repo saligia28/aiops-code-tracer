@@ -114,7 +114,7 @@ export interface JudgeVerdict {
  * v5：加 coverage 维度（P1-C 长任务完整度）——提供【覆盖点清单】时逐项判答案是否讲清，
  * 输出命中列表；未提供则 coverage 段整体缺省。仅追加维度，不改 faithful/correct/basis 判据。
  */
-const PROMPT_VERSION = 'v5';
+const PROMPT_VERSION = 'v6';
 
 function buildJudgeMessages(input: JudgeInput): Array<{ role: 'system' | 'user'; content: string }> {
   const evidenceBlock = input.evidence
@@ -149,7 +149,7 @@ function buildJudgeMessages(input: JudgeInput): Array<{ role: 'system' | 'user';
         '   "code"=结论以代码证据为准（答案提及文档、甚至指出文档过时，只要结论站在代码一边，就是 code）；',
         '   "doc"=结论采信了文档的说法；"mixed"=结论在两者间摇摆、未明确取舍；未提供文档片段时输出 "n/a"。',
         hasCoverage
-          ? '4. coveredPoints（覆盖度）：仅当提供了【覆盖点清单】时判定——逐一检查每个覆盖点，答案是否实质讲清了该环节（讲清=有具体文件/方法/条件/结论，不是仅提及名词）。输出实质讲清了的覆盖点【序号】数组（从 1 计）。'
+          ? '4. coveredPoints（覆盖度）：仅当提供了【覆盖点清单】时判定。【重要】这一项只评估答案正文本身的完整度，与 faithful/证据无关——逐一检查每个覆盖点，答案是否用具体的文件/方法/条件/结论把该环节讲清了（不是仅提及名词）；即使【代码证据】为空，也照常只按答案正文逐项判定，讲清了就计入（证据背书由 faithful 负责、绝不影响本项）。输出实质讲清了的覆盖点【序号】数组（从 1 计）。'
           : '4. coveredPoints：未提供覆盖点清单，输出空数组 []。',
         '5. score：0-10 总评（考虑以上各项与表达清晰度）。',
         '只输出一个 JSON 对象，不要任何其他文字、不要 markdown 代码块：',
