@@ -92,3 +92,17 @@ diff 添加/删除色由 `--qg-success`/`--qg-danger` 令牌驱动，暗色可�
 - ✅ Unit(3) / E2E(43) / typecheck / build 全通过并记录实际结果。
 - ✅ 业务逻辑/路由/接口/问答/图谱/索引/提案行为未变：reskin 提交经"模板+脚本逐字节比对"与"布局属性不变量"核验（仅 ProposePatch 删 1 处死 `useRouter`）。
 - ✅ 未覆盖或误提交样式工作开始前的用户改动（每次提交按路径精确暂存，未用 `git add -A`）。
+
+## 9. 终审与修复（fresh-eyes 复核）
+
+全部任务完成后做了一轮整体终审，抓到一类机械核验（源码 grep 扫不到、值来自 `node_modules` 计算变量）与我早前截图漏看的 **Element Plus 暗色缺陷**，已修（提交 `90c880f`）：
+
+- **C1（严重，已修）**：暗色下 `el-button type="primary"` 文字近乎不可见——EP 用 `--el-color-white` 作主按钮文字，而基色映射未覆盖它，近白底 + 白字 ≈ 1.05:1（`/index-manager` 的"全量构建"）。修法：在 `quiet-grid.css` 补 `.el-button--primary` 的 `--el-button-text-color: var(--qg-bg)` 等组件级变量。
+- **I1（已修）**：EP 派生色阶（`--el-color-primary-light-3/9`、`-dark-2`）未映射，hover/active 泄漏默认蓝。修法：基 `:root` 把 primary 色阶中和为中性令牌。
+- **I2（已修）**：`el-tag` 类型底色走 `*-light-9` 近白，暗色下刺眼低对比。修法：用 2 类特异性 `.el-tag.el-tag--X` 把 `--el-tag-bg-color` 钉成 `--qg-surface` + 令牌文字色（EP 同选择器同特异性，需提权才稳赢）。
+- **M2（已修）**：`.el-message__content` 曾被统一压成 `--qg-fg`，抹掉了 success/error 类型强调。修法：改为只钉 `--el-message-bg-color` 暗色面，保留 EP 按类型文字色。
+- **M1（已修）**：API 为默认稳态却常驻 `--qg-warning` 琥珀"告警"点，语义误导。改为中性 `--qg-fg`（模式仍由"API/内网"文字徽标区分）。
+
+修复后复验：`typecheck`/`build` 退出 0，`test:e2e` 43 passed，`test:screenshots` 18 重出；逐张看图确认暗色主按钮文字可读、状态 tag 转暗底令牌、API 点中性——明色未回归。
+
+> 非阻塞观察（留档）：暗色 `--qg-elevated`(#151619) 比 `--qg-surface`(#191a1d) 更暗，与亮色"抬升更亮"相反，面板/页面在暗色下主要靠 1px 边框区分——沿用计划 §2 令牌值，视为 Quiet Grid 有意取舍。
