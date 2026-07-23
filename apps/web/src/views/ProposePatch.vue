@@ -1,16 +1,14 @@
 <template>
   <div class="propose">
-    <div class="header">
-      <div class="title-row">
-        <button class="back-btn" @click="router.push({ name: 'Home' })" title="返回">←</button>
-        <h1>修改提案</h1>
+    <PageHeader index="04" kicker="PATCH" title="修改提案" :back-to="{ name: 'Home' }">
+      <template #actions>
         <span class="repo-tag" v-if="currentRepo">{{ currentRepo }}</span>
-      </div>
-      <p class="subtitle">
-        描述要实现的修改 + 指定目标文件，AI 生成一份<strong>只读的、已通过 <code>git apply --check</code> 校验</strong>的补丁提案。
-        <strong>不会修改仓库任何文件</strong>——应用需人工审批。
-      </p>
-    </div>
+      </template>
+    </PageHeader>
+    <p class="subtitle">
+      描述要实现的修改 + 指定目标文件，AI 生成一份<strong>只读的、已通过 <code>git apply --check</code> 校验</strong>的补丁提案。
+      <strong>不会修改仓库任何文件</strong>——应用需人工审批。
+    </p>
 
     <div class="form-card">
       <label class="field-label">修改诉求</label>
@@ -159,6 +157,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
+import PageHeader from '@/components/PageHeader.vue';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
 import { useProposePatch } from '@/composables/useProposePatch';
 
@@ -269,34 +268,6 @@ const failText = computed(() => {
   max-width: 900px;
   margin: 0 auto;
   padding: 32px 20px 80px;
-}
-
-.title-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.back-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  border: 1px solid #e2e4ea;
-  background: #fff;
-  color: #5a5e72;
-  font-size: 18px;
-  cursor: pointer;
-}
-
-.back-btn:hover {
-  border-color: #4f6ef7;
-  color: #4f6ef7;
-}
-
-.title-row h1 {
-  font-size: 24px;
-  font-weight: 700;
-  color: #1a1a2e;
 }
 
 .repo-tag {

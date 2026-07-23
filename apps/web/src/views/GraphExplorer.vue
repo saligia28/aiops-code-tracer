@@ -1,8 +1,6 @@
 <template>
   <div class="graph-explorer">
-    <el-page-header @back="$router.push('/')">
-      <template #content>图谱浏览器</template>
-    </el-page-header>
+    <PageHeader index="02" kicker="GRAPH" title="图谱浏览器" :back-to="{ name: 'Home' }" />
 
     <div class="toolbar">
       <el-input v-model="searchQuery" placeholder="搜索符号..." style="width: 300px" />
@@ -22,6 +20,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue';
+import PageHeader from '@/components/PageHeader.vue';
 
 const searchQuery = ref('');
 const filterType = ref('');

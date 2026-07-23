@@ -1,8 +1,6 @@
 <template>
   <div class="index-manager">
-    <el-page-header @back="$router.push('/')">
-      <template #content>索引管理</template>
-    </el-page-header>
+    <PageHeader index="03" kicker="INDEX" title="索引管理" :back-to="{ name: 'Home' }" />
 
     <el-card class="status-card">
       <template #header>索引状态</template>
@@ -36,6 +34,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import http from '@/lib/http';
+import PageHeader from '@/components/PageHeader.vue';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
 
 const { currentRepo } = useCurrentRepo();
