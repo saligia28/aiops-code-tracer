@@ -21,6 +21,7 @@
         :key="i"
         class="breadcrumb-seg"
         type="button"
+        :title="seg.path"
         @click="navigateTo(seg.path)"
       >
         {{ seg.label }}

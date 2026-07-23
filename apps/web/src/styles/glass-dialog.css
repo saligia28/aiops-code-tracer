@@ -1,28 +1,19 @@
-/* 玻璃拟态弹窗 / 表单 / 目录浏览器 共享样式。
+/* 对话框 / 表单 / 目录浏览器 共享样式（Quiet Grid 皮肤）。
    从 TopProjectSelector.vue 的全局 <style> 块原样抽出（非 scoped=全局，行为不变）。
-   被 ProjectCreateDialog / ProjectDeleteDialog / DirectoryBrowser 复用。 */
+   被 ProjectCreateDialog / ProjectDeleteDialog / DirectoryBrowser 复用。
+   注意：类名（尤其 .glass-dialog）为承载类，TopProjectSelector 的点击外部关闭
+   依赖 target.closest('.glass-dialog')，只换皮不改名。 */
 /* ====== Glass Dialog 主题 ====== */
-@keyframes glass-breathe {
-  0%, 100% { border-color: rgba(79, 110, 247, 0.2); box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10), 0 0 0 0 rgba(79, 110, 247, 0); }
-  50%      { border-color: rgba(79, 110, 247, 0.45); box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10), 0 0 16px 2px rgba(79, 110, 247, 0.08); }
-}
-
-@keyframes glass-breathe-danger {
-  0%, 100% { border-color: rgba(245, 108, 108, 0.2); box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10), 0 0 0 0 rgba(245, 108, 108, 0); }
-  50%      { border-color: rgba(245, 108, 108, 0.45); box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10), 0 0 16px 2px rgba(245, 108, 108, 0.08); }
-}
-
 .glass-dialog.el-dialog {
-  border-radius: 16px;
-  border: 1.5px solid rgba(79, 110, 247, 0.2);
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(20px);
+  border-radius: 2px;
+  border: 1px solid var(--qg-line);
+  background: var(--qg-elevated);
   overflow: hidden;
-  animation: glass-breathe 3s ease-in-out infinite;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
 .glass-dialog.glass-dialog-danger.el-dialog {
-  animation: glass-breathe-danger 3s ease-in-out infinite;
+  border-color: var(--qg-danger);
 }
 
 .glass-dialog .el-dialog__header {
@@ -32,7 +23,7 @@
 
 .glass-dialog .el-dialog__body {
   padding: 0 28px 20px;
-  color: #2b2f3a;
+  color: var(--qg-fg);
 }
 
 .glass-dialog .el-dialog__footer {
@@ -50,7 +41,7 @@
 .glass-dialog-title {
   font-size: 15px;
   font-weight: 700;
-  color: #1a1d26;
+  color: var(--qg-fg);
   letter-spacing: -0.01em;
 }
 
@@ -60,10 +51,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1.5px solid transparent;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.03);
-  color: #909399;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: var(--qg-surface);
+  color: var(--qg-faint);
   font-size: 17px;
   line-height: 1;
   cursor: pointer;
@@ -71,9 +62,9 @@
 }
 
 .glass-dialog-close:hover {
-  background: rgba(0, 0, 0, 0.06);
-  border-color: #e0e4ee;
-  color: #2b2f3a;
+  background: var(--qg-surface);
+  border-color: var(--qg-line);
+  color: var(--qg-fg);
 }
 
 /* ---- footer ---- */
@@ -87,70 +78,73 @@
 /* ---- 通用 glass 按钮 ---- */
 .glass-btn {
   padding: 8px 20px;
-  border-radius: 8px;
+  border-radius: 2px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
-  border: 1.5px solid transparent;
+  border: 1px solid transparent;
   line-height: 1.4;
 }
 
 .glass-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.6;
   cursor: not-allowed;
+  background: var(--qg-surface);
+  color: var(--qg-faint);
+  border-color: var(--qg-line);
 }
 
 .glass-btn-primary {
-  background: #4f6ef7;
-  color: #fff;
-  border-color: #4f6ef7;
+  background: var(--qg-fg);
+  color: var(--qg-bg);
+  border-color: var(--qg-fg);
 }
 
 .glass-btn-primary:hover:not(:disabled) {
-  background: #3d5bdf;
-  border-color: #3d5bdf;
+  background: color-mix(in srgb, var(--qg-fg) 85%, var(--qg-bg));
+  border-color: color-mix(in srgb, var(--qg-fg) 85%, var(--qg-bg));
 }
 
 .glass-btn-danger {
-  background: #f56c6c;
-  color: #fff;
-  border-color: #f56c6c;
+  background: var(--qg-danger);
+  color: var(--qg-bg);
+  border-color: var(--qg-danger);
 }
 
 .glass-btn-danger:hover:not(:disabled) {
-  background: #e04848;
-  border-color: #e04848;
+  background: color-mix(in srgb, var(--qg-danger) 85%, var(--qg-bg));
+  border-color: color-mix(in srgb, var(--qg-danger) 85%, var(--qg-bg));
 }
 
 .glass-btn-ghost {
   background: transparent;
-  color: #606266;
-  border-color: #dcdfe6;
+  color: var(--qg-fg);
+  border-color: var(--qg-line);
 }
 
 .glass-btn-ghost:hover:not(:disabled) {
-  color: #4f6ef7;
-  border-color: rgba(79, 110, 247, 0.4);
-  background: rgba(79, 110, 247, 0.04);
+  color: var(--qg-fg);
+  border-color: var(--qg-line-strong);
+  background: var(--qg-surface);
 }
 
 .glass-btn-outline {
   padding: 7px 14px;
-  border-radius: 8px;
+  border-radius: 2px;
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
   background: transparent;
-  color: #4f6ef7;
-  border: 1.5px solid rgba(79, 110, 247, 0.4);
+  color: var(--qg-fg);
+  border: 1px solid var(--qg-line);
   transition: all 0.15s;
   white-space: nowrap;
 }
 
 .glass-btn-outline:hover {
-  background: rgba(79, 110, 247, 0.06);
-  border-color: #4f6ef7;
+  background: var(--qg-surface);
+  border-color: var(--qg-line-strong);
 }
 
 /* ---- glass 表单 ---- */
@@ -169,27 +163,27 @@
 .glass-label-text {
   font-size: 12.5px;
   font-weight: 600;
-  color: #4a4e5a;
+  color: var(--qg-fg);
 }
 
 .glass-label-text em {
-  color: #f56c6c;
+  color: var(--qg-danger);
   font-style: normal;
 }
 
 .glass-label-hint {
   font-weight: 400;
-  color: #b0b4c0;
+  color: var(--qg-faint);
 }
 
 .glass-input {
   width: 100%;
   padding: 9px 12px;
-  border: 1.5px solid #e0e4ee;
-  border-radius: 8px;
-  background: rgba(245, 247, 250, 0.6);
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-bg);
   font-size: 13px;
-  color: #2b2f3a;
+  color: var(--qg-fg);
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
   font-family: inherit;
@@ -197,12 +191,18 @@
 }
 
 .glass-input::placeholder {
-  color: #b0b4c0;
+  color: var(--qg-faint);
 }
 
 .glass-input:focus {
-  border-color: rgba(79, 110, 247, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.08);
+  border-color: var(--qg-focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--qg-focus) 30%, transparent);
+}
+
+/* 键盘聚焦时保留 quiet-grid.css 的全局 :focus-visible 描边（显式提权，避免被上面的 outline:none 覆盖）。 */
+.glass-input:focus-visible {
+  outline: 2px solid var(--qg-focus);
+  outline-offset: 2px;
 }
 
 .glass-input[readonly] {
@@ -211,7 +211,7 @@
 
 .glass-select {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23909399' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23888984' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
   padding-right: 30px;
@@ -234,20 +234,20 @@
   margin-top: 14px;
   cursor: pointer;
   font-size: 12.5px;
-  color: #606266;
+  color: var(--qg-muted);
 }
 
 .glass-checkbox input[type="checkbox"] {
   width: 15px;
   height: 15px;
-  accent-color: #4f6ef7;
+  accent-color: var(--qg-fg);
   cursor: pointer;
 }
 
 /* ---- body text ---- */
 .glass-dialog-body-text {
   font-size: 13.5px;
-  color: #2b2f3a;
+  color: var(--qg-fg);
   line-height: 1.6;
   margin: 0 0 14px;
 }
@@ -255,15 +255,15 @@
 /* ---- 删除风险提示 ---- */
 .delete-risks {
   padding: 12px 14px;
-  background: rgba(245, 108, 108, 0.05);
-  border: 1px solid rgba(245, 108, 108, 0.15);
-  border-radius: 10px;
+  background: color-mix(in srgb, var(--qg-danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--qg-danger) 25%, transparent);
+  border-radius: 2px;
 }
 
 .risk-title {
   font-size: 12.5px;
   font-weight: 700;
-  color: #e04848;
+  color: var(--qg-danger);
   margin-bottom: 6px;
 }
 
@@ -271,7 +271,7 @@
   margin: 0;
   padding-left: 18px;
   font-size: 12.5px;
-  color: #606266;
+  color: var(--qg-muted);
   line-height: 1.8;
 }
 
@@ -280,38 +280,51 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   margin-bottom: 12px;
   padding: 8px 12px;
-  background: rgba(245, 247, 250, 0.8);
-  border-radius: 8px;
+  background: var(--qg-surface);
+  border-radius: 2px;
   min-height: 34px;
+  scrollbar-width: none;
+}
+
+.browser-breadcrumb::-webkit-scrollbar {
+  display: none;
 }
 
 .breadcrumb-seg {
   border: none;
   background: none;
-  color: #4f6ef7;
+  color: var(--qg-muted);
   cursor: pointer;
   font-size: 12px;
   padding: 2px 4px;
-  border-radius: 4px;
-  transition: background 0.15s;
+  border-radius: 2px;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .breadcrumb-seg:hover {
-  background: rgba(79, 110, 247, 0.1);
+  background: var(--qg-elevated);
+  color: var(--qg-fg);
 }
 
 .breadcrumb-seg::after {
   content: '/';
-  color: #c0c4cc;
+  color: var(--qg-faint);
   margin-left: 2px;
 }
 
 .breadcrumb-seg:last-child {
-  color: #2b2f3a;
+  color: var(--qg-fg);
   font-weight: 600;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .breadcrumb-seg:last-child::after {
@@ -328,17 +341,17 @@
   font-size: 10px;
   font-weight: 600;
   padding: 2px 7px;
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
 .browser-badge.git {
-  background: rgba(245, 108, 108, 0.1);
-  color: #f56c6c;
+  background: color-mix(in srgb, var(--qg-danger) 10%, transparent);
+  color: var(--qg-danger);
 }
 
 .browser-badge.pkg {
-  background: rgba(103, 194, 58, 0.1);
-  color: #67c23a;
+  background: color-mix(in srgb, var(--qg-success) 10%, transparent);
+  color: var(--qg-success);
 }
 
 .browser-list {
@@ -348,10 +361,10 @@
   max-height: 320px;
   overflow-y: auto;
   min-height: 120px;
-  border: 1.5px solid #e8ebf2;
-  border-radius: 10px;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
   padding: 6px;
-  background: rgba(250, 251, 253, 0.6);
+  background: var(--qg-surface);
 }
 
 .browser-item {
@@ -361,21 +374,21 @@
   width: 100%;
   padding: 7px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: 2px;
   background: transparent;
   cursor: pointer;
   text-align: left;
   font-size: 13px;
-  color: #2b2f3a;
+  color: var(--qg-fg);
   transition: background 0.12s;
 }
 
 .browser-item:hover {
-  background: rgba(79, 110, 247, 0.06);
+  background: var(--qg-elevated);
 }
 
 .browser-item.parent {
-  color: #909399;
+  color: var(--qg-faint);
   font-weight: 600;
 }
 
@@ -392,7 +405,7 @@
 
 .browser-empty {
   font-size: 12px;
-  color: #c0c4cc;
+  color: var(--qg-faint);
   text-align: center;
   padding: 24px 0;
 }
@@ -406,7 +419,7 @@
   flex: 1;
   min-width: 0;
   font-size: 11.5px;
-  color: #606266;
+  color: var(--qg-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -420,6 +433,30 @@
 
 /* ---- 遮罩层 ---- */
 .el-overlay {
-  backdrop-filter: blur(4px);
-  background: rgba(15, 23, 42, 0.22) !important;
+  background: rgba(0, 0, 0, 0.45) !important;
+}
+
+/* ---- 窄屏（≤420px）让对话框贴合视口 ---- */
+/* Element Plus 用内联 CSS 变量设定 .el-dialog 宽度；此处提权 + !important 覆盖。 */
+@media (max-width: 420px) {
+  .glass-dialog.el-dialog {
+    width: calc(100vw - 24px) !important;
+  }
+}
+
+/* ---- Element Plus 传送到 <body> 的浮层（下拉/气泡/消息）主题安全兜底 ---- */
+/* data-theme 挂在 <html>、--el-* 走 :root 全局，天然继承；这里再显式钉一遍双主题令牌面。 */
+.el-popper.is-light,
+.el-popper.is-light .el-popper__arrow::before {
+  background: var(--qg-elevated);
+  border-color: var(--qg-line);
+}
+
+.el-message {
+  background: var(--qg-elevated);
+  border-color: var(--qg-line);
+}
+
+.el-message .el-message__content {
+  color: var(--qg-fg);
 }
