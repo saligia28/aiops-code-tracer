@@ -1,0 +1,176 @@
+/* ==========================================================================
+   Quiet Grid — design tokens, resets, and Element Plus variable overrides.
+   Foundation only: no page/component layout lives here.
+   ========================================================================== */
+
+/* (a) Font face — self-hosted display font (display use only, never body). */
+@font-face {
+  font-family: 'Smiley Sans';
+  src: url('/fonts/smiley-sans-oblique.woff2') format('woff2');
+  font-weight: 400;
+  font-style: oblique;
+  font-display: swap;
+}
+
+/* (b) Design tokens. */
+:root {
+  color-scheme: light;
+  --qg-bg: #f7f6f2;
+  --qg-surface: #efeee9;
+  --qg-elevated: #fbfaf7;
+  --qg-fg: #111214;
+  --qg-muted: #62635f;
+  --qg-faint: #858680;
+  --qg-line: rgba(17, 18, 20, 0.16);
+  --qg-line-strong: rgba(17, 18, 20, 0.34);
+  --qg-danger: #a9362b;
+  --qg-warning: #8a5a12;
+  --qg-success: #2f6a4f;
+  --qg-focus: #335bd6;
+  --qg-header-h: 48px;
+  --qg-pagebar-h: 40px;
+  --qg-sidebar-w: 280px;
+  --qg-content-max: 1120px;
+  --qg-space-1: 4px;
+  --qg-space-2: 8px;
+  --qg-space-3: 12px;
+  --qg-space-4: 16px;
+  --qg-space-6: 24px;
+  --qg-space-8: 32px;
+  --qg-duration: 180ms;
+  --qg-font-sans: "IBM Plex Sans SC", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --qg-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  --qg-font-display: "Smiley Sans", var(--qg-font-sans);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --qg-bg: #111214;
+  --qg-surface: #191a1d;
+  --qg-elevated: #151619;
+  --qg-fg: #f2f1ed;
+  --qg-muted: #b7b6b0;
+  --qg-faint: #888984;
+  --qg-line: rgba(242, 241, 237, 0.16);
+  --qg-line-strong: rgba(242, 241, 237, 0.34);
+  --qg-danger: #ef7f73;
+  --qg-warning: #d8aa5f;
+  --qg-success: #7fc4a3;
+  --qg-focus: #8ea8ff;
+}
+
+/* (c) Reset + height contract. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--qg-bg);
+  color: var(--qg-fg);
+  font-family: var(--qg-font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
+  transition:
+    background-color var(--qg-duration) ease,
+    color var(--qg-duration) ease;
+}
+
+/* (d) Base elements. */
+a {
+  color: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--qg-focus);
+  outline-offset: 2px;
+}
+
+/* Native controls used OUTSIDE Element Plus. Pages refine these later. */
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: var(--qg-fg);
+  background: var(--qg-elevated);
+  border: 1px solid var(--qg-line);
+  border-radius: 0;
+}
+
+button {
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  background: var(--qg-bg);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  border-color: var(--qg-line-strong);
+}
+
+/* (e) Reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* (f) Element Plus CSS variable overrides — mapped once; dark flows via tokens. */
+:root {
+  --el-color-primary: var(--qg-fg);
+  --el-color-success: var(--qg-success);
+  --el-color-warning: var(--qg-warning);
+  --el-color-danger: var(--qg-danger);
+  --el-color-error: var(--qg-danger);
+  --el-color-info: var(--qg-muted);
+
+  --el-bg-color: var(--qg-bg);
+  --el-bg-color-page: var(--qg-bg);
+  --el-bg-color-overlay: var(--qg-elevated);
+
+  --el-text-color-primary: var(--qg-fg);
+  --el-text-color-regular: var(--qg-fg);
+  --el-text-color-secondary: var(--qg-muted);
+  --el-text-color-placeholder: var(--qg-faint);
+  --el-text-color-disabled: var(--qg-faint);
+
+  --el-border-color: var(--qg-line);
+  --el-border-color-light: var(--qg-line);
+  --el-border-color-lighter: var(--qg-line);
+  --el-border-color-hover: var(--qg-line-strong);
+  --el-border-color-darker: var(--qg-line-strong);
+
+  --el-fill-color: var(--qg-surface);
+  --el-fill-color-light: var(--qg-surface);
+  --el-fill-color-lighter: var(--qg-elevated);
+  --el-fill-color-blank: var(--qg-bg);
+
+  --el-border-radius-base: 2px;
+  --el-border-radius-small: 2px;
+}
