@@ -2,10 +2,7 @@
   <div class="app-shell">
     <header v-if="!isPublicPage" class="global-context-bar">
       <button class="global-brand" type="button" @click="router.push('/')">
-        <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="12" cy="12" r="10" />
-          <path d="M8 12l2.5 2.5L16 9" />
-        </svg>
+        <ProjectIcon :size="20" />
         <span>逻瞳</span>
       </button>
       <div class="context-controls">
@@ -28,6 +25,7 @@ import { useRoute, useRouter } from 'vue-router';
 import TopProjectSelector from './components/TopProjectSelector.vue';
 import TopModelSelector from './components/TopModelSelector.vue';
 import ThemeToggle from './components/ThemeToggle.vue';
+import ProjectIcon from './components/ProjectIcon.vue';
 
 const route = useRoute();
 const router = useRouter();

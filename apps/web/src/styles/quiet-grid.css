@@ -141,6 +141,13 @@ select:focus-visible {
   }
 }
 
+/* Brand mark (LZ logo) is a monochrome black PNG; invert it in dark mode so it stays
+   visible (white) on the near-black background. Applies to every ProjectIcon usage
+   (home hero, login, global bar, answer top-bar + assistant avatar). */
+[data-theme='dark'] .project-icon {
+  filter: invert(1);
+}
+
 /* (f) Element Plus CSS variable overrides — mapped once; dark flows via tokens. */
 :root {
   --el-color-primary: var(--qg-fg);
