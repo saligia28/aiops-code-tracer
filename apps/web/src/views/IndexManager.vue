@@ -167,7 +167,7 @@ async function triggerRebuild() {
 
 .progress-text {
   margin-top: 12px;
-  color: #606266;
+  color: var(--qg-muted);
   font-size: 13px;
 }
 </style>

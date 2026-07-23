@@ -48,11 +48,11 @@ const canvasRef = ref<HTMLDivElement>();
   flex: 1;
   min-height: 0;
   width: 100%;
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fff;
+  background: var(--qg-surface);
 }
 </style>
