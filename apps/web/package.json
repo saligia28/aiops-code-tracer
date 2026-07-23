@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "test:unit": "vitest run --config vitest.config.ts",
-    "test:e2e": "playwright test --config playwright.config.ts",
+    "test:e2e": "playwright test --config playwright.config.ts quiet-grid-layout.spec.ts",
+    "test:screenshots": "playwright test --config playwright.config.ts screenshots.spec.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

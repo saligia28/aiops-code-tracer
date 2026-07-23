@@ -76,3 +76,6 @@ learn/
 .AGENT.md
 .CLAUDE.md
 .superpowers/
+
+# Quiet Grid 视觉验收截图（可由 `pnpm --filter @aiops/web test:screenshots` 重新生成，不入库）
+design-qa/quiet-grid/screenshots/
