@@ -148,6 +148,88 @@ select:focus-visible {
   filter: invert(1);
 }
 
+/* AnswerView imports highlight.js `github.css` (a LIGHT theme with dark text). On the
+   dark code-block surface that dark text is unreadable (plaintext worst of all). Re-color
+   hljs for dark mode with the github-dark palette; `[data-theme='dark'] .hljs` (0,2,0)
+   beats github.css's `.hljs` (0,1,0) regardless of bundle order. Base = token fg. */
+[data-theme='dark'] .hljs {
+  color: var(--qg-fg);
+  background: transparent;
+}
+[data-theme='dark'] .hljs-doctag,
+[data-theme='dark'] .hljs-keyword,
+[data-theme='dark'] .hljs-meta .hljs-keyword,
+[data-theme='dark'] .hljs-template-tag,
+[data-theme='dark'] .hljs-template-variable,
+[data-theme='dark'] .hljs-type,
+[data-theme='dark'] .hljs-variable.language_ {
+  color: #ff7b72;
+}
+[data-theme='dark'] .hljs-title,
+[data-theme='dark'] .hljs-title.class_,
+[data-theme='dark'] .hljs-title.class_.inherited__,
+[data-theme='dark'] .hljs-title.function_ {
+  color: #d2a8ff;
+}
+[data-theme='dark'] .hljs-attr,
+[data-theme='dark'] .hljs-attribute,
+[data-theme='dark'] .hljs-literal,
+[data-theme='dark'] .hljs-meta,
+[data-theme='dark'] .hljs-number,
+[data-theme='dark'] .hljs-operator,
+[data-theme='dark'] .hljs-variable,
+[data-theme='dark'] .hljs-selector-attr,
+[data-theme='dark'] .hljs-selector-class,
+[data-theme='dark'] .hljs-selector-id {
+  color: #79c0ff;
+}
+[data-theme='dark'] .hljs-regexp,
+[data-theme='dark'] .hljs-string,
+[data-theme='dark'] .hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+[data-theme='dark'] .hljs-built_in,
+[data-theme='dark'] .hljs-symbol {
+  color: #ffa657;
+}
+[data-theme='dark'] .hljs-comment,
+[data-theme='dark'] .hljs-code,
+[data-theme='dark'] .hljs-formula {
+  color: #8b949e;
+}
+[data-theme='dark'] .hljs-name,
+[data-theme='dark'] .hljs-quote,
+[data-theme='dark'] .hljs-selector-tag,
+[data-theme='dark'] .hljs-selector-pseudo {
+  color: #7ee787;
+}
+[data-theme='dark'] .hljs-subst {
+  color: var(--qg-fg);
+}
+[data-theme='dark'] .hljs-section {
+  color: #1f6feb;
+  font-weight: bold;
+}
+[data-theme='dark'] .hljs-bullet {
+  color: #f2cc60;
+}
+[data-theme='dark'] .hljs-emphasis {
+  color: var(--qg-fg);
+  font-style: italic;
+}
+[data-theme='dark'] .hljs-strong {
+  color: var(--qg-fg);
+  font-weight: bold;
+}
+[data-theme='dark'] .hljs-addition {
+  color: #aff5b4;
+  background-color: #033a16;
+}
+[data-theme='dark'] .hljs-deletion {
+  color: #ffdcd7;
+  background-color: #67060c;
+}
+
 /* (f) Element Plus CSS variable overrides — mapped once; dark flows via tokens. */
 :root {
   --el-color-primary: var(--qg-fg);

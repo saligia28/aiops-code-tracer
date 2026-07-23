@@ -361,3 +361,29 @@ test.describe('主题：初始跟随系统 / 切换持久化 / 三处同步', ()
     expect(light.meta).toBe('#f7f6f2');
   });
 });
+
+// ==================== 暗色代码块可读性（hljs 不再深字贴暗底） ====================
+test.describe('暗色代码块可读性', () => {
+  test('暗色下 hljs 代码块文字为浅色（plaintext 可读）', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await gotoRoute(page, '/answer'); // 触发 AnswerView 对 highlight.js github.css 的导入
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+
+    // 注入一段无语言的 hljs 代码（plaintext 走 .hljs 基础色），读其真实计算色的亮度。
+    const lum = await page.evaluate(() => {
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      code.className = 'hljs';
+      code.textContent = 'plaintext sample 示例文本';
+      pre.appendChild(code);
+      document.body.appendChild(pre);
+      const color = getComputedStyle(code).color;
+      pre.remove();
+      const [r, g, b] = color.match(/\d+/g)!.map(Number);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b; // 感知亮度
+    });
+
+    // github 亮色主题的 #24292e 亮度≈38（不可读）；令牌 fg #f2f1ed≈240。断言浅色。
+    expect(lum).toBeGreaterThan(140);
+  });
+});
