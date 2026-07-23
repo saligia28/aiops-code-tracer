@@ -1,5 +1,6 @@
 <template>
   <div class="login-page">
+    <ThemeToggle class="login-theme-toggle" />
     <div class="login-card">
       <div class="login-header">
         <div class="logo-icon">
@@ -34,6 +35,7 @@
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import ProjectIcon from '@/components/ProjectIcon.vue';
+import ThemeToggle from '@/components/ThemeToggle.vue';
 import { useAuth } from '@/composables/useAuth';
 
 const router = useRouter();
@@ -71,22 +73,29 @@ onMounted(() => {
 
 <style scoped>
 .login-page {
-  min-height: 100vh;
+  position: relative;
+  min-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf4 100%);
+  background: var(--qg-bg);
   padding: 20px;
+}
+
+.login-theme-toggle {
+  position: absolute;
+  top: var(--qg-space-4);
+  right: var(--qg-space-4);
+  z-index: 1;
 }
 
 .login-card {
   width: 100%;
   max-width: 380px;
-  background: #fff;
-  border-radius: 20px;
+  background: var(--qg-elevated);
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
   padding: 48px 36px 40px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
-  border: 1px solid #eef0f4;
 }
 
 .login-header {
@@ -102,48 +111,58 @@ onMounted(() => {
 }
 
 .login-header h1 {
+  font-family: var(--qg-font-display);
   font-size: 28px;
-  font-weight: 700;
-  color: #1a1a2e;
+  font-weight: 500;
+  color: var(--qg-fg);
+  letter-spacing: -0.3px;
   margin-bottom: 6px;
 }
 
 .login-subtitle {
-  color: #8b8fa3;
+  color: var(--qg-muted);
   font-size: 14px;
 }
 
 .login-form {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--qg-space-4);
 }
 
 .input-group input {
   width: 100%;
   padding: 12px 16px;
-  border: 1.5px solid #e2e4ea;
-  border-radius: 12px;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
   font-size: 15px;
-  color: #1a1a2e;
+  color: var(--qg-fg);
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color var(--qg-duration) ease, box-shadow var(--qg-duration) ease;
   box-sizing: border-box;
-  background: #f9fafb;
+  background: var(--qg-bg);
 }
 
 .input-group input::placeholder {
-  color: #b0b4c3;
+  color: var(--qg-faint);
 }
 
 .input-group input:focus {
-  border-color: #4f6ef7;
-  box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.1);
-  background: #fff;
+  border-color: var(--qg-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--qg-focus) 20%, transparent);
+}
+
+.input-group input:-webkit-autofill,
+.input-group input:-webkit-autofill:hover,
+.input-group input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--qg-fg);
+  -webkit-box-shadow: 0 0 0 1000px var(--qg-bg) inset;
+  caret-color: var(--qg-fg);
+  transition: background-color 9999s ease-out 0s;
 }
 
 .error-text {
-  color: #e74c3c;
+  color: var(--qg-danger);
   font-size: 13px;
   text-align: center;
   margin: -4px 0;
@@ -152,14 +171,14 @@ onMounted(() => {
 .login-btn {
   width: 100%;
   padding: 12px;
-  border-radius: 12px;
-  border: none;
-  background: #4f6ef7;
-  color: #fff;
+  border-radius: 2px;
+  border: 1px solid var(--qg-fg);
+  background: var(--qg-fg);
+  color: var(--qg-bg);
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.2s, opacity 0.2s;
+  transition: opacity var(--qg-duration) ease, background-color var(--qg-duration) ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -167,19 +186,19 @@ onMounted(() => {
 }
 
 .login-btn:hover:not(:disabled) {
-  background: #3d5bd9;
+  opacity: 0.85;
 }
 
 .login-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
 .spinner {
   width: 18px;
   height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #fff;
+  border: 2px solid color-mix(in srgb, var(--qg-bg) 35%, transparent);
+  border-top-color: var(--qg-bg);
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
 }
