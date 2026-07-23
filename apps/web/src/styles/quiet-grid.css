@@ -150,6 +150,15 @@ select:focus-visible {
   --el-color-error: var(--qg-danger);
   --el-color-info: var(--qg-muted);
 
+  /* Neutralize EP's primary color ramp (default is blue) so hover/active/selected states
+     across components don't leak the old accent in either theme. */
+  --el-color-primary-light-3: var(--qg-line-strong);
+  --el-color-primary-light-5: var(--qg-line-strong);
+  --el-color-primary-light-7: var(--qg-line);
+  --el-color-primary-light-8: var(--qg-line);
+  --el-color-primary-light-9: var(--qg-surface);
+  --el-color-primary-dark-2: var(--qg-fg);
+
   --el-bg-color: var(--qg-bg);
   --el-bg-color-page: var(--qg-bg);
   --el-bg-color-overlay: var(--qg-elevated);
@@ -173,4 +182,58 @@ select:focus-visible {
 
   --el-border-radius-base: 2px;
   --el-border-radius-small: 2px;
+}
+
+/* Component-level Element Plus overrides. The base `--el-color-*` map above does NOT
+   cover EP's derived ramps (`--el-color-*-light-3/-light-9`, `--el-color-white`), which
+   EP uses for button text and hover/active fills. Without these, in dark mode a primary
+   button renders near-white text on a near-white (`--qg-fg`) bg, and tags/hovers leak the
+   default EP blue. Drive the actually-used components' local vars from tokens instead. */
+.el-button {
+  --el-button-hover-bg-color: var(--qg-surface);
+  --el-button-hover-text-color: var(--qg-fg);
+  --el-button-hover-border-color: var(--qg-line-strong);
+  --el-button-active-bg-color: var(--qg-surface);
+  --el-button-active-border-color: var(--qg-line-strong);
+}
+
+.el-button--primary {
+  --el-button-text-color: var(--qg-bg);
+  --el-button-bg-color: var(--qg-fg);
+  --el-button-border-color: var(--qg-fg);
+  --el-button-hover-text-color: var(--qg-bg);
+  --el-button-hover-bg-color: var(--qg-muted);
+  --el-button-hover-border-color: var(--qg-muted);
+  --el-button-active-bg-color: var(--qg-fg);
+  --el-button-active-border-color: var(--qg-fg);
+}
+
+/* Tags: neutral token surface + token-colored text in both themes (no near-white chip on
+   dark, type still distinguishable by text color + label). EP sets the per-type bg via
+   `.el-tag--success { --el-tag-bg-color: …light-9 }` (0,1,0); use 2-class specificity so
+   our surface bg wins regardless of bundle source order. */
+.el-tag {
+  --el-tag-bg-color: var(--qg-surface);
+  --el-tag-border-color: var(--qg-line);
+  --el-tag-text-color: var(--qg-muted);
+}
+.el-tag.el-tag--success {
+  --el-tag-bg-color: var(--qg-surface);
+  --el-tag-border-color: var(--qg-line);
+  --el-tag-text-color: var(--qg-success);
+}
+.el-tag.el-tag--warning {
+  --el-tag-bg-color: var(--qg-surface);
+  --el-tag-border-color: var(--qg-line);
+  --el-tag-text-color: var(--qg-warning);
+}
+.el-tag.el-tag--danger {
+  --el-tag-bg-color: var(--qg-surface);
+  --el-tag-border-color: var(--qg-line);
+  --el-tag-text-color: var(--qg-danger);
+}
+.el-tag.el-tag--info {
+  --el-tag-bg-color: var(--qg-surface);
+  --el-tag-border-color: var(--qg-line);
+  --el-tag-text-color: var(--qg-muted);
 }

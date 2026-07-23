@@ -317,7 +317,7 @@ onUnmounted(() => {
 }
 
 .is-api .trigger-dot {
-  background: var(--qg-warning);
+  background: var(--qg-fg);
 }
 
 .is-error .trigger-dot {

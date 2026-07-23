@@ -452,11 +452,13 @@
   border-color: var(--qg-line);
 }
 
-.el-message {
-  background: var(--qg-elevated);
-  border-color: var(--qg-line);
-}
-
-.el-message .el-message__content {
-  color: var(--qg-fg);
+/* 消息 toast：底色钉成暗色可读的令牌面（覆盖 EP 各类型的 *-light-9 近白底），
+   但不再统一压掉文字色——保留 EP 按类型的 success/error/warning 文字强调（已走 --el-color-* → 令牌）。 */
+.el-message,
+.el-message--success,
+.el-message--warning,
+.el-message--error,
+.el-message--info {
+  --el-message-bg-color: var(--qg-elevated);
+  --el-message-border-color: var(--qg-line);
 }
