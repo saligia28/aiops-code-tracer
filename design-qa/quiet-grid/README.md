@@ -106,3 +106,10 @@ diff 添加/删除色由 `--qg-success`/`--qg-danger` 令牌驱动，暗色可�
 修复后复验：`typecheck`/`build` 退出 0，`test:e2e` 43 passed，`test:screenshots` 18 重出；逐张看图确认暗色主按钮文字可读、状态 tag 转暗底令牌、API 点中性——明色未回归。
 
 > 非阻塞观察（留档）：暗色 `--qg-elevated`(#151619) 比 `--qg-surface`(#191a1d) 更暗，与亮色"抬升更亮"相反，面板/页面在暗色下主要靠 1px 边框区分——沿用计划 §2 令牌值，视为 Quiet Grid 有意取舍。
+
+## 10. 合并后（master）用户反馈修复
+
+改造合并回 `master` 后，据用户在真实环境的反馈补修（均为暗色可读性/品牌一致性，行为不变）：
+
+- **品牌 LZ 图标夜间不可见 + 全局栏图标不统一**（`411bc16`）：`project-icon.png` 是黑色 logo，暗色下消失。加 `[data-theme='dark'] .project-icon { filter: invert(1) }`——黑 LZ 夜间自动反相为白，Home/登录/问答/AI 头像一处全修；全局栏原来的通用"圆圈对勾" SVG 换成 `ProjectIcon`（LZ 品牌标志，与 favicon 同款）。用透明底 `project-icon.png` 内嵌（实底 `favicon.png` 会露白框）。
+- **夜间代码块 `plaintext` 文字太暗不可读**（`d41da67`）：AnswerView 引入 highlight.js 的 `github.css`（亮色主题深字），暗色代码块底是令牌暗面、文字仍是深色→贴死。加 `[data-theme='dark']` 的 hljs 覆盖（镜像 `github-dark` 调色板，base=`var(--qg-fg)`；`[data-theme=dark] .hljs` 特异性 0,2,0 稳压 github 的 0,1,0）。新增回归断言"暗色 hljs 文字亮度>140"，`test:e2e` 现 **44 passed**。
