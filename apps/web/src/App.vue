@@ -11,6 +11,9 @@
       <div class="context-controls">
         <TopProjectSelector />
         <TopModelSelector />
+        <div class="theme-toggle-slot">
+          <ThemeToggle />
+        </div>
       </div>
     </header>
     <main class="app-content">
@@ -24,6 +27,7 @@ import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import TopProjectSelector from './components/TopProjectSelector.vue';
 import TopModelSelector from './components/TopModelSelector.vue';
+import ThemeToggle from './components/ThemeToggle.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -44,9 +48,6 @@ body,
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background-color: #f5f7fa;
-  color: #303133;
   overflow: hidden;
 }
 
@@ -68,8 +69,8 @@ body {
   gap: 16px;
   padding: 0 20px;
   overflow: visible;
-  background: #fff;
-  border-bottom: 1px solid #eef0f4;
+  background: var(--qg-bg);
+  border-bottom: 1px solid var(--qg-line);
 }
 
 .global-brand {
@@ -80,9 +81,10 @@ body {
   height: 34px;
   padding: 0 10px 0 8px;
   border: none;
-  border-radius: 8px;
-  background: #fff;
-  color: #4f6ef7;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--qg-fg);
+  font-family: var(--qg-font-display);
   font-size: 15px;
   font-weight: 600;
   line-height: 1;
@@ -91,14 +93,20 @@ body {
 }
 
 .global-brand:hover {
-  background: #f5f7ff;
+  background: var(--qg-surface);
 }
 
 .context-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--qg-space-2);
   min-width: 0;
+}
+
+.theme-toggle-slot {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 .app-content {
@@ -114,6 +122,10 @@ body {
   }
 
   .global-brand {
+    display: none;
+  }
+
+  .theme-toggle-slot {
     display: none;
   }
 }

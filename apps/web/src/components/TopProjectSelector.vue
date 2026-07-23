@@ -251,7 +251,7 @@ onUnmounted(() => {
   display: none;
   align-items: center;
   justify-content: center;
-  color: #4f6ef7;
+  color: var(--qg-fg);
 }
 
 /* ---- 触发按钮 ---- */
@@ -262,23 +262,20 @@ onUnmounted(() => {
   min-width: 120px;
   max-width: 260px;
   padding: 8px 14px;
-  border: 1.5px solid rgba(224, 228, 238, 0.9);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-elevated);
   cursor: pointer;
   text-align: left;
-  backdrop-filter: blur(12px);
-  transition: border-color 0.3s, box-shadow 0.3s;
+  transition: border-color 0.3s;
 }
 
 .project-trigger:hover {
-  border-color: rgba(79, 110, 247, 0.5);
+  border-color: var(--qg-line-strong);
 }
 
 .project-trigger.is-active {
-  border-color: rgba(79, 110, 247, 0.75);
-  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.10);
+  border-color: var(--qg-fg);
 }
 
 @keyframes dot-pulse {
@@ -291,11 +288,11 @@ onUnmounted(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #4f6ef7;
+  background: var(--qg-fg);
 }
 
 .is-loading .trigger-dot {
-  background: #909399;
+  background: var(--qg-faint);
   animation: dot-pulse 1s ease-in-out infinite;
 }
 
@@ -311,7 +308,7 @@ onUnmounted(() => {
 .trigger-label {
   font-size: 12.5px;
   font-weight: 600;
-  color: #2b2f3a;
+  color: var(--qg-fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -319,13 +316,14 @@ onUnmounted(() => {
 
 .trigger-badge {
   flex-shrink: 0;
+  font-family: var(--qg-font-mono);
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
   padding: 2.5px 6px;
-  border-radius: 4px;
-  background: rgba(79, 110, 247, 0.1);
-  color: #4f6ef7;
+  border-radius: 2px;
+  background: var(--qg-surface);
+  color: var(--qg-muted);
 }
 
 /* ---- 展开面板 ---- */
@@ -335,11 +333,10 @@ onUnmounted(() => {
   right: 0;
   width: 300px;
   padding: 14px;
-  border: 1.5px solid rgba(79, 110, 247, 0.3);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.10);
-  backdrop-filter: blur(12px);
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-elevated);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
 }
 
 .panel-header {
@@ -352,25 +349,25 @@ onUnmounted(() => {
 .panel-title {
   font-size: 13px;
   font-weight: 700;
-  color: #2b2f3a;
+  color: var(--qg-fg);
 }
 
 .panel-close {
   border: none;
   background: transparent;
-  color: #7a8197;
+  color: var(--qg-muted);
   cursor: pointer;
   font-size: 12px;
   transition: color 0.2s;
 }
 
 .panel-close:hover {
-  color: #4f6ef7;
+  color: var(--qg-fg);
 }
 
 .panel-status {
   font-size: 12px;
-  color: #909399;
+  color: var(--qg-muted);
   line-height: 1.5;
 }
 
@@ -389,17 +386,18 @@ onUnmounted(() => {
   gap: 4px;
   padding: 2px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 2px;
   transition: all 0.15s;
 }
 
 .project-item:hover {
-  background: #f4f5f9;
+  background: var(--qg-surface);
 }
 
 .project-item.active {
-  background: rgba(79, 110, 247, 0.08);
-  border-color: rgba(79, 110, 247, 0.25);
+  background: var(--qg-surface);
+  border-color: var(--qg-line-strong);
+  box-shadow: inset 2px 0 0 var(--qg-fg);
 }
 
 .project-main {
@@ -411,7 +409,7 @@ onUnmounted(() => {
   min-width: 0;
   padding: 6px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 2px;
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -428,45 +426,46 @@ onUnmounted(() => {
 .project-name {
   font-size: 13px;
   font-weight: 500;
-  color: #2b2f3a;
+  color: var(--qg-fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .project-item.active .project-name {
-  color: #4f6ef7;
+  color: var(--qg-fg);
   font-weight: 600;
 }
 
 .project-fw {
   flex-shrink: 0;
+  font-family: var(--qg-font-mono);
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
   padding: 2px 5px;
-  border-radius: 3px;
-  background: rgba(103, 194, 58, 0.12);
-  color: #67c23a;
+  border-radius: 2px;
+  background: var(--qg-surface);
+  color: var(--qg-muted);
 }
 
 .project-meta {
   flex-shrink: 0;
   font-size: 11px;
-  color: #909399;
+  color: var(--qg-muted);
 }
 
 .project-meta.no-graph {
-  color: #c0c4cc;
+  color: var(--qg-faint);
 }
 
 .project-build-btn {
   flex-shrink: 0;
   padding: 3px 8px;
-  border: 1px solid rgba(230, 162, 60, 0.4);
-  border-radius: 4px;
-  background: rgba(230, 162, 60, 0.08);
-  color: #e6a23c;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--qg-fg);
   font-size: 10.5px;
   font-weight: 600;
   cursor: pointer;
@@ -475,14 +474,14 @@ onUnmounted(() => {
 }
 
 .project-build-btn:hover:not(:disabled) {
-  background: rgba(230, 162, 60, 0.18);
-  border-color: rgba(230, 162, 60, 0.6);
+  background: var(--qg-surface);
+  border-color: var(--qg-line-strong);
 }
 
 .project-build-btn.building {
-  color: #909399;
-  border-color: #dcdfe6;
-  background: #f5f7fa;
+  color: var(--qg-faint);
+  border-color: var(--qg-line);
+  background: var(--qg-surface);
   cursor: not-allowed;
 }
 
@@ -494,9 +493,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 4px;
+  border-radius: 2px;
   background: transparent;
-  color: #c0c4cc;
+  color: var(--qg-faint);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
@@ -504,8 +503,8 @@ onUnmounted(() => {
 }
 
 .project-delete-btn:hover {
-  background: rgba(245, 108, 108, 0.1);
-  color: #f56c6c;
+  background: color-mix(in srgb, var(--qg-danger) 12%, transparent);
+  color: var(--qg-danger);
 }
 
 .new-project-btn {
@@ -513,10 +512,10 @@ onUnmounted(() => {
   width: 100%;
   margin-top: 10px;
   padding: 8px 0;
-  border: 1.5px dashed rgba(79, 110, 247, 0.35);
-  border-radius: 8px;
+  border: 1px dashed var(--qg-line-strong);
+  border-radius: 2px;
   background: transparent;
-  color: #4f6ef7;
+  color: var(--qg-fg);
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
@@ -524,8 +523,7 @@ onUnmounted(() => {
 }
 
 .new-project-btn:hover {
-  background: rgba(79, 110, 247, 0.06);
-  border-color: rgba(79, 110, 247, 0.6);
+  background: var(--qg-surface);
 }
 
 @media (max-width: 768px) {
@@ -551,7 +549,7 @@ onUnmounted(() => {
     height: 44px;
     min-width: 44px;
     max-width: 44px;
-    border-radius: 50%;
+    border-radius: 2px;
     padding: 0;
     justify-content: center;
     position: relative;

@@ -247,12 +247,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* ---- 呼吸动画 ---- */
-@keyframes breathe-api {
-  0%, 100% { border-color: rgba(230, 162, 60, 0.35); box-shadow: 0 0 0 0 rgba(230, 162, 60, 0); }
-  50%      { border-color: rgba(230, 162, 60, 0.8);  box-shadow: 0 0 8px 2px rgba(230, 162, 60, 0.18); }
-}
-
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.4; }
@@ -278,39 +272,35 @@ onUnmounted(() => {
   min-width: 140px;
   max-width: 240px;
   padding: 8px 14px;
-  border: 1.5px solid rgba(224, 228, 238, 0.9);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-elevated);
   cursor: pointer;
   text-align: left;
-  backdrop-filter: blur(12px);
-  transition: border-color 0.3s, box-shadow 0.3s;
+  transition: border-color 0.3s;
 }
 
-/* 内网模式：主题色边框 */
+/* 内网 / API 态：边框保持中性，状态由圆点与徽标文字表达 */
 .llm-trigger.is-intranet {
-  border-color: rgba(79, 110, 247, 0.6);
+  border-color: var(--qg-line);
 }
 
-/* API 模式：警告色 + 呼吸效果 */
 .llm-trigger.is-api {
-  animation: breathe-api 2.8s ease-in-out infinite;
+  border-color: var(--qg-line);
+}
+
+.llm-trigger:hover {
+  border-color: var(--qg-line-strong);
 }
 
 /* 展开态 */
 .llm-trigger.is-active {
-  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.10);
-}
-
-.llm-trigger.is-active.is-intranet {
-  border-color: rgba(79, 110, 247, 0.75);
+  border-color: var(--qg-fg);
 }
 
 /* 错误态 */
 .llm-trigger.is-error {
-  border-color: rgba(208, 48, 80, 0.55);
-  animation: none;
+  border-color: var(--qg-danger);
 }
 
 /* ---- 状态圆点 ---- */
@@ -319,24 +309,23 @@ onUnmounted(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #c0c4cc;
+  background: var(--qg-faint);
 }
 
 .is-intranet .trigger-dot {
-  background: #4f6ef7;
+  background: var(--qg-fg);
 }
 
 .is-api .trigger-dot {
-  background: #e6a23c;
-  animation: dot-pulse 2.8s ease-in-out infinite;
+  background: var(--qg-warning);
 }
 
 .is-error .trigger-dot {
-  background: #d03050;
+  background: var(--qg-danger);
 }
 
 .is-loading .trigger-dot {
-  background: #909399;
+  background: var(--qg-faint);
   animation: dot-pulse 1s ease-in-out infinite;
 }
 
@@ -345,7 +334,7 @@ onUnmounted(() => {
   display: none;
   align-items: center;
   justify-content: center;
-  color: #5a5e72;
+  color: var(--qg-fg);
 }
 
 /* ---- 按钮文字 ---- */
@@ -361,7 +350,7 @@ onUnmounted(() => {
 .trigger-model {
   font-size: 12.5px;
   font-weight: 600;
-  color: #2b2f3a;
+  color: var(--qg-fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -369,28 +358,18 @@ onUnmounted(() => {
 
 .trigger-badge {
   flex-shrink: 0;
+  font-family: var(--qg-font-mono);
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
   padding: 2.5px 6px;
-  border-radius: 4px;
-  background: #f0f1f5;
-  color: #7a8197;
-}
-
-.is-intranet .trigger-badge {
-  background: rgba(79, 110, 247, 0.1);
-  color: #4f6ef7;
-}
-
-.is-api .trigger-badge {
-  background: rgba(230, 162, 60, 0.12);
-  color: #c88a2c;
+  border-radius: 2px;
+  background: var(--qg-surface);
+  color: var(--qg-muted);
 }
 
 .is-error .trigger-badge {
-  background: rgba(208, 48, 80, 0.1);
-  color: #d03050;
+  color: var(--qg-danger);
 }
 
 /* ---- 展开面板 ---- */
@@ -400,19 +379,18 @@ onUnmounted(() => {
   right: 0;
   width: 340px;
   padding: 14px;
-  border: 1.5px solid rgba(224, 228, 238, 0.95);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.10);
-  backdrop-filter: blur(12px);
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-elevated);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
 }
 
 .llm-panel.panel-intranet {
-  border-color: rgba(79, 110, 247, 0.3);
+  border-color: var(--qg-line);
 }
 
 .llm-panel.panel-api {
-  border-color: rgba(230, 162, 60, 0.3);
+  border-color: var(--qg-line);
 }
 
 .panel-header {
@@ -425,20 +403,20 @@ onUnmounted(() => {
 .panel-title {
   font-size: 13px;
   font-weight: 700;
-  color: #2b2f3a;
+  color: var(--qg-fg);
 }
 
 .panel-close {
   border: none;
   background: transparent;
-  color: #7a8197;
+  color: var(--qg-muted);
   cursor: pointer;
   font-size: 12px;
   transition: color 0.2s;
 }
 
 .panel-close:hover {
-  color: #4f6ef7;
+  color: var(--qg-fg);
 }
 
 .toolbar-row {
@@ -460,7 +438,7 @@ onUnmounted(() => {
   gap: 6px;
   margin-top: 10px;
   font-size: 11.5px;
-  color: #909399;
+  color: var(--qg-muted);
   line-height: 1.4;
 }
 
@@ -468,14 +446,14 @@ onUnmounted(() => {
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: #c0c4cc;
+  background: var(--qg-faint);
   flex-shrink: 0;
 }
 
 .toolbar-status {
   margin-top: 10px;
   font-size: 12px;
-  color: #909399;
+  color: var(--qg-muted);
   line-height: 1.5;
 }
 
@@ -484,13 +462,13 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  color: #d03050;
+  color: var(--qg-danger);
 }
 
 .retry-btn {
   border: none;
   background: transparent;
-  color: #4f6ef7;
+  color: var(--qg-fg);
   cursor: pointer;
   font-size: 12px;
   flex-shrink: 0;
@@ -519,7 +497,7 @@ onUnmounted(() => {
     height: 44px;
     min-width: 44px;
     max-width: 44px;
-    border-radius: 50%;
+    border-radius: 2px;
     padding: 0;
     justify-content: center;
     position: relative;
