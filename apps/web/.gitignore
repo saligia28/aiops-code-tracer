@@ -1,0 +1,3 @@
+# Playwright 布局/主题回归产物（报告、trace、截图），不入库
+test-results/
+playwright-report/
