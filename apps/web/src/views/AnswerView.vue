@@ -866,16 +866,24 @@ onMounted(async () => {
     void router.replace({ name: 'Answer', query, hash: route.hash })
   }
 
-  // 先恢复活动会话（刷新/重进）：若会话归属项目与当前项目不一致则视为无效、起空会话。
-  const { conversation, turns } = await restoreConversation(renderMarkdown)
-  if (conversation && conversation.projectId === currentProjectId.value) {
-    history.value = turns.map(t => reactive(t))
-  } else if (conversation) {
+  // 先取出首页带来的新问题：有则视为「从首页发起」，应开一条全新会话，不接续上次活动会话；
+  // 无则是刷新 / 直接重进问答页，才恢复上次活动会话（保持刷新态）。
+  const pendingQuestion = consumePendingQuestion()
+  if (pendingQuestion) {
+    // 从首页进入 = 新会话：清掉活动会话 id 与历史，提问时 conversationId 为空 → 后端新建会话。
     clearActiveConversation()
+    history.value = []
+  } else {
+    // 刷新 / 重进：恢复活动会话，若会话归属项目与当前项目不一致则视为无效、起空会话。
+    const { conversation, turns } = await restoreConversation(renderMarkdown)
+    if (conversation && conversation.projectId === currentProjectId.value) {
+      history.value = turns.map(t => reactive(t))
+    } else if (conversation) {
+      clearActiveConversation()
+    }
   }
 
-  // 再处理首页带来的新问题，追加到已恢复的 history 之后。
-  const pendingQuestion = consumePendingQuestion()
+  // 发起首页带来的问题（此时 activeConversationId 已清空，后端会新建会话）。
   if (pendingQuestion) {
     if (mode.value === 'agent') {
       void fetchAgentAnswer(pendingQuestion)
