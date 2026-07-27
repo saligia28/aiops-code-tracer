@@ -1,6 +1,11 @@
 /**
  * P1-E 注入防御 · 清洗器单测（确定性，CI 无条件可跑）。
- * 端到端"答案不执行注入"的验证走 `eval -- answers` 的注入用例（需服务 + LLM）。
+ *
+ * 端到端"答案不执行注入"分两层（T8 补齐，此前这行注释指向的注入用例并不存在）：
+ *   1. 确定性 E2E（CI 可跑，无需 LLM）：`test/askRoute.injection.test.ts`
+ *      —— fixture 现场建图 + 顺从型受害者 LLM 桩，走真实 /api/ask 管线。
+ *   2. 真实模型 + judge：`eval -- answers` 配 `dataset/answers.eval-fixture.jsonl`
+ *      （需服务 + LLM + 仓库切到 fixture-repo，跑法见该数据集头注）。
  */
 import { describe, it, expect } from 'vitest';
 import { sanitizeRetrievedText, sanitizeAskResponseForMachine } from '../../src/services/ask/promptSafety.ts';

@@ -56,7 +56,7 @@
 
 ### 4. MCP 服务 —— 把代码图谱接进 Claude Code
 
-`@aiops/mcp` 是一个轻量 stdio MCP 服务，向 Claude Code 暴露 9 个只读分析工具（`repo_status` / `explain_code_logic` / `prepare_fix_context` / `get_impact_scope` / `search_symbols` / `get_symbol` / `trace_callees` / `trace_callers` / `get_file_graph`）。除底层符号/调用链原子工具外，还提供任务级封装：`prepare_fix_context` 产出"改代码前"的结构化修改上下文，`get_impact_scope` 一屏合并上下游影响面。它本身不做分析，而是转发给分析 API 并把结果整理成紧凑文本，让 AI 助手拿到**精确的结构性事实**而非猜测。详见 [`apps/mcp/README.md`](apps/mcp/README.md)。
+`@aiops/mcp` 是一个轻量 stdio MCP 服务，向 Claude Code 暴露 10 个工具（`repo_status` / `explain_code_logic` / `prepare_fix_context` / `get_impact_scope` / `propose_patch` / `search_symbols` / `get_symbol` / `trace_callees` / `trace_callers` / `get_file_graph`）——**全部只读**：`propose_patch` 只产出经 `git apply --check` 验证过的修改提案，落盘与回滚需在 Web 端经人工审批，MCP 侧不暴露写操作。除底层符号/调用链原子工具外，还提供任务级封装：`prepare_fix_context` 产出"改代码前"的结构化修改上下文，`get_impact_scope` 一屏合并上下游影响面。它本身不做分析，而是转发给分析 API 并把结果整理成紧凑文本，让 AI 助手拿到**精确的结构性事实**而非猜测。详见 [`apps/mcp/README.md`](apps/mcp/README.md)。
 
 ### 5. 对话持久化与记忆
 

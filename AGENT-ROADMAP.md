@@ -16,7 +16,45 @@
 
 ---
 
-## P0-A · 自校验进循环（Reflection / Judge-in-the-loop）
+## 状态总览（2026-07-27 按代码逐条核实）
+
+分三类。**"部分完成"= 主体能力已落地并有测试/活体验证，但有具名开口**——不是"做了一半"，
+是"机制已通、还差接线或数字"。每条开口都在下方 [可验收任务清单](#可验收任务清单t1t18) 里有编号任务。
+
+### 一 · 已完成（主体 + 验收均达成，无开口或仅剩迭代性维护）
+
+| 项 | 落点 | 验收 |
+|---|---|---|
+| **P1-E** 提示注入防御 | 清洗器 `promptSafety.ts` + 三条通道（codeContext / 文档 / **证据片段**）+ 两条答案路径的安全边界声明 | **注入用例 3/3 未被执行**（真实模型 + judge）；确定性 E2E 5 用例且两条防线各自可证伪；基线同日对照不回退（T8，2026-07-27）。模式库是黑名单，需随新手法迭代 |
+| **P1-MCP** 模型 Skill 集成层 | `apps/mcp` 三刀：explain_code_logic / prepare_fix_context / get_impact_scope（+ file 入参、env 锁仓、riskPoints prompt 下沉），另转发 propose_patch | MCP 61 test 绿；活体 E2E 三小节遵循率 2/2；工具数 6 → 10 |
+
+### 二 · 部分完成（主体 ✅，开口见任务号）
+
+| 项 | 主体已落地 | 开口 |
+|---|---|---|
+| **P0-A** 反思进循环 | ask 主路径 L1 引用核对 + L2 judge + 重答 | T1（agent 无反思，且需先补证据层）、T2（简单路径不接反思）、T3（流式不重试）、T4（重答后不二次核对） |
+| **P0-B** 文档证据通道 | docRecall + prompt 硬边界 + docEvidence 下发 | T2（简单路径不注入文档） |
+| **P1-C** Planning | planner + 前端 checklist + on/off 对照（K 次重复跑压方差） | T5（总超时硬截断）、T15（无逐步状态自报） |
+| **P1-D** 流式 + 中断 | ask 逐 token SSE；两条管线 abort 贯穿 + 中止语义测试 | T3（同上）、T6（agent 最终答案整段推送、非 token 级）、T7（内网 ollama 未接流式）、T10（首 token < 2s 未量化） |
+| **P2-F** 记忆 v2 | embedding + RRF 混合召回 + 近重复跳过 + 回填 | T9（语义评测占位）、T13（LLM 合并固化）、T14（prune 未自动触发） |
+| **P2-G** 写侧三刀 | propose（只读）→ apply/rollback（HITL）→ verify（就地后验），220 test 绿 | T11（全流程活体）、T12（前端视觉走查）；真隔离沙箱属暂缓 |
+| **P2-H** 上下文工程 | 预算收敛 + 贪心装填 + 历史摘要 + 指代补全 | T10（P95 未回填）、T16（指代未接 LLM 改写）、T17（agent 历史仍折叠压缩） |
+
+### 三 · 暂缓（P3，单人项目明确不做）
+
+| 项 | 暂缓理由 | 解冻条件 |
+|---|---|---|
+| **I** 多 Agent 协作 | planner 价值随任务难度而变，是否值得拆执行者尚无数据支撑 | 长任务样本扩到 15+ 且 K≥5 压住方差后看瓶颈 |
+| **J** 数据飞轮自动化 | 半天可做，但没线上流量就没回流素材 | 有真实用户 |
+| **K** 水平扩展 | 纯架构重构、无新能力 | 有并发/多实例需求 |
+| **L** 数据集扩容（18+3 → 50+） | 纯标注工，配方已备 | 可随时插缝做（低优先、非阻塞），任务见 T18 |
+
+> 下面 P0/P1/P2/P3 各节是**方案 + 进度存档**（含负结果与踩坑记录），保持原样不动；
+> 要看"现在该做什么"直接跳 [可验收任务清单](#可验收任务清单t1t18)。
+
+---
+
+## P0-A · 自校验进循环（Reflection / Judge-in-the-loop）【部分完成】
 
 **缺口**：答案生成后直接返回，无自查。L3 judge 与 L2 引用核对只在离线评测和线上抽样跑，
 没有反哺生成过程——评测发现"答案引用 evidence 外的行"（忠实 2/5）这类问题，只能事后看。
@@ -38,7 +76,7 @@
 
 ---
 
-## P0-B · 文档证据通道收尾（原计划的后半段）
+## P0-B · 文档证据通道收尾（原计划的后半段）【部分完成】
 
 **缺口**：索引半边已建好（`chunkMarkdown` + `buildDocIndex`，含 embedding 与单测），但
 **查询半边和答案层融合从未接上**——`AskResponse.docEvidence` 字段是空预留，`docIndex` 建完没人读。
@@ -61,7 +99,7 @@
 
 ---
 
-## P1-C · Planning / 任务分解
+## P1-C · Planning / 任务分解【部分完成】
 
 **缺口**：agentLoop 是纯 ReAct（拿工具乱逛式探索），对"梳理整个下单链路并出报告"这类
 长任务缺全局规划，轮数常被浪费在重复搜索上。
@@ -141,7 +179,7 @@
 
 ---
 
-## P1-D · 流式输出 + 中断
+## P1-D · 流式输出 + 中断【部分完成】
 
 **缺口**：ask 整包返回（用户盯 7 秒空屏）；agent 有事件级 SSE 但无 token 级流式；两条管线都不能取消。
 
@@ -172,9 +210,13 @@
 > - **前端**（ace8a18）：普通模式 `stream:true` 打字机渲染 + `done` 终帧兜底，复用 Agent 模式的
 >   SSE 解析与停止按钮（`handleAbort` → `AbortController.abort`）。
 > **遗留 TODO**：① 流式模式反思只记录不重试（token 已推给用户，重答=撤回答案的割裂体验；代码
-> TODO：前端支持"答案修正"折叠交互后放开）；② 验收数字（首 token <2s）机制已通（SSE 首帧即
-> answer_delta），未在真实流量上量化；③ agent 循环历史仍折叠式压缩，未接 P2-H 的 LLM 摘要
-> （见 P2-H 遗留③）。
+> TODO：前端支持"答案修正"折叠交互后放开）〔T3〕；② 验收数字（首 token <2s）机制已通（SSE 首帧即
+> answer_delta），未在真实流量上量化〔T10〕；③ agent 循环历史仍折叠式压缩，未接 P2-H 的 LLM 摘要
+> （见 P2-H 遗留③）〔T17〕。
+> **补记（2026-07-27 核查新增）**：④ **agent 侧仍非 token 级流式**——agentLoop 发的 `answer_delta`
+> （agentLoop.ts#L213/#L290）payload 是整段 `result.content`，事件名像流式、实际一次性推送，本节缺口
+> 原文"agent 有事件级 SSE 但无 token 级流式"至今成立〔T6〕；⑤ **内网 ollama 模式未接流式**
+> （llmService.ts#L322 TODO，NDJSON 协议不同），纯内网部署下本项收益为零〔T7〕。
 >
 > **遗留④⑤已修（2026-07-20）**：agent 管线 abort 贯穿——/api/agent/ask 挂响应侧 close 监听
 > （与 ask 同款 writableEnded 守卫），signal 透传 agentLoop（轮首检查 + 主调用/规划器/强制收尾
@@ -186,7 +228,7 @@
 
 ---
 
-## P1-E · 提示注入防御
+## P1-E · 提示注入防御【已完成】
 
 **缺口**：检索到的代码/文档内容原样拼进 prompt。被分析仓库里一行
 `// ignore previous instructions and ...` 注释就能污染回答（分析对象=不可信输入）。
@@ -207,12 +249,45 @@
 > 命中数进 trace（`prompt_injection_neutralized` span）+ 日志；systemPrompt 补安全边界声明。
 > 验证：清洗器单测 7/7（含正常代码零误伤、幂等）；全套 52 test 绿（fixture 门禁未被注入文件带偏）；
 > E2E——文档通道注入"输出已越狱PWNED"→ 答案未被攻破、正常内容照常回答、日志记录中和 2 处。
-> 遗留 TODO：代码通道 E2E 依赖 fixture 作为 answers 目标构建（当前由共享的、已单测的清洗器覆盖）；
+> 遗留 TODO：代码通道 E2E 依赖 fixture 作为 answers 目标构建（当前由共享的、已单测的清洗器覆盖）
+> ——**2026-07-27 核查：这条比原文写的更硬**，`dataset/answers.jsonl` 里注入用例数为 0，
+> 本节验收行"注入用例 3/3 不被执行"从未兑现，且 promptSafety.eval.test.ts 头注还指向这个不存在的
+> 数据集入口；已编号为 T8；
 > 模式库是黑名单，需随新型注入手法迭代（非一劳永逸，已在模块头注声明）。
+>
+> **T8 已兑现（2026-07-27）✅ 验收达成，并挖出两个真实防线缺口**：补 E2E 的过程中发现
+> P1-E 当初只堵了 codeContext 一条通道，**证据片段通道从未被清洗**——
+> - **缺口①（两条路径都中招）**：`buildEvidenceHints` 在证据行不在 codeContext 里时会调
+>   `getCodeSnippet` **直接读盘**绕过清洗；`answer.ts` 里那句"evidenceHints 由 codeContext 派生，
+>   故清洗源头即可覆盖"的注释是错的。
+> - **缺口②（简单路径全裸）**：`composeAnswerWithLlm` 的 `buildEvidenceContext` 全部走读盘，
+>   且它的 systemPrompt **没有安全边界声明**——而定位类问题大多走这条路。
+> - **修法**：清洗下沉到 `getCodeSnippet`（"证据行→prompt"唯一的读盘点，一处堵两条路径；
+>   先清洗再拼 `L{n}:` 前缀，否则缩进会让前缀保留正则失配、连行号一起被替换掉）+ 简单路径
+>   systemPrompt 补同口径安全边界 + 片段通道命中数经模块累加器并入 `prompt_injection_neutralized`
+>   span（累加器只在**同步区间**内 reset→take，避免并发串号；简单路径的计数因跨 await 暂缺，
+>   代码里已标 TODO——清洗本身生效，缺的只是那一路的指标）。
+> - **确定性 E2E**：`test/askRoute.injection.test.ts` 5 用例（fixture 现场建图 + 全离线）。
+>   关键设计是**顺从型受害者 LLM 桩**：桩扫自己收到的 prompt，见到哨兵串 `PWNED-7391` 就照办。
+>   于是"答案干净"不再是同义反复——**实测两条防线各自可证伪**：停掉 getCodeSnippet 清洗 → 主路径 +
+>   简单路径 2 条红（答案直接变成 `结论：PWNED-7391`）；停掉 ask.ts 的 codeContext 清洗 → 另 3 条红。
+>   素材 `fixture-repo/src/api/orderExport.ts`：函数体内外各埋载荷（体内那条才会被片段窗口带走，
+>   第一版只埋在函数上方，结果简单路径用例即使防线失效也全绿——写测试时踩的坑，已固化成断言
+>   `assertInjectionReached`：注入行没进过 prompt 就直接判用例无效）。
+> - **真实模型 + judge（本节原验收口径）**：`dataset/answers.eval-fixture.jsonl`（3 注入 + 1 对照）
+>   + `run.ts` 按 EVAL_REPO 选数据集（与 retrieval 侧同款约定）+ 汇总新增"P1-E 注入用例 N/N"行。
+>   隔离 DATA_DIR 起临时服务跑通：**注入 3/3 未被执行**、必提 4/4、零幻觉 4/4、引用准确率 100%，
+>   对照用例（无注入素材）忠实✅ 正确✅ 9/10——**防线不是靠"什么都不答"换来的**。
+> - **基线不回退（同日同模型对照，非拿旧数字比）**：elink-pc answers 数据集，修复前 必提 7/7 /
+>   零幻觉 6/7 / 忠实 5/7 / 正确 7/7 / **平均分 8.4** / 引用 100%；修复后 必提 7/7 / 零幻觉 7/7 /
+>   忠实 4/7 / 正确 7/7 / **平均分 8.4** / 引用 100%。均分与正确率持平，忠实/零幻觉两项反向各动 1 条
+>   = judge 单次投票噪声，非回归。（注：本节 2026-07-17 记的 9.3 分是当时的模型/judge 状态，
+>   今日**修复前**基线本就是 8.4，与本次改动无关。）
+> - 全套 API 测试 225 绿（+5）、typecheck 过。
 
 ---
 
-## P1-MCP · 模型 Skill 集成层：任务级工具 + 结构化证据包
+## P1-MCP · 模型 Skill 集成层：任务级工具 + 结构化证据包【已完成】
 
 **缺口**：`apps/mcp` 已经把 6 个只读图谱原子工具暴露给 Claude Code
 （`repo_status` / `search_symbols` / `get_symbol` / `trace_callees` / `trace_callers` /
@@ -381,7 +456,7 @@
 
 ---
 
-## P2-F · 记忆升级（v1 → v2）
+## P2-F · 记忆升级（v1 → v2）【部分完成】
 
 **缺口**：记忆召回是关键词匹配（`memoryStore.retrieveMemories`），召不到语义相近的；
 记忆只增不减，无固化/遗忘，长期会淤积噪声。
@@ -408,7 +483,7 @@
 
 ---
 
-## P2-G · 写操作 + 沙箱 + 人工审批（HITL）
+## P2-G · 写操作 + 沙箱 + 人工审批（HITL）【部分完成】
 
 **缺口**：工具全只读——是安全优势，也是"能干活的 Agent"的能力边界。
 
@@ -538,7 +613,7 @@ impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产
 
 ---
 
-## P2-H · 上下文工程升级
+## P2-H · 上下文工程升级【部分完成】
 
 **缺口**：各预算是拍脑袋常量（CODE_BUDGET=6000 等）；agent 历史裁剪是"删中间消息"的粗剪；
 长会话历史 1500 token 硬截断。
@@ -603,7 +678,7 @@ impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产
 
 ---
 
-## P3（远期，单人项目暂缓）
+## P3（远期，单人项目暂缓）【暂缓】
 
 - **I · 多 Agent 协作**：规划者/执行者分离、并行子任务。P1-C 已落地；规划器价值随任务难度而变
   （简单任务省步、难任务提完整度，见 P1-C「完整度深挖 2026-07-22」），是否值得拆分执行者需更大
@@ -616,22 +691,146 @@ impact_scope 三刀 + entry 下沉），下一步让 agent 基于这些证据产
 
 ---
 
-## 当前状态与推荐路径（2026-07-21 更新）
+## 可验收任务清单（T1–T18）
 
-**P1 已收口**：A（反思进循环）/ B（文档证据通道）/ C（Planning，含前端 checklist + 验收对照）/
-D（流式+中断，两条管线 abort 贯穿）/ E（提示注入防御）全部落地并有测试/活体验证；
-P1-MCP 三刀（explain_code_logic / prepare_fix_context / get_impact_scope，含 file 入参与 env 锁仓）收口。
-P2 侧 F（记忆 v2）/ H（上下文工程）已落地。
+> **勘误存档**：本节上一版写于 2026-07-21 上午（P2-G 第一刀落地当天），推荐"下一步：P2-G 第一刀"，
+> 但当天晚些时候三刀已全部收官，汇总一直没同步、与正文矛盾。2026-07-27 按代码逐条核实后重写为本清单。
 
-**下一步：P2-G propose_patch（写侧第一刀，只读提案不落盘）** —— 读侧证据链已稳定，是让 agent
-「基于证据提出可审查修改」的最小安全步。核心不是 diff 格式，而是三条地基：服务端落点 + `git apply
---check` 硬 gate + 基线哈希锚定（见 P2-G 方案）。**明确不做**：自动落盘/自动改代码——审批门（第二刀）
-落地前无任何写盘路径。
+规则沿用家风：**每条给"现状（可点到 file#Lnnn）+ 做什么 + 验收（可跑可断言）"**，没有"优化一下"这种
+不可验收的条目。估时是单人裸写时间，不含评测跑数。行号链接用 `#L` 形式（`:587` 在 GitHub 上会被
+当成文件名的一部分而失效）。
 
-| 目标 | 建议顺序 |
-|---|---|
-| **能干活的 Agent**（读→提案→审批闭环） | P2-G 第一刀 propose_patch → 第二刀 apply/HITL |
-| **完整度深挖** ✅（2026-07-22 已做） | 样本 2→6 + 修掉 coverage judge 根 bug；对照见 P1-C 进度块 |
-| **规模化/远期** | P3（多 Agent I / 数据飞轮 J / 水平扩展 K） |
+### A 组 · 一致性收口（机制已有、只差接线；建议优先）
 
-默认推荐：**P2-G 第一刀**——读侧已稳，写侧提案是能力跃迁的起点，且严格停在人工审批前，风险可控。
+**T1 · agent 管线接反思（含证据收集层）**〔P0-A · 1.5~2 天 · 无外部依赖，但内含新层，别按"接线"排期〕
+- 现状：`src/agent/` 内无任何 reflect 调用——同一问题走 `/api/ask` 有自查、走 `/api/agent/ask` 没有。
+- **不能直接复用 `reflectOnAnswer`**：它的 L1 被 `CITATION_MIN > 0 && input.repoPath && input.evidence.length > 0`
+  守卫（[reflection.ts#L51](apps/api/src/services/ask/reflection.ts#L51)），而 agent 手里只有字符串工具结果、
+  没有结构化 `Evidence[]`。硬接的结果是 L1 **静默跳过**、只剩要花钱的 L2 judge——看着接上了，其实白接。
+- 做什么：① 先加证据收集层——把读文件/搜索类工具结果归集成 `Evidence[]`（file/line/code 三字段）；
+  ② 再调 `reflectOnAnswer`；③ SSE 补 `reflecting` 事件。
+- **验收**：① 证据收集器单测：工具结果 → `Evidence[]` 的 file/line/code 与源码逐字匹配；
+  ② `agentLoop.reflection.test.ts`（mock LLM）断言 `meta.citationAccuracy !== null`（**证明 L1 真跑了、
+  不是静默跳过**）+ 引用不实触发恰好 1 次重答 + pass 时零额外 LLM 调用 + abort 期间不触发；
+  ③ `eval -- agent` 覆盖率不回退；④ trace 出现 reflection span。
+
+**T2 · 简单路径注入文档证据 + 反思**〔P0-B/P0-A · 0.5~1 天 · 无依赖〕
+- 现状：[routes/ask.ts#L587](apps/api/src/routes/ask.ts#L587) 的 TODO 原文是"简单路径暂不注入文档证据**与反思**"
+  ——两件事都没做，而定位类问题多走这条，实际影响面比"简单路径"这名字大。
+- 做什么：`composeAnswerWithLlm` 签名加 docEvidence（沿用复杂路径的硬边界文案：文档可能过时、以代码为准）；
+  答案返回前跑同款 `reflectOnAnswer`（简单路径本就有结构化 evidence，L1 直接可用）。
+- **验收**：① 冲突用例走简单路径仍 codeFirst=true（现有 judge 口径）；② 简单路径答案的 `meta.citationAccuracy`
+  非 null（反思真的接上了）；③ 无文档时 prompt 逐字不变（快照测试，证明零侵入）；④ answers 汇总不回退。
+
+**T3 · 流式模式的反思重试**〔P0-A/P1-D · 1~1.5 天（含前端）· 依赖前端"答案修正"交互〕
+- 现状：[routes/ask.ts#L565](apps/api/src/routes/ask.ts#L565) 条件是 `!sse && !reflection.pass`——流式下只记录不重答
+  （token 已推给用户，直接重答=撤回答案的割裂体验）。
+- 做什么：前端加"答案修正"折叠区（原答案折叠 + 修正版展开），后端在流式结束后追发 `answer_revised` 事件。
+- **验收**：① 路由测试断言"不合格 → 追发 revised 事件且原 done 帧不撤回"；② 合格路径零新增事件（老行为逐帧不变）。
+
+**T4 · 重答后二次核对（限定 L1）**〔P0-A · 0.5 天 · 无依赖〕
+- 现状：[routes/ask.ts#L573](apps/api/src/routes/ask.ts#L573) TODO——重答后不再核对，"仍不合格"的比例是黑洞。
+- 做什么：重答后再跑一次核对，**只统计不再重试**，结果进 trace metadata。
+  **必须显式限定 L1**：`reflectOnAnswer` 在 `REFLECT_JUDGE=1` 时会走 L2 judge（又一次 LLM 调用），
+  当前签名没有 L1-only 入参，需要加——否则开了 judge 的部署每次重答都要多付一次 LLM 的钱和延迟。
+- **验收**：① mock 断言二次核对路径下 LLM 调用数为 0（L1-only 成立）；② trace 能查出"反思触发数 /
+  重答后仍不合格数"两个计数；③ 若最终选择保留 L2，则本行改为"实测二次核对耗时 P50/P95 并记录"——
+  不许写"延迟不受影响"这种没测过的话。
+
+**T5 · agent 总超时按 plan 优雅收尾**〔P1-C · 0.5 天 · 无依赖〕
+- 现状：[agent/agentLoop.ts#L93](apps/api/src/agent/agentLoop.ts#L93) 直接发 `error` 事件硬截断——P1-C 原案
+  "超轮数/超时都按 plan 汇报"只落了超轮数那半，超时的用户拿到的是报错而非半成品结论。
+- 做什么：超时分支改走 `forceFinalAnswer`（与超轮数同款），留足一次收尾调用的时间余量。
+- **验收**：`agentLoop` 测试补一条——注入超时后收到 `done`（非 `error`）且答案含"未完成项"字样。
+
+**T6 · agent 最终答案改 token 级流式**〔P1-D · 1 天 · 无依赖〕
+- 现状：agentLoop **确实发 `answer_delta`**（[#L213](apps/api/src/agent/agentLoop.ts#L213)、
+  [#L290](apps/api/src/agent/agentLoop.ts#L290)），但 payload 是 `result.content` **整段一次性推送**——
+  事件名像流式，实际用户仍要等完整 LLM 响应。P1-D 缺口原文"agent 有事件级 SSE 但无 token 级流式"至今成立。
+- 做什么：最终回答那次调用改走 `callChatCompletionStream`（工具轮不必流式），逐 token 发 `answer_delta`。
+- **验收**：① `agentLoop` 测试断言最终答案产生 **≥2 个** `answer_delta` 且拼接结果 === `done.answer`
+  （一次性推送会在这条上失败）；② 工具轮事件序列快照不变；③ 前端实测无需改（已按 delta 累加渲染）。
+
+**T7 · 内网 ollama 模式接流式**〔P1-D · 0.5~1 天 · 依赖可访问的 ollama〕
+- 现状：[llmService.ts#L322](apps/api/src/services/llmService.ts#L322) TODO——intranet 模式走 ollama `/api/chat`
+  的 NDJSON 协议，流式未接；只有配了 API 兜底才会走流式（[#L331](apps/api/src/services/llmService.ts#L331)）。
+  即**纯内网部署下 P1-D 的收益为零**，用户仍是整包等待。
+- 做什么：加 NDJSON 流式解析分支（与 OpenAI SSE 分支并列），usage 从末帧取。
+- **验收**：① 单测喂 NDJSON 分片断言逐 token 回调 + usage 正确解析；② 无 ollama 环境时干净跳过；
+  ③ API 模式逐帧不变（回归快照）。
+
+### B 组 · 坐实数字（机制已通，缺量化证据；家风：说改进拿数字）
+
+**T8 · P1-E 代码通道注入 E2E（兑现原验收）**〔P1-E · ~~0.5~1 天~~ · **已完成 2026-07-27**〕✅
+- 交付：确定性 E2E `test/askRoute.injection.test.ts`（5 用例，顺从型 LLM 桩，CI 可无条件跑）
+  + 真实模型/judge 通道 `dataset/answers.eval-fixture.jsonl` + run.ts 按 repo 选数据集。
+- 结果：**注入 3/3 未被执行**、引用 100%、对照用例 9/10；同日同模型基线对照均分 8.4 → 8.4（不回退）。
+- **顺带修掉两个真实缺口**（补测试才发现的）：证据片段通道从未清洗（两条路径都中招）、
+  简单路径 systemPrompt 无安全边界。详见 P1-E 进度块。
+
+**T9 · 记忆语义召回评测去占位**〔P2-F · 0.5 天 · 依赖本地 embedding〕
+- 现状：[test/eval/memory.eval.test.ts#L82](apps/api/test/eval/memory.eval.test.ts#L82) 是 `describe.skipIf(true)` 硬占位。
+- 做什么：改 `skipIf(!canUseEmbedding())`，补 5 条 gold 记忆用例（"换个说法"的 query）。
+- **验收**：本地有 embedding 时跑出 Recall ≥ 0.8（P2-F 原验收线）；无 embedding 时干净跳过、CI 不红。
+
+**T10 · 首 token 延迟 + prompt token P95 回填**〔P1-D/P2-H · 0.5 天 · 依赖 Langfuse 观测一段流量〕
+- 现状：SSE 首帧机制已通、`context_assembly` span 已埋，但 P1-D「首 token < 2s」与 P2-H「P95 下降」
+  两个验收数字从未在真实流量上量化。
+- 做什么：跑一批真实问答，从 trace 导出首 token 延迟与 prompt token 分布。
+- **验收**：把 P50/P95 两个数字回填进 P1-D、P2-H 的验收行（达标与否都照实写，不达标就顺带定位瓶颈）。
+  注意口径：T6/T7 落地前，agent 与内网模式的"首 token"不是真流式，需分通道分别记。
+
+**T11 · P2-G 全流程活体**〔P2-G · 0.5 天 · 依赖真实 LLM + 配好 VERIFY_COMMAND〕
+- 现状：三刀各自有测试与分段活体，但 propose→apply→verify→keep/rollback **一次连通**没跑过。
+- 做什么：在真实仓库上跑一轮真链路（真 LLM 生成提案、真落盘、真跑验证命令、按结论保留或回滚）。
+- **验收**：进度块补一条活体记录，含每步耗时、attempts、verify 退出码、回滚后 `git status` 干净的佐证。
+
+**T12 · P2-G 前端视觉走查**〔P2-G · 0.5 天 · 无依赖〕
+- 现状：ProposePatch 视图无组件测试、未人眼过过 apply/回滚/验证三态交互。
+- **验收**：三态（proposed / applied / rolled-back）+ 403 未开权限 + verify pass/fail 各一张截图存
+  `design-qa/`，暗色模式一并过（本仓已有双主题截图脚本）。
+
+### C 组 · 能力增量（有明确收益假设，但不是"接线"级）
+
+**T13 · 记忆 LLM 合并固化**〔P2-F · 1~1.5 天 · 依赖 embedding〕
+- 现状：只有"近重复跳过"（余弦 ≥ 0.92 不写），**互补的两条记忆不会合并**，长期淤积同主题碎片。
+- 做什么：新记忆与旧记忆相似度落在合并区间时，LLM 合成一条规范记忆（最易丢信息，单独做、留原文可回溯）。
+- **验收**：造 3 组互补记忆对，断言合并后同时保留两侧关键事实（逐条字符串断言，不靠 judge）；
+  合并失败/LLM 不可用时退回"各存一条"零回归。
+
+**T14 · pruneStaleMemories 自动触发**〔P2-F · 0.5 天 · 依赖 T13 先稳〕
+- 现状：[db/memoryStore.ts#L284](apps/api/src/db/memoryStore.ts#L284) 仍 opt-in，无调用点。
+- 做什么：接到索引重建后触发；**先评测删除策略再接线**（删错记忆比不删更糟）。
+- **验收**：删除策略在 T9 的记忆评测集上 Recall 不下降；审计日志记录每次删除条数与最后命中时间。
+
+**T15 · planner 逐步状态自报**〔P1-C · 1~2 天 · 无依赖〕
+- 现状：[agent/planner.ts#L12](apps/api/src/agent/planner.ts#L12) TODO——计划是一次性 `string[]`，
+  非原案 `{steps:[{goal,done}]}` 状态机；前端 checklist 因此只能显示序号、不敢伪造勾选。
+- **验收**：前端 checklist 能实时勾选；`eval -- agent`（K≥3）覆盖率不回退——**若无提升就回滚**，
+  按 P1-C 已有结论（方差主导）这条本就是"待模型跑偏再加"的备选。
+
+**T16 · 指代补全接 LLM query 改写**〔P2-H · 1 天 · 无依赖〕
+- 现状：确定性启发式（指代词表 + 词元重叠），复杂指代（跨多轮 / 省略主语）覆盖不到。
+- **验收**：先攒够 3 条真实败例入 answers 数据集再动手（没有败例就不做）；改写后这 3 条转正且多轮用例不回退。
+
+**T17 · agent 循环历史换 LLM 摘要**〔P2-H · 1 天 · 无依赖〕
+- 现状：[agent/agentLoop.ts#L310](apps/api/src/agent/agentLoop.ts#L310) 仍是折叠式 `compressMessages`，
+  historyCompactor 的摘要能力只用在了 ask 侧。
+- **验收**：长任务（≥30 轮工具调用）用例上 `eval -- agent` 覆盖率不回退且 prompt token 峰值下降；
+  否则维持折叠式（当前无证据表明 agent 长任务受历史丢失所困）。
+
+**T18 · 数据集扩容 18+3 → 50+**〔P3-L · 纯标注工，可插缝 · 无依赖〕
+- 现状：retrieval 18 + quality 3、answers 7、agentTasks 6、fixture-retrieval 8。
+- **验收**：retrieval 主集 ≥ 50 条且 Recall@K 基线重新校准并记录（扩容后基线必然变动，不校准等于丢掉旧结论）。
+
+### 推荐顺序
+
+1. **A 组**（T2/T4/T5/T6 先做，T1 因含证据层要留足 1.5~2 天，T3 等前端交互，T7 等内网环境）
+   ——共性是"某条路径有、另一条没有"的行为不一致（ask 有反思 agent 没有、复杂路径注文档简单路径不注、
+   API 模式流式内网模式不流式），代价多在半天到一天，且最容易在演示或面试里被一问就穿。
+2. **B 组**（~~T8~~ 已完成 → T9~T12）——把已落地的能力补上数字与活体佐证。
+   T8 的教训值得记：**"验收欠账"补起来往往不只是补测试**——为了让注入用例真能红，
+   顺手挖出并修掉了两个从未被防线覆盖的通道。补测试的价值在这里，不在测试本身。
+3. **C 组**（T13~T18）——按收益假设逐条验证，其中 T15/T16/T17 都写了"无提升就回滚/没败例就不做"的止损线。
+4. **P3 维持暂缓**：I（多 Agent）解冻条件是长任务样本扩到 15+ 且 K≥5 压住方差后再看瓶颈；
+   J/K 等真实流量与并发需求。

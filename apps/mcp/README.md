@@ -35,7 +35,7 @@ pnpm --filter @aiops/mcp build
 
 ---
 
-## 可用工具（9 个）
+## 可用工具（10 个）
 
 | 工具 | 说明 |
 |------|------|
@@ -43,6 +43,7 @@ pnpm --filter @aiops/mcp build
 | `explain_code_logic(question, conversationId?)` | 用自然语言分析当前仓库中的业务/代码逻辑，返回回答、代码证据、文档证据与图谱摘要。适合在改代码前先获取任务上下文。 |
 | `prepare_fix_context(question)` | 面向 bug 修复 / 需求改动的**任务前置分析**：返回结构化修改上下文——入口文件、关键流程、相关文件、接口调用、疑似修改点、验证建议、代码证据。改代码前先拿"从哪改"的锚。走 LLM、耗时数十秒、无状态。 |
 | `get_impact_scope(symbol \| file, depth?)` | 一次拿到某符号或某文件的**完整影响面**：上游调用方（改动波及谁）+ 下游依赖（改动依赖什么）。改方法/改文件前评估波及范围。文件模式聚合文件内全部符号、只看跨文件影响；短文件名唯一命中可用，多命中返回候选。纯图谱、零 LLM、快。 |
+| `propose_patch(question, files[])` | 基于「要改什么」+「改哪些文件」生成一份**只读修改提案**：统一 diff + 每个文件的基线哈希 + 验证建议，且已用 `git apply --check` 确认能干净打上——**但绝不修改仓库任何文件**（无落盘路径；应用/回滚只在 Web 端经人工审批，本 MCP 不暴露）。用法：先用 `prepare_fix_context` 定位改哪些文件，再把相对路径连同修改诉求传进来。只支持修改已存在的文本文件（不支持新增/删除/改名）。走 LLM、耗时数十秒。 |
 | `search_symbols(q, limit?)` | 按名字搜符号，返回精确文件位置。 |
 | `get_symbol(name)` | 某符号详情 + 深度 1 的直接邻居。 |
 | `trace_callees(symbol, depth?)` | **「它调用了谁」**——依赖链 / 下游追踪。 |
@@ -108,5 +109,5 @@ pnpm --filter @aiops/mcp build
 - **单图谱共享：** MCP 与 Web 界面共用同一个"当前仓库"——在网页上切换仓库会同时影响 MCP 查询的对象。
 - **非实时：** 查询结果反映"上次索引时"的代码结构；修改代码后需重新构建索引才会更新。
 - **鉴权：** 现已支持（设置 `ANALYZER_PASSWORD` 即可自动登录）；仍不支持远程 HTTPS 或其他高级认证场景。
-- **LLM 类工具的成本与副作用：** `explain_code_logic` 与 `prepare_fix_context` 走 LLM 分析，单次耗时数十秒、消耗 LLM 配额（其余 7 个工具为毫秒级纯图谱查询，含 `get_impact_scope`）。二者默认无状态、不产生会话记录、不写项目记忆库；`explain_code_logic` 显式传 `conversationId` 时才持久化多轮对话（消息带 `source: mcp` 标记），`prepare_fix_context` 恒为无状态单发。
-- **范围外功能（后续增强）：** 重建索引、跨仓库参数、自动改代码等均不在当前版本内。
+- **LLM 类工具的成本与副作用：** `explain_code_logic`、`prepare_fix_context`、`propose_patch` 走 LLM 分析，单次耗时数十秒、消耗 LLM 配额（其余 7 个工具为毫秒级纯图谱查询，含 `get_impact_scope`）。三者都不写项目记忆库；`explain_code_logic` 显式传 `conversationId` 时才持久化多轮对话（消息带 `source: mcp` 标记），`prepare_fix_context` 恒为无状态单发；`propose_patch` **不改仓库文件**，但会把生成的提案存进服务端提案表（`status=proposed`）以便 Web 端审批时取用校验过的原件。
+- **范围外功能（后续增强）：** 重建索引、跨仓库参数均不在当前版本内；**应用提案（落盘）与回滚刻意不在 MCP 暴露**——写操作只走 Web 端人工审批门（`ALLOW_APPLY` + 二次确认）。

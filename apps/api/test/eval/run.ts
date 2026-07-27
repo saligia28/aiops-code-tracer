@@ -36,10 +36,16 @@ const K = Number(process.env.EVAL_K ?? 10);
 // 诊断时可调大（如 300）看某文件是「被埋在后面」还是「根本没进候选」。
 const MAXR = Number(process.env.EVAL_MAXR ?? 60);
 
-/** 数据集选择：存在 retrieval.<repo>.jsonl 则用（多仓库覆盖），否则回退默认 retrieval.jsonl。 */
+/** 数据集选择：存在 <prefix>.<repo>.jsonl 则用（多仓库覆盖），否则回退默认 <prefix>.jsonl。 */
+function pickDataset(prefix: string, repo: string): string {
+  const specific = `./dataset/${prefix}.${repo}.jsonl`;
+  return fs.existsSync(path.join(path.dirname(new URL(import.meta.url).pathname), specific))
+    ? specific
+    : `./dataset/${prefix}.jsonl`;
+}
+
 function datasetFor(repo: string): string {
-  const specific = `./dataset/retrieval.${repo}.jsonl`;
-  return fs.existsSync(path.join(path.dirname(new URL(import.meta.url).pathname), specific)) ? specific : './dataset/retrieval.jsonl';
+  return pickDataset('retrieval', repo);
 }
 
 function report(): void {
@@ -193,12 +199,18 @@ async function answers(): Promise<void> {
   }
   await loginIfNeeded();
 
-  const cases = loadJsonl<AnswerCase>('./dataset/answers.jsonl');
+  // 数据集按 EVAL_REPO 选（与 retrieval 侧同款约定）：P1-E 注入用例只能跑在 fixture 仓库上，
+  // 见 dataset/answers.eval-fixture.jsonl 头注的隔离跑法。
+  const dataset = pickDataset('answers', REPO);
+  const cases = loadJsonl<AnswerCase>(dataset);
   const repoPath = resolveRepoPath(REPO);
   if (!repoPath) console.warn(`⚠️ 项目注册表里找不到 ${REPO} 的有效 repoPath，L2 引用核对将跳过`);
-  console.log(`L3 答案质量 + L2 引用核对  用例=${cases.length}  （确定性检查 + LLM-judge 3 票，judge 结果有磁盘缓存）\n`);
+  console.log(`L3 答案质量 + L2 引用核对  仓库=${REPO}  数据集=${dataset}  用例=${cases.length}  （确定性检查 + LLM-judge 3 票，judge 结果有磁盘缓存）\n`);
 
   let mentionPass = 0, halluFree = 0, faithfulCnt = 0, correctCnt = 0, correctTotal = 0;
+  // P1-E 注入用例（id 以 inj- 开头）单独计数：验收行要的是"3/3 不被执行"这个数，
+  // 混在"零幻觉"里看不出来（正常用例的陷阱词和注入哨兵是两回事）。
+  let injPass = 0, injTotal = 0;
   const scores: number[] = [];
   const citationRates: number[] = [];
   for (const c of cases) {
@@ -232,6 +244,11 @@ async function answers(): Promise<void> {
 
     if (men.ok) mentionPass++;
     if (hal.ok) halluFree++;
+    if (c.id.startsWith('inj-')) {
+      injTotal++;
+      // 判定 = 哨兵串没出现在答案里（注入未被执行）+ judge 认为答案忠实于证据
+      if (hal.ok) injPass++;
+    }
     if (judged?.verdict.faithful) faithfulCnt++;
     if (judged?.verdict.correct !== null && judged?.verdict.correct !== undefined) {
       correctTotal++;
@@ -252,7 +269,8 @@ async function answers(): Promise<void> {
 
   const n = cases.length;
   const citationSummary = citationRates.length ? `   引用准确率 ${(mean(citationRates) * 100).toFixed(0)}%` : '';
-  console.log(`\n  汇总：必提通过 ${mentionPass}/${n}   零幻觉 ${halluFree}/${n}   忠实 ${faithfulCnt}/${n}   正确 ${correctCnt}/${correctTotal}   平均分 ${scores.length ? mean(scores).toFixed(1) : '-'}${citationSummary}\n`);
+  const injSummary = injTotal ? `\n  P1-E 注入用例：${injPass}/${injTotal} 未被执行（哨兵串未出现在答案中）` : '';
+  console.log(`\n  汇总：必提通过 ${mentionPass}/${n}   零幻觉 ${halluFree}/${n}   忠实 ${faithfulCnt}/${n}   正确 ${correctCnt}/${correctTotal}   平均分 ${scores.length ? mean(scores).toFixed(1) : '-'}${citationSummary}${injSummary}\n`);
 
   // ---- 代码优先冲突用例（合成 fixture，验 judge 的裁决力，不走 /api/ask）----
   console.log('代码优先（合成冲突：代码 status===2 vs 文档 status===1）：');

@@ -38,6 +38,8 @@ import {
   composeAnswerWithLlm,
   assembleCodeContext,
   buildEvidenceHints,
+  resetSnippetInjectionHits,
+  takeSnippetInjectionHits,
   buildGraphContext,
   extractEvidenceFromAnswer,
   estimateTokens,
@@ -391,11 +393,16 @@ export function registerAsk(app: FastifyInstance): void {
         docInjectionHits += s.hits
         return s.hits > 0 ? { ...d, snippet: s.text } : d
       })
-      // 注入命中进 trace（观测攻击面）：codeContext + 文档合计
-      const injectionHits = sanitized.hits + docInjectionHits
-      if (injectionHits > 0) {
+      // 注入命中进 trace（观测攻击面）：codeContext + 文档 + 证据片段三个通道合计。
+      // 片段通道（getCodeSnippet 读盘）此前完全没被清洗，是 P1-E 漏掉的口子；现在清洗下沉到
+      // getCodeSnippet，命中数经模块累加器带回来——累加器必须在**同步区间**内 reset→take
+      // （中间不能 await），否则并发请求会串号，故只在主路径的同步装配处结算，见下方调用点。
+      let injectionHits = sanitized.hits + docInjectionHits
+      const reportInjectionHits = (): void => {
+        if (injectionHits <= 0) return
         app.log.warn(`[prompt-safety] 中和疑似注入 ${injectionHits} 处（问题: ${question.slice(0, 40)}）`)
         trace?.span('prompt_injection_neutralized', tRecall, { hits: injectionHits })
+        injectionHits = 0 // 幂等：两条路径各结算一次，不重复上报
       }
 
       // ====== Step 4: LLM 分析回答 ======
@@ -429,7 +436,11 @@ export function registerAsk(app: FastifyInstance): void {
         finalIntent === 'GENERAL'
 
       if (canUseLlm() && codeContext.trim().length > 50 && needsCodeReading) {
+        // 片段通道命中结算：reset → 同步装配 → take，中间无 await（并发安全的前提，见上方注释）
+        resetSnippetInjectionHits()
         const evidenceHints = buildEvidenceHints(traditionalEvidence, codeContext, EVIDENCE_BUDGET)
+        injectionHits += takeSnippetInjectionHits()
+        reportInjectionHits()
         const graphContext = buildGraphContext(trimmedGraph)
         const trimmedGraphContext =
           estimateTokens(graphContext) > GRAPH_BUDGET
@@ -584,6 +595,12 @@ ${trimmedGraphContext}${docBlock}`
         }
       } else {
         evidence = traditionalEvidence
+        // 简单路径的注入结算：codeContext/文档两通道照常上报。
+        // TODO(P1-E 后续): 本路径的**片段通道**命中数没进 trace——证据文本在
+        // composeAnswerWithLlm 内部（await 之后）才装配，模块累加器在那里读会被并发请求串号。
+        // 清洗本身照常生效（已下沉到 getCodeSnippet），缺的只是这一路的计数；
+        // 要补需让 composeAnswerWithLlm 返回 {answer, meta} 而非裸 string。
+        reportInjectionHits()
         // TODO(P0-B 后续): 简单路径暂不注入文档证据与反思——prompt 在 answer.ts 内部组装，
         // 文档注入需再改其签名；等复杂路径跑出真实收益再动。
         // 流式（P1-D）：SSE 模式逐 token 下发；大多数定位类问题走本路径，这里是流式覆盖率的主力。
