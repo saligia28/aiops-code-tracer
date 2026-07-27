@@ -325,7 +325,7 @@ export interface AppConfig {
 // ============================================================
 
 /** Agent SSE 事件类型 */
-export type AgentEventType = 'conversation' | 'plan' | 'thinking' | 'tool_call' | 'tool_result' | 'answer_delta' | 'done' | 'error';
+export type AgentEventType = 'conversation' | 'plan' | 'thinking' | 'tool_call' | 'tool_result' | 'reflecting' | 'answer_delta' | 'done' | 'error';
 
 /** Agent SSE 事件 */
 export interface AgentEvent {
@@ -351,6 +351,13 @@ export interface AgentEvent {
     conversationId?: string;
     /** plan: 任务分解出的步骤目标列表（P1-C；简单问题不发此事件） */
     planSteps?: string[];
+    /**
+     * reflecting / done: L1 引用核对的准确率（P0-A·T1）。
+     * undefined = L1 未跑（答案没给 file:line 引用，或 repoPath 缺失）。
+     */
+    citationAccuracy?: number;
+    /** done: 本次回答是否经历过自查重答（P0-A·T1，观测用） */
+    reflectionRetried?: boolean;
   };
 }
 

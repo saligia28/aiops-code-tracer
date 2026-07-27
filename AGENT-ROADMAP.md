@@ -74,6 +74,34 @@
 **验收**：`eval -- answers` 忠实率 2/5 → ≥4/5；引用准确率保持 100%；未触发反思的请求延迟零增加。
 **工作量**：1~1.5 天。 **依赖**：无（全部现成）。
 
+> **方案第 3 条（agent 管线）已落地（2026-07-27）✅ T1**——原文一句"同理，插同款检查"，
+> 实际不同理：**`reflectOnAnswer` 的 L1 被 `evidence.length > 0` 守卫**，而 agent 手里只有字符串
+> 工具结果。直接接上去的结果是 L1 **静默跳过**、只剩要花钱的 L2——看着接上了，其实白接。
+> - **补证据收集层**（`agent/evidenceCollector.ts`）：从 read_file / search_in_file / search_code
+>   的输出里建「模型看过哪些行」的索引，再按答案里的 `file:line` 引用组装 `Evidence[]`。
+>   语义对齐 ask 侧的 `extractEvidenceFromAnswer`——code 取**模型看到的**那行，不是从磁盘现读
+>   （现读的话 citationAccuracy 恒等于 1，核对就成了自证）。agent 侧尤其需要：`compressMessages`
+>   会折叠早期工具结果，模型很容易凭记忆报出漂移的行号，这正是 L1 能抓的典型错误。
+> - **收尾统一走 `finalizeAnswer`**：反思放在 `answer_delta` **之前**（agent 是整段推送，不像 ask
+>   流式那样已把 token 推给用户，所以可以先自查再下发，没有"答案被撤回"问题）；不合格发
+>   `reflecting` 事件 + 重答 1 次（空 tools，禁止再探索）；重答失败/异常一律放行原答案。
+>   顺带把两处重复的 done 发射合并（`forceFinalAnswer` 改为只返回文本、不再自己发事件）。
+> - **观测**：`done` 事件带 `citationAccuracy` / `reflectionRetried`，路由据此记 `reflection` span
+>   （pass 与否都记——只记重答过的那些就算不出触发率）。
+> - **验收**：`test/agentEvidence.test.ts` 8 用例（**喂真实工具输出**而非手写字符串，格式一改就红；
+>   断言 code 与源码逐字一致）+ `test/agentLoop.reflection.test.ts` 5 用例（L1 真跑了 / 恰好重答 1 次 /
+>   重答失败放行 / 中止不触发 / 无引用时诚实标注未跑）。**非同义反复实测**：把证据层摘掉换成
+>   `evidence: []`，前两条立刻红——即"直接接上去会静默跳过"的失败模式被测试钉住了。
+> - **活体（elink-pc + DeepSeek）**：真实提问跑通，22 次工具调用、答案含 **7 条 file:line 引用、
+>   citationAccuracy=1.0**（证明 L1 在真实答案上确实执行、且没触发无谓重答，未触发时零额外 LLM 成本）；
+>   `eval -- agent` 单任务冒烟 t-price-check-flow 覆盖 4/4、46 次工具调用。
+> - **未做（据实标注）**：① 前端未渲染 `reflecting`（后端已发事件，前端 switch 无 default 会安全忽略，
+>   要做「自查中」提示需加一种 step 类型）；② `eval -- agent` 的**完整**覆盖率对照没跑——单次跑分方差
+>   已知极大（区间 0~5，见 P1-C 加固记录），一次跑不出"不回退"的结论，要下判断得 K≥3 全量重跑；
+>   ③ 顺带发现的机会：agent 现在**有**结构化 evidence 了，若在 `done` 事件里一并下发，judge 就不必再对
+>   agent 答案空手评 faithful（run.ts 里"score 系统性偏低"那条 caveat 的根因），是独立的一小步。
+> - 全套 API 测试 233 绿（+13）、全仓 typecheck 过。
+
 ---
 
 ## P0-B · 文档证据通道收尾（原计划的后半段）【部分完成】

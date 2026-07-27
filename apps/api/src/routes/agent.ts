@@ -9,6 +9,14 @@ import { buildHistoryWindow } from '../services/ask/historyCompactor.js';
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js';
 import { getContextBudgets } from '../services/ask/contextBudget.js';
 
+/** 自校验（P0-A·T1）的 trace 元数据：由 reflecting / done 两个事件拼出。 */
+interface ReflectionSpanMeta {
+  citationAccuracy?: number;
+  retried: boolean;
+  /** reflecting 事件的时刻；未触发重答时为 undefined（span 退化为零耗时打点） */
+  startedAt?: number;
+}
+
 export function registerAgent(app: FastifyInstance): void {
   app.post('/api/agent/ask', async (request, reply) => {
     const { question, conversationId } = request.body as { question?: string; conversationId?: string };
@@ -68,6 +76,10 @@ export function registerAgent(app: FastifyInstance): void {
     const steps: Array<Record<string, unknown>> = [];
     let finalAnswer = '';
     let finalFollowUp: string[] = [];
+    // P0-A·T1：自校验结果记 trace（与 ask 管线同款 reflection span），供观测反思的真实收益。
+    // 用对象持有而非裸 let：赋值只发生在 sendEvent 闭包里，裸 let 会被 TS 的控制流分析
+    // 一路窄化成 null（读取处进而变成 never）；属性访问在跨过 await 后会失效重来，类型才对。
+    const reflectionRef: { meta: ReflectionSpanMeta | null } = { meta: null };
     // P1-C：执行计划单独落 meta（不进 steps——前端按独立卡片渲染，刷新/切会话后可还原）
     let planSteps: string[] | undefined;
 
@@ -80,9 +92,17 @@ export function registerAgent(app: FastifyInstance): void {
         steps.push({ type: 'tool_call', toolName: event.data.toolName, toolArgs: event.data.toolArgs });
       } else if (event.type === 'tool_result') {
         steps.push({ type: 'tool_result', toolResult: event.data.toolResult });
+      } else if (event.type === 'reflecting') {
+        // 自查未通过、开始重答：记开始时刻，span 的耗时才有意义
+        reflectionRef.meta = { citationAccuracy: event.data.citationAccuracy, retried: true, startedAt: Date.now() };
       } else if (event.type === 'done') {
         finalAnswer = event.data.answer ?? finalAnswer;
         finalFollowUp = event.data.followUp ?? finalFollowUp;
+        reflectionRef.meta = {
+          citationAccuracy: event.data.citationAccuracy,
+          retried: event.data.reflectionRetried ?? false,
+          startedAt: reflectionRef.meta?.startedAt,
+        };
       }
       // 断连后不再写死 socket（事件仍计入 steps，供中止前已产生轨迹的落库语义不变）
       if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -113,6 +133,15 @@ export function registerAgent(app: FastifyInstance): void {
     }
 
     trace.span('agent_loop', tLoop, { steps: steps.length });
+    // 反思观测（P0-A·T1）：只要跑完一次收尾就记，pass 与否都有数——
+    // 没有这条就只能看到"重答过的那些"，算不出反思的触发率
+    const reflection = reflectionRef.meta;
+    if (reflection) {
+      trace.span('reflection', reflection.startedAt ?? Date.now(), {
+        citationAccuracy: reflection.citationAccuracy ?? null,
+        retried: reflection.retried,
+      });
+    }
     // 中止收尾：观测记 cancelled（与 ask 管线同款语义），不算成功完成
     if (abortCtl.signal.aborted) trace.error(new Error('client_cancelled'));
     trace.end({ answer: finalAnswer, evidence: [], intent: 'AGENT', confidence: 1, answeredByLlm: true });

@@ -6,6 +6,8 @@ import { callChatCompletionWithTools, type ChatMessage, type ToolDefinition } fr
 import { AGENT_SYSTEM_PROMPT } from './prompt.js'
 import { shouldPlan, generatePlan, renderPlanForPrompt } from './planner.js'
 import { getAgentCompressThresholds } from '../services/ask/contextBudget.js'
+import { reflectOnAnswer } from '../services/ask/reflection.js'
+import { indexToolObservations, collectAgentEvidence, type ToolObservation } from './evidenceCollector.js'
 
 // ============================================================
 // 配置
@@ -77,6 +79,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       onEvent({ type: 'plan', data: { planSteps } })
     }
   }
+
+  // 自校验（P0-A·T1）用的观察记录：模型通过工具实际看到过哪些行，
+  // 收尾时还原成 Evidence[] 交给 reflectOnAnswer 的 L1 引用核对。
+  const observations: ToolObservation[] = []
 
   // 请求级工具结果缓存：key = "工具名:参数JSON"
   const toolCache = new Map<string, string>()
@@ -178,7 +184,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       )
 
       // 统一发送 SSE 事件并追加消息
-      for (const { tc, args, toolResult } of toolResults) {
+      for (const { tc, args, toolResult, isRepeat } of toolResults) {
+        // 观察记录：重复调用返回的是纠偏提示而非真实结果，不能进证据索引
+        if (!isRepeat) observations.push({ toolName: tc.name, args, result: toolResult })
+
         onEvent({
           type: 'tool_call',
           data: { toolName: tc.name, toolArgs: args },
@@ -201,7 +210,8 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       const allRepeat = toolResults.length > 0 && toolResults.every(r => r.isRepeat)
       stalledTurns = allRepeat ? stalledTurns + 1 : 0
       if (stalledTurns >= STALL_TURN_LIMIT) {
-        await forceFinalAnswer(messages, question, llm, onEvent, undefined, signal)
+        const forced = await forceFinalAnswer(messages, question, llm, onEvent, undefined, signal)
+        if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal })
         return
       }
 
@@ -210,14 +220,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
 
     // 无工具调用 → 最终回答
     if (result.content) {
-      onEvent({ type: 'answer_delta', data: { delta: result.content } })
-      onEvent({
-        type: 'done',
-        data: {
-          answer: result.content,
-          followUp: generateFollowUp(question),
-        },
-      })
+      await finalizeAnswer({ answer: result.content, question, repoPath, observations, messages, llm, onEvent, signal })
       return
     }
 
@@ -227,12 +230,77 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
   }
 
   // 超过最大轮次：不再硬报错——按计划/已收集信息优雅收尾（P1-C）
-  await forceFinalAnswer(
+  const forced = await forceFinalAnswer(
     messages, question, llm, onEvent,
     '【系统指令】已达到最大探索轮次。请立即停止调用任何工具，基于以上已收集的信息用中文给出最终回答：' +
     '若存在执行计划，逐条说明每一步的完成情况与结论；未完成的步骤明确标注"未完成"及原因。',
     signal,
   )
+  if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal })
+}
+
+/**
+ * 收尾：自校验（P0-A·T1）后再发 answer_delta / done。
+ *
+ * 顺序有讲究——**反思必须在 answer_delta 之前**：先把答案推给前端再重答，
+ * 就成了"答案被撤回"的割裂体验（ask 侧流式路径正因此只记录不重试，见 P1-D 遗留①）。
+ * agent 侧当前是整段推送（非 token 级流式），所以这里可以放心地先自查再下发。
+ *
+ * 失败一律放行原答案：反思是增强不是闸门（与 ask 侧同款纪律）。最多重答 1 次防成本失控。
+ */
+async function finalizeAnswer(opts: {
+  answer: string
+  question: string
+  repoPath: string
+  observations: ToolObservation[]
+  messages: ChatMessage[]
+  llm: AgentLoopOptions['llm']
+  onEvent: (event: AgentEvent) => void
+  signal?: AbortSignal
+}): Promise<void> {
+  const { answer, question, repoPath, observations, messages, llm, onEvent, signal } = opts
+  if (signal?.aborted) return
+
+  // 证据 = 答案里的 file:line 引用 × 模型在工具结果里实际看到的那一行（见 evidenceCollector 头注）
+  const evidence = collectAgentEvidence(answer, indexToolObservations(observations))
+  const reflection = await reflectOnAnswer({ question, answer, evidence, repoPath })
+
+  let finalText = answer
+  if (!reflection.pass && reflection.feedback && !signal?.aborted) {
+    // 前端可见的"自查中"信号（未接入的前端会忽略未知事件类型，不会炸）
+    onEvent({ type: 'reflecting', data: { citationAccuracy: reflection.meta.citationAccuracy ?? undefined } })
+    messages.push({ role: 'assistant', content: answer })
+    messages.push({ role: 'user', content: reflection.feedback })
+    try {
+      // 空 tools：重答阶段不允许再发起工具调用，必须基于已有信息修正
+      const retry = await callChatCompletionWithTools(messages, [], {
+        provider: llm.provider,
+        model: llm.model,
+        baseUrl: llm.baseUrl,
+        apiKey: llm.apiKey,
+        timeoutMs: SINGLE_LLM_TIMEOUT_MS,
+        maxTokens: llm.maxTokens,
+        signal,
+      })
+      if (retry.content?.trim()) finalText = retry.content.trim()
+    } catch {
+      if (signal?.aborted) return
+      // 重答失败：放行原答案（不因自查挂掉而让用户拿不到回答）
+    }
+  }
+
+  if (signal?.aborted) return
+  onEvent({ type: 'answer_delta', data: { delta: finalText } })
+  onEvent({
+    type: 'done',
+    data: {
+      answer: finalText,
+      followUp: generateFollowUp(question),
+      // 观测（路由层据此记 reflection span）：null = L1 未跑（无引用/无 repoPath）
+      citationAccuracy: reflection.meta.citationAccuracy ?? undefined,
+      reflectionRetried: finalText !== answer,
+    },
+  })
 }
 
 // ============================================================
@@ -256,6 +324,9 @@ function buildRepeatHint(toolName: string, args: Record<string, unknown>): strin
 /**
  * 强制收尾：禁用工具再调一次 LLM，逼模型基于现有信息输出文字答案。
  * 用于死循环检测（默认指令）与最大轮次耗尽（P1-C：按计划汇报进度）两个场景。
+ *
+ * 只负责"拿到答案文本"，不发 answer_delta / done——收尾统一走 finalizeAnswer
+ * （T1 起要先自校验再下发）。返回 null 表示中止或调用失败（失败时已自行发 error 事件）。
  */
 async function forceFinalAnswer(
   messages: ChatMessage[],
@@ -264,8 +335,8 @@ async function forceFinalAnswer(
   onEvent: (event: AgentEvent) => void,
   instruction?: string,
   signal?: AbortSignal,
-): Promise<void> {
-  if (signal?.aborted) return
+): Promise<string | null> {
+  if (signal?.aborted) return null
   messages.push({
     role: 'user',
     content:
@@ -284,17 +355,17 @@ async function forceFinalAnswer(
       maxTokens: llm.maxTokens,
       signal,
     })
-    const answer =
+    return (
       finalResult.content?.trim() ||
       '抱歉，在有限的探索步骤内未能收集到足够信息给出完整回答。建议缩小问题范围或指明具体文件后重试。'
-    onEvent({ type: 'answer_delta', data: { delta: answer } })
-    onEvent({ type: 'done', data: { answer, followUp: generateFollowUp(question) } })
+    )
   } catch (err) {
-    if (signal?.aborted) return
+    if (signal?.aborted) return null
     onEvent({
       type: 'error',
       data: { error: `强制收尾失败: ${err instanceof Error ? err.message : String(err)}` },
     })
+    return null
   }
 }
 
