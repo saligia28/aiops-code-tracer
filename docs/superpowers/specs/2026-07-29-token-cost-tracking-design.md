@@ -238,6 +238,18 @@ settlementStatus: pending
 - 超时后迟到的 LLM event 不再修改已结算 turn；这部分真实成本不可确认，因此 UI 必须维持 partial，而不是
   显示完整成本。
 
+「迟到被拒」必须有量级，不能只留一个布尔 partial（评审补充）：
+
+- watchdog 强制结算与 §10.3 的「event 插入要求 `settlement_status != 'settled'`」是两条独立规则，
+  合起来会产生一类**真实花掉、但既不入 event 也不入汇总**的调用：例如超大会话的历史摘要，或排队等槽的
+  judge（单次超时上限就有 120s），11 分钟才返回时 turn 早已被 watchdog 结算；
+- 这类调用记入 turn 的 `late_dropped_events`，并追加 `partialReasons=late_event_dropped`；
+- **不得复用 `droppedUsageRecords`**：后者的语义与 UI 文案是「追踪写入失败」，而这里写入通道完全正常，
+  只是 turn 已终结。两者混用会让界面说谎；
+- 计数写入走 best-effort 单独事务（只更新计数与 partial reason，不复活 turn、不改 `settled_at`）；
+  该事务本身失败时只记日志，不再级联降级；
+- UI 在展开区显示「本轮另有 N 次调用因结算超时未计入成本」，摘要行维持 partial 标记。
+
 路由使用一个 `TurnTerminalCoordinator` 覆盖所有出口。成功、业务异常、LLM 异常、提前返回、超时和客户端
 abort 最终都必须调用 `finish(executionResult)`；该方法内部对 `interactiveDone(executionResult)` 做幂等
 compare-and-set，重复调用返回同一终态而不重复结算。成功路径可以发送 `done`，失败路径保持现有 `error`/
@@ -306,7 +318,6 @@ trace 在线判定同样纳入生命周期。`trace.end` 在主链路终态前�
 type LlmUsageStage =
   | 'ask.intent'
   | 'ask.question_plan'
-  | 'ask.doc_validation'
   | 'ask.answer_complex'
   | 'ask.answer_complex_fallback'
   | 'ask.answer_simple'
@@ -341,6 +352,15 @@ type LlmUsageStage =
 - judge 使用独立模型时记录真实 provider/model；
 - `reasoning_tokens` 是 output 的子集，只做诊断展示，不再次计费；
 - 后续新增 LLM 调用必须选择或新增 stage，不能用无语义的 `other` 长期兜底。
+
+评审补充：
+
+- **已删除 `ask.doc_validation`**。核查 `services/ask/docRecall.ts` 后确认该路径只调用 `embedText` /
+  `getEmbeddingModel`，没有任何 chat completion；而 §3 非目标已明确不计 embedding。保留它会落地成一个
+  永不被写入的死枚举值。文档证据通道若将来真的引入生成式校验调用，再按需新增 stage；
+- **前瞻（RoadMap T6）**：agent 当前不做 token 级流式，因此没有 `agent.*_fallback`。T6（agent 最终答案改
+  token 级流式）落地后，agent 也会出现「流式失败 → 整包重试」的二次真实计费，届时需按 ask 侧同款补
+  `agent.loop_fallback` / `agent.final_fallback`，并沿用下面 §11.1 的「由 adapter 状态判定 fallback」规则。
 
 ## 8. Provider usage 统一类型
 
@@ -472,6 +492,22 @@ DeepSeek 官方文档明确说明以下旧名分别对应 `deepseek-v4-flash` �
 官方已于 2026-07-24 弃用这两个模型名。项目源码默认值和 README 已是 `deepseek-v4-flash`，实施时还要检查
 部署环境/运行时配置；发现旧别名则启动告警并迁移配置，不读取或提交 `.env` 中的密钥。
 
+「规范化 origin」必须给出明确算法，否则最容易出现的故障是**配了官方端点反而匹配不上价格**（评审补充）。
+判定只取 scheme + host（忽略端口默认值、path、查询串、大小写与尾斜杠），下列一律视为官方：
+
+| base URL 写法 | 判定 | 说明 |
+|---|---|---|
+| `https://api.deepseek.com` | ✅ 官方 | 基准 |
+| `https://api.deepseek.com/` | ✅ 官方 | 尾斜杠 |
+| `https://api.deepseek.com/v1` | ✅ 官方 | 项目实际配置形态（`llmService` 会在其后拼 `/chat/completions`） |
+| `https://API.DeepSeek.com/v1` | ✅ 官方 | host 大小写不敏感 |
+| `https://api.deepseek.com/beta` | ✅ 官方 | 官方 beta 端点 |
+| `https://api.deepseek.com.evil.tld/v1` | ❌ 非官方 | 必须整段 host 相等，禁止后缀匹配 |
+| `http://api.deepseek.com` | ❌ 非官方 | 明文 scheme 视为代理改写 |
+| 任意内网/代理域名 | ❌ 非官方 | 仅 Token 记录，价格按未知处理 |
+
+host 比较必须是**完整相等**，不能用 `endsWith('deepseek.com')` 之类的后缀判断。
+
 ### 9.4 价格目录与快照
 
 新增 `PricingCatalog`：
@@ -549,6 +585,7 @@ CREATE TABLE llm_usage_turns (
   usage_warning_calls       INTEGER NOT NULL DEFAULT 0,
   unknown_pricing_calls     INTEGER NOT NULL DEFAULT 0,
   dropped_usage_records     INTEGER NOT NULL DEFAULT 0,
+  late_dropped_events       INTEGER NOT NULL DEFAULT 0,
   background_failed_jobs    INTEGER NOT NULL DEFAULT 0,
   background_timed_out_jobs INTEGER NOT NULL DEFAULT 0,
   partial_reasons_json      TEXT NOT NULL DEFAULT '[]',
@@ -575,8 +612,20 @@ CREATE INDEX idx_usage_turn_parent
 ```
 
 `known_cost_nano_cny` 是已成功持久化且单价已知调用的成本和。若 `unknown_pricing_calls > 0`、
-`usage_missing_calls > 0` 或 `dropped_usage_records > 0`，它只是已知部分，UI 必须显示“部分成本”，不能当作
-完整总价。
+`usage_missing_calls > 0`、`dropped_usage_records > 0` 或 `late_dropped_events > 0`，它只是已知部分，
+UI 必须显示“部分成本”，不能当作完整总价。
+
+三个「不完整」计数的语义**互不重叠**，实现时不得合并（评审补充）：
+
+| 字段 | 含义 | 典型成因 |
+|---|---|---|
+| `dropped_usage_records` | 调用发生在 turn 存活期，但 usage **写库失败** | SQLite I/O、锁超时、degraded tracker |
+| `late_dropped_events` | 写库通道正常，但 turn **已 settled**，event 被拒收 | watchdog 超时结算后才返回的后台调用 |
+| `background_timed_out_jobs` | job 句柄被 watchdog 到期释放（**未必产生过 LLM 调用**） | 后台任务卡死或超长 |
+
+`parent_turn_id` 允许悬挂：eval turn 的父 turn 可能随会话删除而消失，而 eval turn 自身没有 conversation、
+不会被同一事务清掉。查询端必须容忍父不存在（展示为「父轮次已删除」），**不得用 INNER JOIN 父 turn**，
+也不得因此把 eval turn 判为孤儿删除——它仍属于有效项目。
 
 ### 10.2 `llm_usage_events`
 
@@ -668,6 +717,7 @@ provider_usage_inconsistent
 tracking_write_failed
 background_failed
 settlement_timeout
+late_event_dropped
 process_interrupted
 ```
 
@@ -691,6 +741,7 @@ usage 追踪写入是 best-effort，但失败不能伪装成完整低成本。`U
 turn 的调用数、Token、已知成本和 usage 质量计数 = 该 turn 所有 event 按上述谓词重算
 turn.backgroundFailedJobs = 该 turn 失败且已完成的后台 job 数
 turn.backgroundTimedOutJobs = 该 turn 被 watchdog 到期释放的后台 job 数
+turn.lateDroppedEvents      = settled 之后被拒收的 event 数（不参与 events 重算，只能单调累加）
 ```
 
 ### 10.4 message meta
@@ -711,6 +762,7 @@ interface TurnUsageSummary {
     | 'tracking_write_failed'
     | 'background_failed'
     | 'settlement_timeout'
+    | 'late_event_dropped'
     | 'process_interrupted'
   >
   callCount: number
@@ -721,6 +773,7 @@ interface TurnUsageSummary {
   usageWarningCalls: number
   unknownPricingCalls: number
   droppedUsageRecords: number
+  lateDroppedEvents: number
   backgroundFailedJobs: number
   backgroundTimedOutJobs: number
   promptTokens: number
@@ -757,6 +810,25 @@ interface TurnUsageSummary {
 - 用 `usageContext` 归属 turn/stage；
 - 流式首调失败和非流式 fallback 分别完成 event；
 - 删除业务路径对 `getLastLlmCallMeta()` 的依赖。
+
+**fallback stage 必须由「本次是否真的尝试过流式」决定，不能由调用点决定**（评审补充）。
+`services/ask/answer.ts` 的 `composeAnswerWithLlm` 里，这两条路径落在**同一行** `callChatCompletion`：
+
+```ts
+if (streamOpts?.onDelta) {            // 仅 SSE 才尝试流式
+  const streamed = await callChatCompletionStream(...)
+  if (streamed?.text) return streamed.text
+}
+const llmAnswer = await callChatCompletion(...)   // ← 非 SSE 主调用 与 流式失败回退 共用这一行
+```
+
+按调用点打 stage 的话，**所有非 SSE 的简单路径回答都会被标成 `ask.answer_simple_fallback`**，
+于是「流式失败率」这个指标从上线第一天起就是错的，而且看不出来。要求：
+
+- 由 adapter/tracker 侧维护「本 stage 的上一次流式尝试是否已失败」的请求内状态，fallback stage 据此推导；
+- 未尝试流式（非 SSE）→ `ask.answer_simple` / `ask.answer_complex`，`deliveryMode='non_stream'`；
+- 尝试过流式且失败 → 先为流式那次落一条 `error + stream_incomplete` event，再落 `*_fallback` event；
+- 单测必须同时覆盖「非 SSE 直调」与「SSE 流式失败后回退」两条，断言 stage 不同。
 
 移除 `lastCallMeta` 前必须先接好 Langfuse。`UsageTracker` 支持请求级 observer：
 
@@ -805,6 +877,31 @@ eval runner 直接调用 `judgeAnswer()` 时创建无 conversation 的 `pipeline
 `eval.judge`，source 固定为 eval。若前一步 `/api/ask` 或 `/api/agent/ask` 返回 turnId，则写入
 `parent_turn_id`；每张未命中缓存的投票各产生一个 event。
 
+#### 11.3.1 这会让 SQLite 第一次出现第二个写进程（评审补充）
+
+这是本设计引入的**架构级新约束**，必须显式承认，不能默认它自然可行：
+
+- 现状：`app.db` 的写入方只有 API server 一个进程（`src/db/` 全部在 `apps/api` 内）；`test/eval/run.ts`
+  是独立 `tsx` 进程，**今天完全不碰 SQLite**（只读 `projects.json`、写 `evalJudgeCache.json`）；
+- 让 eval runner 落 turn/event，等于把它变成第二个写进程；
+- 现有基座已开 WAL（`db/sqlite.ts` 的 `journal_mode = WAL`），但**没有设置 `busy_timeout`**。
+  WAL 允许「一写多读」并发，却仍是单写者：默认 `busy_timeout = 0` 时，第二个写进程遇到写锁会**立刻**
+  拿到 `SQLITE_BUSY` 而不是等待；
+- 后果不是崩溃——§15 的「SQLite 锁超时 → degraded tracker」会兜住——而是**eval 的成本记录经常静默落不进去**，
+  于是目标 11「评测成本可分组」名存实亡，且失败方式是不显眼的。
+
+本期采用**同库 + 显式并发约束**（而非给 eval 单开数据库），因为目标 11 要的是「同一份数据里可按 source
+分组」，分库会把这个能力拆掉。要求：
+
+1. `db/sqlite.ts` 打开连接时统一设置 `busy_timeout`（建议 5000ms），API server 与 eval runner 共用同一初始化路径；
+2. eval runner 的写入按「批量 + 短事务」组织，禁止长事务跨越整轮 judge 网络调用；
+3. eval 侧 tracker 写失败照常降级为内存 tracker，并在 runner 结束时打印
+   「本次评测有 N 次 usage 未持久化」，**不允许静默**；
+4. 测试必须覆盖「API server 持写锁期间 eval 进程写入」的场景，断言其要么成功、要么明确降级并计数。
+
+若实测竞争仍严重，退路是 eval runner 写独立 DB 文件、汇总时再合并——但那是降级方案，需同时说明分组口径
+如何拼回。
+
 ### 11.4 后台任务
 
 `generateMemoriesFromTurn`、`compactHistory` 和 trace 在线 `judgeAnswer` 增加可选 `usageContext`。
@@ -852,6 +949,11 @@ tokenUsageSummary?: TurnUsageSummary
 
 eval runner 调用 `/api/ask` 和 `/api/agent/ask` 时显式发送 `source='eval'`。Agent request type 需增加 source；
 服务端只接受受控枚举，未知值回退 `web`。
+
+`source` 是**调用方自声明的分组提示，不是信任边界**（评审补充）：任何客户端都能传 `source='eval'`
+把自己的花费从「用户交互成本」里摘出去。本期这是可接受的——单人本地工具，且目标 11 要的是「跑评测时
+数字不被污染」，不是防篡改审计。但必须写明这一点，避免将来有人拿这个口径当账目依据；真要审计级归因，
+得改成服务端按鉴权身份或独立 token 判定，那是另一个议题。
 
 ### 12.2 SSE 终态
 
@@ -1032,6 +1134,8 @@ usage 表允许保存：
 | 初始 turn 事务故障 | 短重试后使用纯内存 degraded tracker；不持久化、不启依赖持久化的后台任务 |
 | 后台任务失败 | `finally` 释放 pending；持久化 `background_failed` 后 turn 进入“已结算但不完整” |
 | 后台任务超过 deadline | watchdog 强制释放，标 `settlement_timeout` 后结算为 partial |
+| settled 之后迟到的 event | 拒收且不复活 turn；`late_dropped_events + 1` + `late_event_dropped`，UI 显示未计入次数 |
+| eval 进程与 API 争写锁 | `busy_timeout` 内重试；仍失败则 eval 侧降级为内存 tracker 并在 runner 结束时汇报未持久化次数 |
 | judge cache 命中 | 不登记 usage job，直接复用裁决；0 event、0 usage_missing |
 | judge 并发槽/配额跳过 | 已登记 job 立即正常完成；0 event、非 partial |
 | 进程中断 | 启动恢复扫描最终重算并标 `process_interrupted`，不永久 pending |
@@ -1047,6 +1151,8 @@ usage 表允许保存：
 - 多分项求和；
 - 官方 DeepSeek origin 下 `deepseek-chat` / `deepseek-reasoner` 匹配 Flash 且标 `official_alias`；
 - custom/代理 origin 下同名模型不自动套官方 alias；
+- origin 归一化矩阵：`/v1`、`/beta`、尾斜杠、host 大小写均判官方；`api.deepseek.com.evil.tld`、
+  明文 `http://` 判非官方（host 必须整段相等，禁止后缀匹配）；
 - 自定义价格覆盖；
 - 未知模型返回 `null`；
 - 1 个 cache-hit token 显示 `<¥0.000001`，不显示 `¥0`；
@@ -1062,6 +1168,7 @@ usage 表允许保存：
 - Ollama `prompt_eval_count` / `eval_count`；
 - HTTP error、timeout、abort；
 - 流式无末帧 usage + 非流式 fallback 产生两条不同 stage event；
+- 非 SSE 简单路径直调记 `ask.answer_simple`（**不是** `_fallback`），与「流式失败后回退」区分；
 - 独立 judge 模型；
 - fallback 后记录实际 provider/model；
 - Langfuse observer 在移除 `lastCallMeta` 后仍收到 model/token usage。
@@ -1075,6 +1182,8 @@ usage 表允许保存：
 - 后台任务 pending → settled；
 - pending 超过 deadline 被 watchdog 结算为 `settlement_timeout` partial；
 - watchdog 后迟到 job.done/event 不重复结算、不改写终态；
+- watchdog 结算后迟到 event 记入 `late_dropped_events` 且不并入 `droppedUsageRecords`；
+  三个不完整计数（dropped / late / timedOut）语义互不重叠；
 - 后台失败仍释放 pending；
 - aborted 且无后台任务；
 - aborted 且已有后台任务时保持 pending，后台完成后 settled；
@@ -1103,7 +1212,9 @@ usage 表允许保存：
 - conversation/project 删除后的后台迟到 event no-op；
 - 极端迟到 turn 在下一次启动被 orphan sweep 清理；
 - 删除其他会话不误删；
-- MCP 无 conversation 的 usage 可记录。
+- MCP 无 conversation 的 usage 可记录；
+- 删除父会话后 eval turn 的 `parent_turn_id` 悬挂：查询端正常返回并标「父轮次已删除」，不被误判为孤儿；
+- API server 持写锁期间 eval 进程写入：要么在 `busy_timeout` 内成功，要么明确降级并计数，不静默丢失。
 
 ### 16.5 Ask / Agent 路由测试
 
@@ -1253,7 +1364,9 @@ Langfuse usage 不回退。
 13. 成功、异常、超时、早退和 abort 都 exactly-once 终结 turn，不遗留 collecting。
 14. `/api/propose-patch` 的每次 LLM 尝试都有 patch turn/event，不再成为成本黑洞。
 15. eval 请求与离线 judge turn 均可过滤并保留 parent 关联；Langfuse 在移除 `lastCallMeta` 后仍收到 usage。
-16. API、Web、MCP 现有测试与全仓 typecheck/build 不回退。
+16. settled 后迟到的调用有独立计数与 partial reason，UI 能说出「另有 N 次未计入」，不与写失败混淆。
+17. eval runner 作为第二个 SQLite 写进程时，usage 要么落库、要么明确降级并汇报，不静默丢失。
+18. API、Web、MCP 现有测试与全仓 typecheck/build 不回退。
 
 ## 19. 实施注意事项
 
@@ -1274,6 +1387,12 @@ Langfuse usage 不回退。
 - 运行时若仍配置 `deepseek-chat`/`deepseek-reasoner`，先记录 official alias provenance 并告警，再由运维迁移
   到 `deepseek-v4-flash`；不要自动改写用户 `.env`。
 - eval runner 必须为 Ask 和 Agent 都传 `source='eval'`，并为直接 judge 投票创建 eval tracker。
+- `composeAnswerWithLlm` 里「非 SSE 主调用」与「流式失败回退」是同一行代码，fallback stage 必须由
+  adapter 的流式尝试状态推导；按调用点打标会让流式失败率指标从第一天起就错。
+- eval runner 落 usage 会让 `app.db` 第一次出现第二个写进程；现有基座开了 WAL 但没设 `busy_timeout`，
+  必须先补上再接线，否则 eval 成本会经常静默落不进去。
+- `ask.doc_validation` 已删除：`docRecall` 只调 embedding，本期不计。
+- T6（agent token 级流式）落地时同步补 `agent.*_fallback` stage。
 - 成本追踪是观测增强，任何存储或计价异常都不得阻断用户回答。
 
 ## 20. 官方参考
