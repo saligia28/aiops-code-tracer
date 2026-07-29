@@ -260,6 +260,10 @@ export interface AskResponse {
    * 可选 additive 字段——不改管线、不影响 Web 端行为；无锚点/无起点时缺省。
    */
   entry?: { file: string; line?: number; symbol?: string; reason: string };
+  /** 本轮成本追踪 id（additive）。degraded 追踪时该 id 仅当次响应有效，查询端点会 404 */
+  turnId?: string;
+  /** 本轮成本汇总（additive）。后台任务未完成时 settled=false，前端轮询查询端点更新 */
+  tokenUsageSummary?: TurnUsageSummary;
 }
 
 export type LlmMode = 'api' | 'intranet';

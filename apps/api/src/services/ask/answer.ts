@@ -24,6 +24,7 @@ import { stripLoneSurrogates } from '../../textSafety.js';
 import { parseLine, estimateTokens, escapeRegex, NODE_TYPE_SCORE, tokenizeForRecall } from './textUtils.js';
 import { findFunctionBoundary } from './codeScan.js';
 import { getContextBudgets } from './contextBudget.js';
+import type { LlmUsageContext } from '../usage/usageTracker.js';
 import { sanitizeRetrievedText } from './promptSafety.js';
 import { isApiListQuestion, isPaginationQuestion, isComponentFeatureQuestion, isFlowQuestion, isPageStructureQuestion, isUiConditionQuestion, extractPagePhrase, extractLikelyScope, extractQuestionCoreTerms } from './questionAnalysis.js';
 import { tryAnalyzeApiPassThrough } from './endpoints.js';
@@ -89,7 +90,11 @@ export function heuristicQuestionPlan(question: string): QuestionPlan {
 }
 
 
-export async function generateQuestionPlan(question: string, signal?: AbortSignal): Promise<QuestionPlan> {
+export async function generateQuestionPlan(
+  question: string,
+  signal?: AbortSignal,
+  usage?: LlmUsageContext,
+): Promise<QuestionPlan> {
   const fallback = heuristicQuestionPlan(question);
   if (!canUseLlm()) return fallback;
   if (fallback.concern !== 'general') return fallback;
@@ -104,7 +109,7 @@ export async function generateQuestionPlan(question: string, signal?: AbortSigna
   ].join('\n');
 
   // 透传 abort（review 补修）：Step 1 与意图分析并行的这次 LLM 调用曾是 abort 覆盖的缺口
-  const content = await callChatCompletion([{ role: 'user', content: prompt }], signal);
+  const content = await callChatCompletion([{ role: 'user', content: prompt }], signal, usage);
   if (!content) return fallback;
 
   const json = parseJsonObject(content);
@@ -506,7 +511,7 @@ export async function composeAnswerWithLlm(
    * 流式后端不可用时自动回退非流式整包，行为对调用方透明。
    * 用户中止时返回已累积的部分文本——调用方通过自己的 AbortSignal 判断是否中止。
    */
-  streamOpts?: { onDelta?: (delta: string) => void; signal?: AbortSignal }
+  streamOpts?: { onDelta?: (delta: string) => void; signal?: AbortSignal; usage?: LlmUsageContext }
 ): Promise<string> {
   const fallback = composeAnswer(question, intent, nodes, graph);
   if (!canUseLlm()) return fallback;
@@ -553,13 +558,30 @@ export async function composeAnswerWithLlm(
 
   // 流式优先：SSE 模式（有 onDelta）逐 token 下发；流式不可用（返回 null）时回退非流式整包。
   // 中止（aborted）时直接返回部分文本，不再发起非流式兜底——用户已经不要这个答案了。
+  // 尝试过流式 → 后面那次非流式就是 fallback；没尝试过（非 SSE）→ 它本身就是主调用。
+  // 两条路共用下面同一行 callChatCompletion，所以 stage 必须在这里按"是否尝试过"分岔（设计文档 §11.1）。
+  const triedStream = Boolean(streamOpts?.onDelta);
   if (streamOpts?.onDelta) {
-    const streamed = await callChatCompletionStream(messages, streamOpts.onDelta, streamOpts.signal);
+    const streamed = await callChatCompletionStream(
+      messages,
+      streamOpts.onDelta,
+      streamOpts.signal,
+      streamOpts.usage,
+    );
     if (streamed?.aborted) return streamed.text;
     if (streamed?.text) return streamed.text;
   }
 
   // 非流式也透传 abort（review 修复）：客户端断连后立即中止，不再白跑整包 LLM
-  const llmAnswer = await callChatCompletion(messages, streamOpts?.signal);
+  const llmAnswer = await callChatCompletion(
+    messages,
+    streamOpts?.signal,
+    streamOpts?.usage
+      ? {
+          tracker: streamOpts.usage.tracker,
+          stage: triedStream ? 'ask.answer_simple_fallback' : 'ask.answer_simple',
+        }
+      : undefined,
+  );
   return llmAnswer || fallback;
 }

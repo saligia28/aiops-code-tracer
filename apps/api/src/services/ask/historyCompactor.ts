@@ -27,6 +27,7 @@ import {
   type HistoryEntry,
 } from '../../db/conversationStore.js';
 import { callChatCompletion, canUseLlm } from '../llmService.js';
+import type { LlmUsageContext } from '../usage/usageTracker.js';
 import { estimateTokens } from './textUtils.js';
 import { parsePositiveInt, getContextBudgets } from './contextBudget.js';
 import { sanitizeRetrievedText } from './promptSafety.js';
@@ -311,10 +312,16 @@ export function contextualizeQuestion(
  * ask / agent 两条路由的历史窗口统一入口（替代直接调 buildLlmHistory）。
  * 同步返回本轮窗口；发现历史正被无声丢弃时后台触发压缩（当轮零延迟，下一轮生效）。
  */
+/**
+ * @param usage 成本追踪钩子（阶段 3）。**只在真的要压缩时**才调 register()——
+ * "不需要压缩"不能产生 pending job，否则 turn 会等一个永远不会发生的任务。
+ * 压缩本身仍是 fire-and-forget（当轮零延迟），但成本归属到触发它的那一轮。
+ */
 export function buildHistoryWindow(
   conversationId: string,
   tokenBudget: number,
   onError?: (err: unknown) => void,
+  usage?: { register: () => { usageContext: LlmUsageContext; done: (r?: { status: 'ok' | 'failed' }) => void } },
 ): PromptMessage[] {
   const entries = getHistoryEntries(conversationId);
   const summary = getConversationSummary(conversationId);
@@ -323,7 +330,17 @@ export function buildHistoryWindow(
   // 目标覆盖已达成时 fire 只会空转（review 实锤过每轮无效重发的浪费）
   const canProgress = entries.length - getKeepRecent() > (summary?.covered ?? 0);
   if (needsCompaction && canProgress && canUseLlm()) {
-    void compactHistory(conversationId).catch((err) => onError?.(err));
+    const job = usage?.register();
+    // compactHistory 的第二参是"摘要器"，用它把 usageContext 绑进 LLM 调用
+    void compactHistory(
+      conversationId,
+      job ? (msgs) => callChatCompletion(msgs, undefined, job.usageContext) : undefined,
+    )
+      .then(() => job?.done())
+      .catch((err) => {
+        job?.done({ status: 'failed' });
+        onError?.(err);
+      });
   }
   return messages;
 }

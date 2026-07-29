@@ -1,3 +1,4 @@
+import type { LlmUsageContext } from './usage/usageTracker.js';
 import { callChatCompletion, canUseLlm } from './llmService.js';
 import { canUseEmbedding, embedTexts, embedText, getEmbeddingModel } from './embeddingService.js';
 import {
@@ -66,6 +67,8 @@ export async function generateMemoriesFromTurn(
   conversationId: string | null,
   question: string,
   answer: string,
+  /** 成本追踪上下文（阶段 3）：抽取是本轮触发的后台调用，成本归到触发它的那一轮 */
+  usage?: LlmUsageContext,
 ): Promise<void> {
   try {
     if (!canUseLlm()) return;
@@ -84,7 +87,7 @@ export async function generateMemoriesFromTurn(
     const out = await callChatCompletion([
       { role: 'system', content: sys },
       { role: 'user', content: user },
-    ]);
+    ], undefined, usage);
     if (!out) return;
 
     const isUseless = (l: string) =>

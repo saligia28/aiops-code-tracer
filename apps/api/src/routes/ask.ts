@@ -12,6 +12,7 @@ import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services
 import { createConversation, getConversationForProject, appendMessage } from '../db/conversationStore.js'
 import { buildHistoryWindow, contextualizeQuestion, SUMMARY_PREFIX } from '../services/ask/historyCompactor.js'
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
+import { createUsageTracker } from '../services/usage/usageTracker.js'
 import {
   ensureGraph,
   isApiListQuestion,
@@ -91,6 +92,9 @@ export function registerAsk(app: FastifyInstance): void {
       taskProfile?: string
     }
     const fromMcp = source === 'mcp'
+    // 受控枚举：source 是调用方自声明的分组提示（不是信任边界，见设计文档 §12.1），
+    // 未知值一律回退 web，避免任意字符串进统计维度
+    const usageSource: 'web' | 'mcp' | 'eval' = source === 'mcp' ? 'mcp' : source === 'eval' ? 'eval' : 'web'
     const fixContext = taskProfile === 'fix_context'
     if (!question || !question.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' })
@@ -124,11 +128,17 @@ export function registerAsk(app: FastifyInstance): void {
     let trace: AskTrace | null = null
     // 流式模式下是否已逐 token 下发过答案（finalizeResponse 据此决定要不要补整帧 delta）
     let streamedTokens = false
+    // 成本追踪 tracker：所有出口（成功/异常/中止）都必须 finish，否则 turn 停在 collecting
+    let usageTracker: ReturnType<typeof createUsageTracker> | null = null
+    /** stage 上下文助手：tracker 尚未建好（早退）时返回 undefined，adapter 侧不记账 */
+    const usageCtx = (stage: import('@aiops/shared-types').LlmUsageStage) =>
+      usageTracker ? { tracker: usageTracker, stage } : undefined
 
     try {
       // ====== Step 0: 解析/创建会话，落库用户消息，取多轮历史 ======
       const projectId = resolveActiveProjectId()
       let convId: string | null = null
+      let historyConvId: string | null = null
       let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = []
       try {
         // 归属校验（review 修复）：跨项目/失效的 conversationId 一律视作无效 → 新建会话，
@@ -140,15 +150,32 @@ export function registerAsk(app: FastifyInstance): void {
         if (conv) {
           convId = conv.id
           // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟）
-          history = buildHistoryWindow(convId, getContextBudgets().history, (err) =>
-            app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
-          )
+          historyConvId = convId
           appendMessage(convId, { role: 'user', content: question, mode: 'rag', ...(fromMcp ? { meta: { source: 'mcp' } } : {}) })
         }
       } catch (err) {
         app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`)
       }
       trace = startAskTrace({ question, projectId, conversationId: convId, repoName: currentRepoName, source })
+      // 成本追踪（阶段 3）：一次 Ask = 一个 turn，本轮触发的全部前台/后台 LLM 调用都挂它。
+      // 建 turn 失败会 fail-open 成内存 degraded tracker——观测坏了不能拦着用户提问。
+      usageTracker = createUsageTracker({
+        projectId,
+        conversationId: convId,
+        pipeline: 'ask',
+        source: usageSource,
+        log: app.log,
+      })
+      // 历史窗口放在 tracker 之后取：压缩是本轮触发的后台 LLM 调用，成本要归到这一轮。
+      // buildHistoryWindow 只在"真的要压缩"时才 register()——不需要压缩不产生 pending job。
+      if (historyConvId) {
+        history = buildHistoryWindow(
+          historyConvId,
+          getContextBudgets().history,
+          (err) => app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
+          usageTracker ? { register: () => usageTracker!.registerBackground('background.history_compact') } : undefined,
+        )
+      }
       // P2-H 指代补全（review 修复后）：产出独立的 retrievalQuery，只喂给召回通道
       // （代码/文档/记忆召回、页面锚点、事实召回、起点选择）。question 保持用户原话——
       // 路由判定（isApiListQuestion 等）、意图分类、答案 prompt、反思、记忆沉淀全部用原话，
@@ -180,7 +207,13 @@ export function registerAsk(app: FastifyInstance): void {
           // 后台沉淀记忆（fire-and-forget，不阻断响应）。
           // 机器来源恒不抽取（review 修复）：MCP 提问蒸馏出的"用户偏好/事实"会永久混入
           // 项目记忆库、与人类记忆竞争 top-5 注入位，且无 UI 可辨别清理。
-          if (extractMemory && !fromMcp) void generateMemoriesFromTurn(projectId, convId, question, resp.answer)
+          if (extractMemory && !fromMcp) {
+            // 先登记再启动：反过来会出现"主链路已结算、后台任务随后才登记"的竞态
+            const job = usageTracker?.registerBackground('background.memory_extract')
+            void generateMemoriesFromTurn(projectId, convId, question, resp.answer, job?.usageContext)
+              .then(() => job?.done())
+              .catch(() => job?.done({ status: 'failed' }))
+          }
           resp.conversationId = convId
         }
         // 仓库标识（review 修复）：MCP 等长会话消费端靠它发现"Web 端把当前仓库切走了"
@@ -189,6 +222,12 @@ export function registerAsk(app: FastifyInstance): void {
         if (entryHint && !resp.entry) resp.entry = entryHint
         // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖
         trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
+        // 成本终结：必须在后台任务登记之后（否则 pendingJobs 还没加上就结算了）。
+        // finish 幂等，异常路径的 catch/finally 再调也只生效一次。
+        if (usageTracker) {
+          resp.turnId = usageTracker.turnId
+          resp.tokenUsageSummary = usageTracker.finish('completed')
+        }
         // 机器消费端出口清洗（review 修复，逻辑与边界见 sanitizeAskResponseForMachine 注释）。
         // 必须在落库/trace 之后：入库与观测保留原文；web 通道不动（引用核对要与源码逐字匹配）。
         if (fromMcp) {
@@ -213,9 +252,9 @@ export function registerAsk(app: FastifyInstance): void {
           question,
           // 透传 abort：客户端断连后意图分析的 LLM 调用立刻中止
           ((messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>) =>
-            callChatCompletion(messages, abortCtl.signal)) as (messages: Array<{ role: string; content: string }>) => Promise<string | null>,
+            callChatCompletion(messages, abortCtl.signal, usageCtx('ask.intent'))) as (messages: Array<{ role: string; content: string }>) => Promise<string | null>,
         ),
-        generateQuestionPlan(question, abortCtl.signal),
+        generateQuestionPlan(question, abortCtl.signal, usageCtx('ask.question_plan')),
       ])
       plan.keywords = Array.from(new Set([...plan.keywords, ...analysis.searchKeywords])).slice(0, 24)
       if (analysis.entities.pageName && !plan.scope) {
@@ -525,6 +564,7 @@ ${trimmedGraphContext}${docBlock}`
               sendSse('answer_delta', { delta })
             },
             abortCtl.signal,
+            usageCtx('ask.answer_complex'),
           )
           if (streamed?.aborted) {
             // 用户中断：不落库、不继续管线，记观测后直接收尾
@@ -535,7 +575,13 @@ ${trimmedGraphContext}${docBlock}`
           llmAnswer = streamed?.text || null
         }
         if (!llmAnswer) {
-          llmAnswer = await callChatCompletion(llmMessages, abortCtl.signal)
+          // fallback stage 取决于"这次有没有真的尝试过流式"——非 SSE 是主调用而非回退，
+          // 按调用点打标会让"流式失败率"这个指标从第一天起就是错的（设计文档 §11.1）
+          llmAnswer = await callChatCompletion(
+            llmMessages,
+            abortCtl.signal,
+            usageCtx(sse ? 'ask.answer_complex_fallback' : 'ask.answer_complex'),
+          )
         }
 
         // 从 LLM 文本组装 answer + evidence（首答与反思重答共用同一套逻辑）
@@ -578,7 +624,7 @@ ${trimmedGraphContext}${docBlock}`
               ...llmMessages,
               { role: 'assistant' as const, content: composed.answer },
               { role: 'user' as const, content: reflection.feedback },
-            ], abortCtl.signal)
+            ], abortCtl.signal, usageCtx('ask.reflection_retry'))
             if (retryAnswer) {
               composed = composeFromLlm(retryAnswer)
               // TODO(评测跟进): 重答后可再跑一次 reflectOnAnswer 做"仍不合格"统计，
@@ -612,7 +658,8 @@ ${trimmedGraphContext}${docBlock}`
               sendSse('answer_delta', { delta })
             },
             signal: abortCtl.signal,
-          } : { signal: abortCtl.signal }, // 非 SSE 也传 abort：断连即中止（review 修复）
+            usage: usageCtx('ask.answer_simple'),
+          } : { signal: abortCtl.signal, usage: usageCtx('ask.answer_simple') }, // 非 SSE 也传 abort：断连即中止（review 修复）
         )
         if (sse && abortCtl.signal.aborted) {
           // 用户中断：不落库、不发 done，记观测后直接收尾
@@ -659,6 +706,10 @@ ${trimmedGraphContext}${docBlock}`
         return undefined
       }
       return reply.code(500).send({ error: 'ASK_FAILED', message: '问答处理失败，请稍后重试' })
+    } finally {
+      // 兜住所有非成功出口（异常、SSE 中止早退、提前 return）：turn 绝不能停在 collecting。
+      // finish 幂等——成功路径已在 finalizeResponse 里终结过，这里是 no-op。
+      usageTracker?.finish(abortCtl.signal.aborted ? 'aborted' : 'failed')
     }
   })
 }
