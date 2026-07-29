@@ -1,7 +1,7 @@
 # 生成式 LLM Token 成本追踪设计
 
 > 日期：2026-07-29  
-> 状态：评审修订版，待确认
+> 状态：**已实施**（阶段 1–5 落地，活体验收见 §21）
 > 适用范围：`apps/api`、`apps/web`、`apps/mcp`、`packages/shared-types`
 > 计价基线：[DeepSeek 中文官方计价页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)（2026-07-29 核验）
 
@@ -1402,3 +1402,59 @@ Langfuse usage 不回退。
 - [DeepSeek 更新日志](https://api-docs.deepseek.com/zh-cn/updates)
 - [DeepSeek 上下文硬盘缓存](https://api-docs.deepseek.com/zh-cn/guides/kv_cache)
 - [DeepSeek Chat Completion API](https://api-docs.deepseek.com/api/create-chat-completion/)
+
+---
+
+## 21. 活体验收记录（2026-07-29）
+
+真实 DeepSeek（运行配置 `deepseek-chat`，官方 origin）+ elink-pc 仓库，隔离端口 4298。
+
+### 21.1 逐次调用与人工复算（§18.4）
+
+一次普通问答（"订单会议核价的列表页在哪个文件？"），3 次 LLM 调用：
+
+| 阶段 | 模型 | hit | miss | out | 耗时 | 成本(nano) |
+|---|---|---:|---:|---:|---:|---:|
+| `ask.question_plan` | deepseek-chat | 0 | 105 | 49 | 839ms | 203,000 |
+| `ask.intent` | deepseek-chat | 256 | 11 | 85 | 902ms | 186,120 |
+| `ask.answer_simple` | deepseek-chat | 2304 | 110 | 419 | 3391ms | 994,080 |
+
+- 计价快照：`canonicalModel=deepseek-v4-flash`、`matchKind=official_alias`、`catalogVersion=2026-07-29.1`
+  —— **别名路径是当前默认路径**（运行配置就是旧名），review 时加的 origin 约束在这里真实生效；
+- 人工按官方公式复算：`2560×20 + 226×1000 + 553×2000 = 1,383,200` nano = **¥0.0013832**，
+  与 turn 汇总**逐位一致**；
+- `events` 求和 = `turn` 汇总（全量 4 个 turn 校验，不一致数 **0**）。
+
+### 21.2 归属与终态（§18.1 / §18.12）
+
+```
+stage 分项（5 个 turn 累计）
+  ask.answer_simple          3 次  7,312,080 nano
+  ask.answer_complex         1 次  5,921,000 nano
+  ask.intent                 4 次  1,489,120 nano
+  background.memory_extract  1 次    915,000 nano   ← 后台任务成本确实归到了触发它的那一轮
+  ask.question_plan          4 次    794,000 nano
+```
+
+- 结算状态分布：`settled/completed` × 4，**无 collecting 残留**；
+- **`background.memory_extract` 是本次最有价值的一条**：占该轮总成本约 5.6%，
+  在此之前它完全不可见——"回答返回后还在花钱"这件事第一次有了数字。
+
+### 21.3 并发不串账（§18.3）
+
+同时发两个请求：`turn=55ad09a1` 3 次调用/3,490,000 nano，`turn=1f6228f6` 3 次调用/6,535,000 nano，
+turnId 不同、账目独立。旧的 `lastCallMeta` 单例在这个场景下必然串账。
+
+### 21.4 分组与删除语义（§18.9 / 目标 11）
+
+- `source` 分组生效：`eval` 1 turn / 3,471,120 nano 与 `web` 4 turn / 16,431,200 nano 分开统计；
+- 删除会话后该会话的 `turns=0`、`events=0`，同事务清理生效。
+
+### 21.5 未做（据实标注）
+
+- **未与 DeepSeek 控制台做金额对账**（§9.6）：公式可复算 ≠ 目录抄对了。alias 映射若错，
+  所有金额会一致地错，本地自洽发现不了。需要在一个隔离时间窗内与官方用量/余额比对一次。
+- **未验证缓存命中率随轮次上升**：首轮 hit 就有 2560（DeepSeek 缓存跨请求生效，此前会话已预热），
+  没有构造干净的冷启动对照。
+- **watchdog 超时结算未在活体触发**：只有离线单测覆盖（真实后台任务都在秒级完成）。
+- **propose-patch / agent 管线未跑活体**：两条链路的归属由离线路由测试覆盖。
