@@ -362,6 +362,11 @@ export interface AgentEvent {
      * undefined = L1 未跑（答案没给 file:line 引用，或 repoPath 缺失）。
      */
     citationAccuracy?: number;
+    /**
+     * reflecting: **重答前**答案里的引用条数（T20）。与 done 的 `evidence.length` 对照，
+     * 就能看出重答是"把引用修对了"还是"把引用删光了"——后者是 T20 要堵的退化。
+     */
+    evidenceCount?: number;
     /** done: 本次回答是否经历过自查重答（P0-A·T1，观测用） */
     reflectionRetried?: boolean;
   };

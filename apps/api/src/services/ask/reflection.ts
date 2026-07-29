@@ -35,6 +35,34 @@ export interface ReflectionResult {
 const PASS: ReflectionResult = { pass: true, feedback: null, meta: { citationAccuracy: null, judgeFaithful: null } };
 
 /**
+ * L1 反馈文案（T20）——按「重答时模型能不能重新取证」分化。
+ *
+ * 踩过的坑：原先只有 ask 那套措辞（"无法确认就别写行号"）。agent 重答禁用工具、
+ * 早期工具结果已被折叠，模型改不对行号，于是选择了唯一的合规动作——**把引用全删**。
+ * 结果是引用准确率这个指标变好了，可追溯性反而归零（活体：4633 字答案 0 条 file:line）。
+ * 所以 agent 这套的核心是给出**降级路径**（写成"文件名（未确认行号）"），
+ * 让"保留引用"始终比"删除引用"更容易执行。
+ */
+function buildCitationFeedback(bad: string, pipeline: 'ask' | 'agent'): string {
+  const head = `你上一次回答里的部分代码引用与真实源码不符：\n${bad}\n`;
+  if (pipeline === 'ask') {
+    return `${head}请重新回答：只引用「相关代码」里真实出现的 文件:行号，无法确认的位置不要编造行号，改为在「证据不足」里说明。`;
+  }
+  return (
+    // 首句必须先关掉工具意图：重答时 tools 传空数组只是让 API 不返回结构化 tool_call，
+    // system prompt 里的工具目录还在——模型照样会"想调工具"，并把调用意图当**正文**吐出来
+    // （实测 DeepSeek 会输出 DSML 标记，被当成最终答案原样下发）。forceFinalAnswer 有这句、
+    // 反思重答原先没有，这是 T1 留下的口子。
+    `${head}【系统指令】现在不要再调用任何工具，直接基于上文已收集的信息重写答案，并严格遵守以下引用纪律：\n` +
+    '1. **保留原有的文件引用**。不要因为行号存疑就删掉整条引用——没有文件线索的答案无法核对，比行号写错更糟。\n' +
+    '2. 上面列出的这几条：能从你之前读到的文件内容里确认正确行号的，改成正确行号；确认不了的，' +
+    '把行号去掉、写成「文件名（未确认行号）」，**文件名必须留着**。\n' +
+    '3. 没有被列出的引用是核对通过的，原样保留，不要动。\n' +
+    '4. 不要新增你没有实际读到过的行号——宁可写「未确认行号」，也不要猜一个看起来合理的数字。'
+  );
+}
+
+/**
  * 对一次回答做自查。
  * @param repoPath 被分析仓库磁盘路径；为空（项目未注册 repoPath）时跳过 L1。
  */
@@ -45,6 +73,15 @@ export async function reflectOnAnswer(input: {
   repoPath: string;
   /** 答案生成时的代码上下文；L2 judge 口径对齐用（见 answerJudge PROMPT_VERSION v4）。 */
   codeContext?: string;
+  /**
+   * 重答时模型的**取证能力**决定反馈该怎么写（T20，活体实证的坑）：
+   *   - 'ask'（默认）：codeContext 就在 prompt 里，模型能照着把行号改对，
+   *     所以可以说"无法确认就别写行号"。
+   *   - 'agent'：重答阶段**禁用了工具**，早期 read_file 结果又已被 compressMessages 折叠成面包屑，
+   *     模型没有能力把行号改对——同一句话会被它执行成"把行号全删光"（实测：4633 字答案里
+   *     file:line 引用归零）。所以必须显式要求「保留引用、只降级行号」。
+   */
+  pipeline?: 'ask' | 'agent';
 }): Promise<ReflectionResult> {
   const meta: ReflectionResult['meta'] = { citationAccuracy: null, judgeFaithful: null };
 
@@ -62,7 +99,7 @@ export async function reflectOnAnswer(input: {
         return {
           pass: false,
           meta,
-          feedback: `你上一次回答里的部分代码引用与真实源码不符：\n${bad}\n请重新回答：只引用「相关代码」里真实出现的 文件:行号，无法确认的位置不要编造行号，改为在「证据不足」里说明。`,
+          feedback: buildCitationFeedback(bad, input.pipeline ?? 'ask'),
         };
       }
     } catch {

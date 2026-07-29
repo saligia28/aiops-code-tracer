@@ -264,12 +264,21 @@ async function finalizeAnswer(opts: {
   // 证据 = 答案里的 file:line 引用 × 模型在工具结果里实际看到的那一行（见 evidenceCollector 头注）
   const lineIndex = indexToolObservations(observations)
   const evidence = collectAgentEvidence(answer, lineIndex)
-  const reflection = await reflectOnAnswer({ question, answer, evidence, repoPath })
+  // pipeline:'agent' —— 重答时禁用工具，反馈必须给"降级行号"的路子而不是"删掉引用"（T20）
+  const reflection = await reflectOnAnswer({ question, answer, evidence, repoPath, pipeline: 'agent' })
 
   let finalText = answer
   if (!reflection.pass && reflection.feedback && !signal?.aborted) {
-    // 前端可见的"自查中"信号（未接入的前端会忽略未知事件类型，不会炸）
-    onEvent({ type: 'reflecting', data: { citationAccuracy: reflection.meta.citationAccuracy ?? undefined } })
+    // 前端可见的"自查中"信号（未接入的前端会忽略未知事件类型，不会炸）。
+    // evidenceCount 是**重答前**的引用条数——T20 的验收线"重答后不低于重答前"要靠它才量得出来
+    // （重答前那份答案不会被下发，不记在这里就永远只能看到重答后的数）。
+    onEvent({
+      type: 'reflecting',
+      data: {
+        citationAccuracy: reflection.meta.citationAccuracy ?? undefined,
+        evidenceCount: evidence.length,
+      },
+    })
     messages.push({ role: 'assistant', content: answer })
     messages.push({ role: 'user', content: reflection.feedback })
     try {

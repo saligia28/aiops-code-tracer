@@ -93,6 +93,13 @@ describe('agentLoop · 自校验（T1）', () => {
     const reflecting = events.find((e) => e.type === 'reflecting');
     expect(reflecting, '自查未通过应发 reflecting 事件').toBeDefined();
     expect(reflecting!.data.citationAccuracy).toBe(0);
+    // T20：重答前的引用条数要记下来，否则"重答后不低于重答前"这条验收永远量不出来
+    expect(reflecting!.data.evidenceCount).toBe(1);
+
+    // T20：agent 走的必须是"保留引用、降级行号"那套反馈，不是 ask 的"别写行号"
+    const retryPrompt = (mockLlm.mock.calls[2][0] as Array<{ content: string }>).at(-1)!.content;
+    expect(retryPrompt).toContain('保留原有的文件引用');
+    expect(retryPrompt).toContain('未确认行号');
 
     expect(mockLlm).toHaveBeenCalledTimes(3); // 2 轮 + 1 次重答，**不允许**第二次重答
     const done = events.find((e) => e.type === 'done')!;
