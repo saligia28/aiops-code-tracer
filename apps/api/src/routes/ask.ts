@@ -227,8 +227,11 @@ export function registerAsk(app: FastifyInstance): void {
         resp.repoName = currentRepoName ?? undefined
         // 任务入口下沉（P1-MCP·additive）：已定位锚点/起点则回带，机器消费端拿来当"从哪改"的起点
         if (entryHint && !resp.entry) resp.entry = entryHint
-        // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖
-        trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
+        // 所有成功路径（快速路径/规则兜底/LLM）都走这个漏斗——观测收尾放这里全覆盖。
+        // end() 只做采样判定并返回惰性任务：命中时先登记后台句柄，再在 finish 之后启动，
+        // 否则这次 judge 调用既不属于任何 turn、也不会让 turn 等它（成本漏计）。
+        const preparedJudge = trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
+        const judgeJob = preparedJudge && usageTracker ? usageTracker.registerBackground('background.trace_judge') : null
         // 成本终结：必须在后台任务登记之后（否则 pendingJobs 还没加上就结算了）。
         // finish 幂等，异常路径的 catch/finally 再调也只生效一次。
         if (usageTracker) {
@@ -244,6 +247,13 @@ export function registerAsk(app: FastifyInstance): void {
               app.log.warn(`成本汇总回写失败（不影响本次响应）: ${err instanceof Error ? err.message : String(err)}`)
             }
           }
+        }
+        // 抽样 judge 在结算编排之后才真正启动（并发槽也推迟到这一刻才取）
+        if (preparedJudge) {
+          void preparedJudge
+            .startJudge(judgeJob?.usageContext)
+            .then(() => judgeJob?.done())
+            .catch(() => judgeJob?.done({ status: 'failed' }))
         }
         // 机器消费端出口清洗（review 修复，逻辑与边界见 sanitizeAskResponseForMachine 注释）。
         // 必须在落库/trace 之后：入库与观测保留原文；web 通道不动（引用核对要与源码逐字匹配）。

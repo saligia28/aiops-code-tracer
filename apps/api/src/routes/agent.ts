@@ -183,7 +183,9 @@ export function registerAgent(app: FastifyInstance): void {
     }
     // 中止收尾：观测记 cancelled（与 ask 管线同款语义），不算成功完成
     if (abortCtl.signal.aborted) trace.error(new Error('client_cancelled'));
-    trace.end({ answer: finalAnswer, evidence: finalEvidence, intent: 'AGENT', confidence: 1, answeredByLlm: true });
+    // end() 只判定采样并返回惰性任务；登记句柄 → finish → 发 done 之后再启动（设计文档 §6.3）
+    const preparedJudge = trace.end({ answer: finalAnswer, evidence: finalEvidence, intent: 'AGENT', confidence: 1, answeredByLlm: true });
+    const judgeJob = preparedJudge && !abortCtl.signal.aborted ? usageTracker.registerBackground('background.trace_judge') : null;
 
     // ====== 终态编排（设计文档 §6.3）：落库 → 登记后台任务 → 终结 turn → 发唯一 done ======
     // 顺序不可调换：先发 done 会让后台任务的成本永远进不了这一轮的汇总。
@@ -226,6 +228,12 @@ export function registerAgent(app: FastifyInstance): void {
     }
 
     // 后台任务在对外 done 之后才启动：SSE 不为等待后台任务而保持连接
+    if (preparedJudge) {
+      void preparedJudge
+        .startJudge(judgeJob?.usageContext)
+        .then(() => judgeJob?.done())
+        .catch(() => judgeJob?.done({ status: 'failed' }));
+    }
     if (memoryJob && convId && finalAnswer) {
       void generateMemoriesFromTurn(projectId, convId, q, finalAnswer, memoryJob.usageContext)
         .then(() => memoryJob!.done())

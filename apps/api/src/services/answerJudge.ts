@@ -22,6 +22,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { Evidence } from '@aiops/shared-types';
 import { DATA_DIR } from '../context.js';
+import type { LlmUsageContext } from './usage/usageTracker.js';
 import { callChatCompletion, callApiCompatibleChatCompletion, canUseLlm } from './llmService.js';
 
 /**
@@ -33,9 +34,15 @@ const JUDGE_LLM_BASE_URL = (process.env.JUDGE_LLM_BASE_URL ?? '').trim().replace
 const JUDGE_LLM_MODEL = process.env.JUDGE_LLM_MODEL?.trim() ?? '';
 const judgeHasOwnLlm = Boolean(JUDGE_LLM_BASE_URL && JUDGE_LLM_MODEL);
 
-function judgeLlmCall(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string | null> {
-  if (judgeHasOwnLlm) return callApiCompatibleChatCompletion(messages, 'custom', JUDGE_LLM_MODEL, JUDGE_LLM_BASE_URL);
-  return callChatCompletion(messages);
+function judgeLlmCall(
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  usage?: LlmUsageContext,
+): Promise<string | null> {
+  if (judgeHasOwnLlm) {
+    // 独立 judge 模型：事件记的是它真实的 provider/model，绝不套用主模型价格
+    return callApiCompatibleChatCompletion(messages, 'custom', JUDGE_LLM_MODEL, JUDGE_LLM_BASE_URL, undefined, usage);
+  }
+  return callChatCompletion(messages, undefined, usage);
 }
 
 /** judge 是否可用：有独立后端，或主 LLM 可用。 */
@@ -287,7 +294,13 @@ export { canUseLlm };
  * 评审一条答案：votes 票（缓存命中则直接复用），聚合出最终裁决。
  * LLM 不可用或全部票解析失败 → null（调用方自行降级/报告）。
  */
-export async function judgeAnswer(input: JudgeInput, votes = 3): Promise<{ verdict: JudgeVerdict; votes: JudgeVerdict[] } | null> {
+export async function judgeAnswer(
+  input: JudgeInput,
+  votes = 3,
+  /** 成本追踪（阶段 3）：judge 可能走独立模型，事件要记真实 provider/model。
+   *  磁盘缓存命中时不产生任何调用，自然也就没有 event——这是预期，不是漏采集。 */
+  usage?: LlmUsageContext,
+): Promise<{ verdict: JudgeVerdict; votes: JudgeVerdict[] } | null> {
   if (!canJudge()) return null;
 
   const cache = readCache();
@@ -297,7 +310,7 @@ export async function judgeAnswer(input: JudgeInput, votes = 3): Promise<{ verdi
   if (collected.length < votes) {
     const messages = buildJudgeMessages(input);
     for (let i = collected.length; i < votes; i++) {
-      const text = await judgeLlmCall(messages);
+      const text = await judgeLlmCall(messages, usage);
       if (!text) continue;
       const verdict = parseJudgeJson(text, input.coverageChecklist);
       if (verdict) collected.push(verdict);

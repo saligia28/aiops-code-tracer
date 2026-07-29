@@ -18,6 +18,7 @@ import { Langfuse } from 'langfuse';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Evidence } from '@aiops/shared-types';
 import { judgeAnswer } from './answerJudge.js';
+import type { LlmUsageContext } from './usage/usageTracker.js';
 import { sendAlert } from './alertService.js';
 
 const PUBLIC_KEY = process.env.LANGFUSE_PUBLIC_KEY?.trim() ?? '';
@@ -115,8 +116,14 @@ export interface AskTrace {
     outputChars?: number;
     usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
   }): void;
-  /** 成功收尾：回填输出摘要 + 按抽样率送 judge 打分。 */
-  end(out: { answer: string; evidence: Evidence[]; intent: string; confidence: number; answeredByLlm: boolean }): void;
+  /**
+   * 成功收尾：回填输出摘要 + 按抽样率**判定**是否送 judge。
+   * 命中采样时返回惰性任务，由路由登记后台句柄后再启动（成本追踪 · 阶段 3）——
+   * end() 自己不再启动 Promise，否则这次 LLM 调用不属于任何 turn。
+   */
+  end(out: { answer: string; evidence: Evidence[]; intent: string; confidence: number; answeredByLlm: boolean }):
+    | { startJudge: (usage?: LlmUsageContext) => Promise<void> }
+    | undefined;
   /** 异常收尾。 */
   error(err: unknown): void;
 }
@@ -125,7 +132,7 @@ const NOOP_TRACE: AskTrace = {
   enabled: false,
   span: () => {},
   generation: () => {},
-  end: () => {},
+  end: () => undefined,
   error: () => {},
 };
 
@@ -183,18 +190,34 @@ export function startAskTrace(input: {
         },
       });
 
-      // 线上抽样 → L3 judge 打分回写（fire-and-forget，绝不阻塞响应）。
+      // 线上抽样 → L3 judge 打分回写。
       // 成本护栏：单并发 + 小时配额——sample 误配成 1 也不会把每个请求都变成额外 LLM 调用。
-      // 空 evidence 不判（忠实度以证据为锚，agent 管线暂无 Evidence[]，硬判只会产出噪声分）。
-      if (JUDGE_SAMPLE > 0 && out.evidence.length > 0 && Math.random() < JUDGE_SAMPLE && acquireJudgeSlot(Date.now())) {
-        void judgeAnswer(
+      // 空 evidence 不判（忠实度以证据为锚，硬判只会产出噪声分）。
+      //
+      // 成本追踪（阶段 3）：这里**只做采样判定**，不再自行启动 Promise。命中时返回惰性
+      // startJudge，由路由登记 background.trace_judge 句柄后再启动——否则这次 LLM 调用
+      // 既不在任何 turn 里，也不会让 turn 等它，成本就漏了。
+      // 并发槽同样推迟到真正启动时才取：判定阶段就占槽会让相邻请求的采样被白白挤掉。
+      if (JUDGE_SAMPLE > 0 && out.evidence.length > 0 && Math.random() < JUDGE_SAMPLE) {
+        return {
+          startJudge: (usage?: LlmUsageContext) => {
+            if (!acquireJudgeSlot(Date.now())) return Promise.resolve();
+            return runJudge(usage);
+          },
+        };
+      }
+      return undefined;
+
+      function runJudge(usage?: LlmUsageContext): Promise<void> {
+        return judgeAnswer(
           { question: input.question, answer: out.answer, evidence: out.evidence },
-          1 // 线上抽样用 1 票省成本；离线评测才用 3 票
+          1, // 线上抽样用 1 票省成本；离线评测才用 3 票
+          usage,
         )
           .then((judged) => {
             if (!judged) return;
-            lf.score({ traceId: trace.id, name: 'faithful', value: judged.verdict.faithful ? 1 : 0, comment: judged.verdict.reasons.faithful });
-            lf.score({ traceId: trace.id, name: 'judge_score', value: judged.verdict.score });
+            lf?.score({ traceId: trace.id, name: 'faithful', value: judged.verdict.faithful ? 1 : 0, comment: judged.verdict.reasons.faithful });
+            lf?.score({ traceId: trace.id, name: 'judge_score', value: judged.verdict.score });
             // 线上回归告警闭环：判不忠实 → 推现有告警通道（钉钉/飞书，未配 ALERT_WEBHOOK 则 no-op）
             if (!judged.verdict.faithful) {
               void sendAlert(
