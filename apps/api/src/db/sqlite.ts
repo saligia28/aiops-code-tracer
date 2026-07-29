@@ -139,6 +139,95 @@ function migrate(database: Database.Database): void {
     });
     toV5();
   }
+
+  // v6（Token 成本追踪）：turn = 一次任务的成本生命周期，event = 每次 LLM 调用的成本事实。
+  //   - 不做外键级联：本项目 SQLite 层一贯用显式事务删除，保持一致。
+  //   - turn 的执行状态与结算状态是**正交两维**（回答失败 ≠ 成本没结算完），故分两列。
+  //   - 三个"不完整"计数语义互不重叠，实现时不得合并：
+  //       dropped_usage_records  写库失败（调用发生在 turn 存活期）
+  //       late_dropped_events    写库正常但 turn 已 settled，事件被拒收
+  //       background_timed_out_jobs  job 句柄被 watchdog 到期释放（未必产生过 LLM 调用）
+  //   - (turn_id, stage, stage_call_index) 唯一：防重入重复计费。
+  if (current < 6) {
+    const toV6 = database.transaction(() => {
+      database.exec(`
+        CREATE TABLE llm_usage_turns (
+          turn_id                   TEXT PRIMARY KEY,
+          project_id                TEXT NOT NULL,
+          conversation_id           TEXT,
+          assistant_message_id      TEXT,
+          parent_turn_id            TEXT,
+          pipeline                  TEXT NOT NULL,
+          source                    TEXT NOT NULL DEFAULT 'web',
+          execution_status          TEXT NOT NULL,
+          settlement_status         TEXT NOT NULL,
+          pending_jobs              INTEGER NOT NULL DEFAULT 0,
+          pending_deadline_at       INTEGER,
+          call_count                INTEGER NOT NULL DEFAULT 0,
+          success_call_count        INTEGER NOT NULL DEFAULT 0,
+          error_call_count          INTEGER NOT NULL DEFAULT 0,
+          aborted_call_count        INTEGER NOT NULL DEFAULT 0,
+          usage_missing_calls       INTEGER NOT NULL DEFAULT 0,
+          usage_warning_calls       INTEGER NOT NULL DEFAULT 0,
+          unknown_pricing_calls     INTEGER NOT NULL DEFAULT 0,
+          dropped_usage_records     INTEGER NOT NULL DEFAULT 0,
+          late_dropped_events       INTEGER NOT NULL DEFAULT 0,
+          background_failed_jobs    INTEGER NOT NULL DEFAULT 0,
+          background_timed_out_jobs INTEGER NOT NULL DEFAULT 0,
+          partial_reasons_json      TEXT NOT NULL DEFAULT '[]',
+          prompt_tokens             INTEGER NOT NULL DEFAULT 0,
+          cache_hit_tokens          INTEGER NOT NULL DEFAULT 0,
+          cache_miss_tokens         INTEGER NOT NULL DEFAULT 0,
+          completion_tokens         INTEGER NOT NULL DEFAULT 0,
+          reasoning_tokens          INTEGER NOT NULL DEFAULT 0,
+          total_tokens              INTEGER NOT NULL DEFAULT 0,
+          known_cost_nano_cny       INTEGER NOT NULL DEFAULT 0,
+          created_at                INTEGER NOT NULL,
+          updated_at                INTEGER NOT NULL,
+          settled_at                INTEGER
+        );
+        CREATE INDEX idx_usage_turn_project ON llm_usage_turns(project_id, created_at DESC);
+        CREATE INDEX idx_usage_turn_conversation ON llm_usage_turns(conversation_id, created_at);
+        CREATE INDEX idx_usage_turn_parent ON llm_usage_turns(parent_turn_id, created_at);
+        CREATE INDEX idx_usage_turn_settlement ON llm_usage_turns(settlement_status, pending_deadline_at);
+
+        CREATE TABLE llm_usage_events (
+          id                         TEXT PRIMARY KEY,
+          turn_id                    TEXT NOT NULL,
+          stage                      TEXT NOT NULL,
+          stage_call_index           INTEGER NOT NULL,
+          provider                   TEXT NOT NULL,
+          model                      TEXT NOT NULL,
+          canonical_model            TEXT NOT NULL,
+          transport_status           TEXT NOT NULL,
+          usage_source               TEXT NOT NULL,
+          delivery_mode              TEXT NOT NULL,
+          validation_warnings_json   TEXT NOT NULL DEFAULT '[]',
+          prompt_tokens              INTEGER,
+          cache_hit_tokens           INTEGER,
+          cache_miss_tokens          INTEGER,
+          completion_tokens          INTEGER,
+          reasoning_tokens           INTEGER,
+          total_tokens               INTEGER,
+          cache_hit_cost_nano_cny    INTEGER,
+          cache_miss_cost_nano_cny   INTEGER,
+          output_cost_nano_cny       INTEGER,
+          total_cost_nano_cny        INTEGER,
+          pricing_snapshot_json      TEXT,
+          latency_ms                 INTEGER NOT NULL,
+          error_kind                 TEXT,
+          created_at                 INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_usage_event_stage_call
+          ON llm_usage_events(turn_id, stage, stage_call_index);
+        CREATE INDEX idx_usage_event_turn ON llm_usage_events(turn_id, created_at);
+        CREATE INDEX idx_usage_event_model_stage
+          ON llm_usage_events(canonical_model, stage, created_at DESC);
+      `);
+      database.pragma('user_version = 6');
+    });
+    toV6();
+  }
 }
 
 /**
@@ -155,6 +244,10 @@ export function getDb(): Database.Database {
 
   const database = new Database(dbPath);
   database.pragma('journal_mode = WAL');
+  // WAL 是「一写多读」，仍然单写者。默认 busy_timeout=0 时第二个写进程碰到写锁会**立刻**
+  // 拿到 SQLITE_BUSY 而不是等待——成本追踪让 eval runner 成为第二个写进程（设计文档 §11.3.1），
+  // 不设这个值的话 eval 的 usage 会经常静默落不进去。
+  database.pragma('busy_timeout = 5000');
   migrate(database);
 
   db = database;

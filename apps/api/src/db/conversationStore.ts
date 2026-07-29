@@ -125,6 +125,13 @@ export function renameConversation(id: string, title: string): void {
 export function deleteConversation(id: string): void {
   const db = getDb();
   const tx = db.transaction((conversationId: string) => {
+    // 成本数据与会话同事务删除：留下 usage 行会让"删了会话还能查到花了多少钱"（设计文档 §4.4）。
+    // 顺序上先删子表，避免中途失败留下悬挂 event。
+    db.prepare(
+      `DELETE FROM llm_usage_events WHERE turn_id IN
+         (SELECT turn_id FROM llm_usage_turns WHERE conversation_id = ?)`,
+    ).run(conversationId);
+    db.prepare('DELETE FROM llm_usage_turns WHERE conversation_id = ?').run(conversationId);
     db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
     db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId);
   });

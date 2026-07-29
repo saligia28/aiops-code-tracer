@@ -13,6 +13,7 @@ import { setLlmServiceLogger } from './services/llmService.js';
 import { shutdownTracing } from './services/traceService.js';
 import { loadGraph, patchIndexTaskState, migrateExistingGraphData } from './services/indexService.js';
 import { initDb } from './db/sqlite.js';
+import { initUsageLifecycle } from './services/usage/usageLifecycle.js';
 
 // 路由
 import { registerHealth } from './routes/health.js';
@@ -128,6 +129,11 @@ if (loadedOnStartup) {
 
 // 自动迁移已有图谱数据
 migrateExistingGraphData(app.log);
+
+// 成本追踪生命周期：启动恢复 + 孤儿清扫 + 结算看门狗。
+// 必须放在图谱/当前项目解析之后——孤儿清扫要用 currentRepoName 的 legacy 回退 id
+// 构造"有效项目集合"，提前跑会把未注册但合法的当前项目误删。
+initUsageLifecycle(app.log);
 
 // ============================================================
 // 启动服务

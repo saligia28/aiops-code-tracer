@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import type { ProjectRecord, ProjectFramework } from '@aiops/shared-types';
 import { presetFor } from '@aiops/parser';
+import { deleteUsageByProject } from '../db/usageStore.js';
 import {
   DATA_DIR,
   graphStore,
@@ -119,6 +120,14 @@ export function registerProjects(app: FastifyInstance): void {
 
     projects.splice(idx, 1);
     writeProjectRegistry(projects);
+
+    // 成本数据随项目删除（设计文档 §4.4）。best-effort：清理失败不能让删除项目本身失败——
+    // 残留行不会出现在任何 UI（查询都按 project 过滤），下次启动的 orphan sweep 会兜底。
+    try {
+      deleteUsageByProject(id);
+    } catch (err) {
+      app.log.warn(`[usage] 删除项目 ${id} 的成本数据失败，留待启动清扫：${err instanceof Error ? err.message : String(err)}`);
+    }
 
     if (query.deleteData === 'true') {
       const dataDir = path.join(DATA_DIR, id);
