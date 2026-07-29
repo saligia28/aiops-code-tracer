@@ -352,6 +352,12 @@ export interface AgentEvent {
     /** plan: 任务分解出的步骤目标列表（P1-C；简单问题不发此事件） */
     planSteps?: string[];
     /**
+     * done: 答案里的 file:line 引用 × 模型在工具结果里实际看到的那行（T19）。
+     * 与 ask 侧 AskResponse.evidence 同构，供评测 judge / 观测 / 前端消费；
+     * 答案没给引用时为空数组（不是缺省——空数组本身就是"一条引用都没给"的信息）。
+     */
+    evidence?: Evidence[];
+    /**
      * reflecting / done: L1 引用核对的准确率（P0-A·T1）。
      * undefined = L1 未跑（答案没给 file:line 引用，或 repoPath 缺失）。
      */

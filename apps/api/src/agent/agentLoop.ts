@@ -262,7 +262,8 @@ async function finalizeAnswer(opts: {
   if (signal?.aborted) return
 
   // 证据 = 答案里的 file:line 引用 × 模型在工具结果里实际看到的那一行（见 evidenceCollector 头注）
-  const evidence = collectAgentEvidence(answer, indexToolObservations(observations))
+  const lineIndex = indexToolObservations(observations)
+  const evidence = collectAgentEvidence(answer, lineIndex)
   const reflection = await reflectOnAnswer({ question, answer, evidence, repoPath })
 
   let finalText = answer
@@ -290,12 +291,17 @@ async function finalizeAnswer(opts: {
   }
 
   if (signal?.aborted) return
+  // 重答后引用会变，证据必须按**最终**那份答案重算——沿用旧的会让下发的证据与答案对不上
+  const finalEvidence = finalText === answer ? evidence : collectAgentEvidence(finalText, lineIndex)
   onEvent({ type: 'answer_delta', data: { delta: finalText } })
   onEvent({
     type: 'done',
     data: {
       answer: finalText,
       followUp: generateFollowUp(question),
+      // 结构化证据下发（T19）：此前只在循环内部喂给反思，外面（评测 judge / 观测 / 前端）都拿不到，
+      // judge 因此对 agent 答案空手评 faithful，分数被系统性拉低。
+      evidence: finalEvidence,
       // 观测（路由层据此记 reflection span）：null = L1 未跑（无引用/无 repoPath）
       citationAccuracy: reflection.meta.citationAccuracy ?? undefined,
       reflectionRetried: finalText !== answer,

@@ -302,10 +302,13 @@ interface AgentTaskCase {
 }
 
 /**
- * 走 /api/agent/ask（SSE），收集 done 事件的最终答案 + 计有效轮数（tool_call 事件数）。
+ * 走 /api/agent/ask（SSE），收集 done 事件的最终答案 + 结构化证据 + 有效轮数（tool_call 事件数）。
  * 轮数是 planner on/off 对照的核心指标：planner 的价值主张是"少走冤枉路"。
+ * evidence 自 T19 起由 done 事件下发——此前这里拿不到，judge 只能空手评 faithful。
  */
-async function askAgent(question: string): Promise<{ answer: string; toolCalls: number } | null> {
+async function askAgent(
+  question: string,
+): Promise<{ answer: string; toolCalls: number; evidence: Evidence[] } | null> {
   try {
     const resp = await fetch(`${API_BASE}/api/agent/ask`, {
       method: 'POST',
@@ -318,6 +321,7 @@ async function askAgent(question: string): Promise<{ answer: string; toolCalls: 
     let buf = '';
     let answer = '';
     let toolCalls = 0;
+    let evidence: Evidence[] = [];
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -329,13 +333,16 @@ async function askAgent(question: string): Promise<{ answer: string; toolCalls: 
         try {
           const ev = JSON.parse(line.slice(6)) as { type: string; data?: Record<string, unknown> };
           if (ev.type === 'tool_call') toolCalls++;
-          else if (ev.type === 'done') answer = (ev.data?.answer as string) ?? answer;
+          else if (ev.type === 'done') {
+            answer = (ev.data?.answer as string) ?? answer;
+            evidence = (ev.data?.evidence as Evidence[]) ?? evidence;
+          }
         } catch {
           /* 跳过半截行 */
         }
       }
     }
-    return { answer, toolCalls };
+    return { answer, toolCalls, evidence };
   } catch {
     return null;
   }
@@ -362,9 +369,13 @@ async function agentTasks(): Promise<void> {
   const cases = taskFilter ? allCases.filter((c) => c.id.includes(taskFilter)) : allCases;
   const RUNS = Math.max(1, Number(process.env.EVAL_RUNS ?? 1));
   const plannerOff = process.env.PLANNER_DISABLE === '1';
-  console.log(`P1-C 长任务完整度  用例=${cases.length}${taskFilter ? `（过滤 "${taskFilter}"）` : ''}  规划器=${plannerOff ? 'OFF（对照）' : 'ON'}  每任务 ${RUNS} 次${RUNS > 1 ? '（压 agent 方差）' : ''}  （agent 模式 + judge coverage 3 票）\n`);
+  // T19 对照开关：设 1 则不把 agent 证据传给 judge，还原 T19 之前的口径（judge 空手评 faithful）。
+  // 留着它是为了"接入前后"这个结论可复现——而不是只留一句"我们量过了"。
+  const noEvidence = process.env.EVAL_AGENT_NO_EVIDENCE === '1';
+  console.log(`P1-C 长任务完整度  用例=${cases.length}${taskFilter ? `（过滤 "${taskFilter}"）` : ''}  规划器=${plannerOff ? 'OFF（对照）' : 'ON'}  每任务 ${RUNS} 次${RUNS > 1 ? '（压 agent 方差）' : ''}  judge 证据=${noEvidence ? 'OFF（T19 前口径）' : 'ON'}\n`);
 
   let covSum = 0, covTotal = 0, toolSum = 0, runsDone = 0;
+  let faithfulCnt = 0, judgedCnt = 0, evidenceSum = 0;
   const scores: number[] = [];
   for (const c of cases) {
     const covs: number[] = [];
@@ -378,13 +389,19 @@ async function agentTasks(): Promise<void> {
       toolSum += resp.toolCalls;
       toolCounts.push(resp.toolCalls);
       if (!c.mustMention || checkMentions(resp.answer, c.mustMention).ok) menPass++;
+      evidenceSum += resp.evidence.length;
       const judged = await judgeAnswer({
         question: c.question,
         answer: resp.answer,
-        evidence: [],
+        // T19：agent 的结构化证据（答案引用 × 模型看过的行）。EVAL_AGENT_NO_EVIDENCE=1 走旧口径对照。
+        evidence: noEvidence ? [] : resp.evidence,
         referenceAnswer: c.referenceAnswer,
         coverageChecklist: c.coverageChecklist,
       });
+      if (judged) {
+        judgedCnt++;
+        if (judged.verdict.faithful) faithfulCnt++;
+      }
       const cov = judged?.verdict.coverage;
       if (cov) { covSum += cov.covered; covTotal += cov.total; covs.push(cov.covered); total = cov.total; }
       else covs.push(0);
@@ -401,9 +418,12 @@ async function agentTasks(): Promise<void> {
   }
 
   const covPct = covTotal ? ((covSum / covTotal) * 100).toFixed(0) : '-';
-  console.log(`\n  汇总（规划器 ${plannerOff ? 'OFF' : 'ON'}，每任务 ${RUNS} 次）：有效跑 ${runsDone}   覆盖率 ${covPct}%（${covSum}/${covTotal}）   平均工具调用 ${runsDone ? (toolSum / runsDone).toFixed(1) : '-'} 次   平均分 ${scores.length ? mean(scores).toFixed(1) : '-'}\n`);
+  console.log(`\n  汇总（规划器 ${plannerOff ? 'OFF' : 'ON'}，每任务 ${RUNS} 次，judge 证据 ${noEvidence ? 'OFF' : 'ON'}）：有效跑 ${runsDone}   覆盖率 ${covPct}%（${covSum}/${covTotal}）   平均工具调用 ${runsDone ? (toolSum / runsDone).toFixed(1) : '-'} 次   平均分 ${scores.length ? mean(scores).toFixed(1) : '-'}`);
+  console.log(`  忠实 ${faithfulCnt}/${judgedCnt}   平均证据 ${runsDone ? (evidenceSum / runsDone).toFixed(1) : '-'} 条/次\n`);
   console.log(`  读数提示：长任务主指标是【覆盖率】与【平均工具调用】（planner 价值=少走冤枉路）；`);
-  console.log(`  平均分含 faithful 维度，而 agent 答案不产出结构化 evidence（judge 无引用可依），故 score 系统性偏低，仅供横向对照、不宜绝对解读。`);
+  console.log(`  平均分含 faithful 维度。T19 起 agent 随 done 下发结构化 evidence，judge 有引用可依时确实改判（实测单条 3→7 分）；`);
+  console.log(`  但长任务答案常常一个 file:line 都不给（上面「平均证据」若接近 0 即是），此时 judge 仍是空手评忠实、分数照样偏低——`);
+  console.log(`  所以低分先看平均证据条数，再决定该怪答案还是怪口径。EVAL_AGENT_NO_EVIDENCE=1 可复现 T19 前口径做对照。`);
   console.log(`  对照实验：分别在默认 与 PLANNER_DISABLE=1 下跑 \`eval -- agent\`，比对覆盖率与平均工具调用数。\n`);
 }
 

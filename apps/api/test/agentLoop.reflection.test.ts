@@ -76,6 +76,11 @@ describe('agentLoop · 自校验（T1）', () => {
     expect(done.data.reflectionRetried).toBe(false);
     expect(events.some((e) => e.type === 'reflecting')).toBe(false);
     expect(mockLlm).toHaveBeenCalledTimes(2); // 两轮循环，无重答
+
+    // T19：证据随 done 下发，且 code 是模型在工具结果里看到的那行原文
+    expect(done.data.evidence).toEqual([
+      { file: TARGET, line: GOOD_LINE, code: SOURCE[GOOD_LINE - 1].trim(), label: '关键代码' },
+    ]);
   });
 
   it('引用不实（行号越界）→ 发 reflecting 且恰好重答 1 次，done 用重答后的答案', async () => {
@@ -99,6 +104,11 @@ describe('agentLoop · 自校验（T1）', () => {
     expect(deltas).toHaveLength(1);
     expect(deltas[0].data.delta).toContain('更正');
     expect(deltas[0].data.delta).not.toContain('999');
+
+    // T19：证据必须跟着**重答后**那份答案走——沿用旧的会下发一条指向 999 行的假证据
+    expect(done.data.evidence).toEqual([
+      { file: TARGET, line: GOOD_LINE, code: SOURCE[GOOD_LINE - 1].trim(), label: '关键代码' },
+    ]);
   });
 
   it('重答调用失败 → 放行原答案（反思是增强不是闸门）', async () => {
@@ -139,5 +149,7 @@ describe('agentLoop · 自校验（T1）', () => {
     expect(done.data.citationAccuracy).toBeUndefined();
     expect(done.data.reflectionRetried).toBe(false);
     expect(mockLlm).toHaveBeenCalledTimes(1);
+    // T19：空数组而非缺省——"一条引用都没给"本身就是给 judge 的信息
+    expect(done.data.evidence).toEqual([]);
   });
 });

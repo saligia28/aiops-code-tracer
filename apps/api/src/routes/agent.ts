@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { AgentEvent } from '@aiops/shared-types';
+import type { AgentEvent, Evidence } from '@aiops/shared-types';
 import { graphStore, currentRepoPath, currentRepoName, resolveActiveProjectId, LLM_API_KEY, LLM_MAX_TOKENS } from '../context.js';
 import { startAskTrace } from '../services/traceService.js';
 import { agentLoop } from '../agent/index.js';
@@ -76,6 +76,8 @@ export function registerAgent(app: FastifyInstance): void {
     const steps: Array<Record<string, unknown>> = [];
     let finalAnswer = '';
     let finalFollowUp: string[] = [];
+    // T19：agent 的结构化证据（此前 trace.end 一直硬写 evidence: []，观测里看不到 agent 引用了什么）
+    let finalEvidence: Evidence[] = [];
     // P0-A·T1：自校验结果记 trace（与 ask 管线同款 reflection span），供观测反思的真实收益。
     // 用对象持有而非裸 let：赋值只发生在 sendEvent 闭包里，裸 let 会被 TS 的控制流分析
     // 一路窄化成 null（读取处进而变成 never）；属性访问在跨过 await 后会失效重来，类型才对。
@@ -98,6 +100,7 @@ export function registerAgent(app: FastifyInstance): void {
       } else if (event.type === 'done') {
         finalAnswer = event.data.answer ?? finalAnswer;
         finalFollowUp = event.data.followUp ?? finalFollowUp;
+        finalEvidence = event.data.evidence ?? finalEvidence;
         reflectionRef.meta = {
           citationAccuracy: event.data.citationAccuracy,
           retried: event.data.reflectionRetried ?? false,
@@ -144,7 +147,7 @@ export function registerAgent(app: FastifyInstance): void {
     }
     // 中止收尾：观测记 cancelled（与 ask 管线同款语义），不算成功完成
     if (abortCtl.signal.aborted) trace.error(new Error('client_cancelled'));
-    trace.end({ answer: finalAnswer, evidence: [], intent: 'AGENT', confidence: 1, answeredByLlm: true });
+    trace.end({ answer: finalAnswer, evidence: finalEvidence, intent: 'AGENT', confidence: 1, answeredByLlm: true });
 
     // 落库 assistant 消息（含 agent 轨迹）
     if (convId && finalAnswer) {
