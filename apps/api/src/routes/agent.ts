@@ -9,6 +9,7 @@ import { buildHistoryWindow } from '../services/ask/historyCompactor.js';
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js';
 import { getContextBudgets } from '../services/ask/contextBudget.js';
 import { createUsageTracker } from '../services/usage/usageTracker.js';
+import { createLangfuseObserver } from '../services/usage/langfuseObserver.js';
 
 /** 自校验（P0-A·T1）的 trace 元数据：由 reflecting / done 两个事件拼出。 */
 interface ReflectionSpanMeta {
@@ -83,6 +84,8 @@ export function registerAgent(app: FastifyInstance): void {
       pipeline: 'agent',
       source: usageSource,
       log: app.log,
+      // agent 一轮几十次调用，逐次上报 Langfuse（旧的 lastCallMeta 单例根本覆盖不到这里）
+      observer: createLangfuseObserver(trace),
     });
     // 历史窗口在 tracker 之后取：压缩是本轮触发的后台调用，成本归本轮
     if (historyConvId) {

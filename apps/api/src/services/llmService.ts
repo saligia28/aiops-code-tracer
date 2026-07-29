@@ -175,19 +175,10 @@ export function updateLlmRuntimeConfig(input: { mode?: string; model?: string })
   return buildLlmRuntimeConfig();
 }
 
-/**
- * 最近一次 LLM 调用的观测元数据（model + token usage）。
- * 供 L4 trace 在「调用后立即同步读取」——同一事件循环 tick 内无 await 插入时是准确的；
- * 这是观测级近似（避免为 usage 改动全部调用方签名），不用于计费结算。
- */
-export interface LlmCallMeta {
-  model: string;
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-}
-
-let lastCallMeta: LlmCallMeta | null = null;
+// lastCallMeta 单例已移除（成本追踪 · 阶段 3）：进程级可变状态，并发请求会串账，
+// 且只覆盖 ask 主回答那一次调用。现在每次真实供应商调用都经 UsageTracker 记账，
+// 并由 observer 同步上报 Langfuse（services/usage/langfuseObserver.ts）——
+// 请求级、不串账、覆盖 agent 多轮 / 后台任务 / patch。
 
 /**
  * 把一次真实供应商调用上报给 UsageTracker（成本追踪 · 阶段 3）。
@@ -243,10 +234,6 @@ function charsOf(messages: Array<{ content: string }>): number {
   return messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
 }
 
-export function getLastLlmCallMeta(): LlmCallMeta | null {
-  return lastCallMeta;
-}
-
 export async function callApiCompatibleChatCompletion(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   provider: LlmProvider,
@@ -298,12 +285,6 @@ export async function callApiCompatibleChatCompletion(
     const json = await resp.json() as {
       choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }>;
       usage?: RawProviderUsage;
-    };
-    lastCallMeta = {
-      model,
-      promptTokens: json.usage?.prompt_tokens,
-      completionTokens: json.usage?.completion_tokens,
-      totalTokens: json.usage?.total_tokens,
     };
     const rawContent = json.choices?.[0]?.message?.content;
     const text = typeof rawContent === 'string'
@@ -377,12 +358,6 @@ export async function callOllamaChatCompletion(
       prompt_eval_count?: number;
       eval_count?: number;
     };
-    lastCallMeta = {
-      model,
-      promptTokens: json.prompt_eval_count,
-      completionTokens: json.eval_count,
-      totalTokens: (json.prompt_eval_count ?? 0) + (json.eval_count ?? 0) || undefined,
-    };
     const text = json.message?.content?.trim() || '';
     reportUsage(usage, {
       provider: 'ollama', model, baseUrl, startedAt,
@@ -410,7 +385,7 @@ export async function callOllamaChatCompletion(
  *
  * 行为约定（调用方请读）：
  *  - 返回 { text: 完整文本, aborted }；网络/解析失败返回 null（调用方自行降级到非流式）。
- *  - usage 通过 `stream_options.include_usage` 从最后一个 chunk 取，写入 lastCallMeta
+ *  - usage 通过 `stream_options.include_usage` 从最后一个 chunk 取，交给 UsageTracker
  *   （保住 L4 的 token 成本上报，语义与非流式一致）。
  *  - signal 中止（用户点停止/断开连接）不算错误：返回已累积的部分文本 + aborted=true。
  *  - TODO(P1-D 后续): 内网 ollama 模式暂不支持流式（/api/chat 的 NDJSON 协议不同），
@@ -491,12 +466,6 @@ export async function callChatCompletionStream(
           // usage 只出现在最后一个 chunk（choices 为空数组）
           if (chunk.usage) {
             streamUsage = chunk.usage as RawProviderUsage;
-            lastCallMeta = {
-              model,
-              promptTokens: chunk.usage.prompt_tokens,
-              completionTokens: chunk.usage.completion_tokens,
-              totalTokens: chunk.usage.total_tokens,
-            };
           }
         } catch {
           // 单帧解析失败不致命，跳过

@@ -7,12 +7,13 @@ import { reflectOnAnswer } from '../services/ask/reflection.js'
 import { retrieveDocEvidence, renderDocEvidenceForPrompt } from '../services/ask/docRecall.js'
 import { sanitizeRetrievedText, sanitizeAskResponseForMachine } from '../services/ask/promptSafety.js'
 import { getContextBudgets } from '../services/ask/contextBudget.js'
-import { callChatCompletion, callChatCompletionStream, canUseLlm, getLastLlmCallMeta } from '../services/llmService.js'
+import { callChatCompletion, callChatCompletionStream, canUseLlm } from '../services/llmService.js'
 import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
 import { createConversation, getConversationForProject, appendMessage } from '../db/conversationStore.js'
 import { buildHistoryWindow, contextualizeQuestion, SUMMARY_PREFIX } from '../services/ask/historyCompactor.js'
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
 import { createUsageTracker } from '../services/usage/usageTracker.js'
+import { createLangfuseObserver } from '../services/usage/langfuseObserver.js'
 import {
   ensureGraph,
   isApiListQuestion,
@@ -165,6 +166,9 @@ export function registerAsk(app: FastifyInstance): void {
         pipeline: 'ask',
         source: usageSource,
         log: app.log,
+        // Langfuse 的 usage 现在走这条通道（取代 lastCallMeta 单例）：
+        // 每次真实供应商调用都上报，agent/后台/patch 一视同仁，并发也不串账
+        observer: createLangfuseObserver(trace),
       })
       // 历史窗口放在 tracker 之后取：压缩是本轮触发的后台 LLM 调用，成本要归到这一轮。
       // buildHistoryWindow 只在"真的要压缩"时才 register()——不需要压缩不产生 pending job。
@@ -668,16 +672,8 @@ ${trimmedGraphContext}${docBlock}`
           return undefined
         }
       }
-      {
-        // 紧跟主 LLM 调用之后同步读取，无 await 插入 → 元数据对应的就是这次调用
-        const llmMeta = getLastLlmCallMeta()
-        trace?.generation('answer', tAnswer, {
-          model: llmMeta?.model,
-          usage: llmMeta ? { promptTokens: llmMeta.promptTokens, completionTokens: llmMeta.completionTokens, totalTokens: llmMeta.totalTokens } : undefined,
-          promptChars: codeContext.length,
-          outputChars: answer.length,
-        })
-      }
+      // 主回答的 generation 上报已由 UsageTracker 的 observer 承担（见 createLangfuseObserver）：
+      // 它按真实调用逐次上报、带 stage，比这里"调用后同步读单例"既准确又覆盖全。
 
       const followUpNodes = answerNodes.slice(0, 3)
       const followUp = buildFollowUps(question, followUpNodes, plan)
