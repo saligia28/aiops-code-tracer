@@ -1,8 +1,8 @@
-# 对话 Token 成本追踪设计
+# 生成式 LLM Token 成本追踪设计
 
 > 日期：2026-07-29  
-> 状态：设计已确认，待实施计划  
-> 适用范围：`apps/api`、`apps/web`、`packages/shared-types`  
+> 状态：评审修订版，待确认
+> 适用范围：`apps/api`、`apps/web`、`apps/mcp`、`packages/shared-types`
 > 计价基线：[DeepSeek 中文官方计价页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)（2026-07-29 核验）
 
 ## 1. 背景
@@ -13,15 +13,17 @@
 - `llmService.ts` 的 `lastCallMeta` 是进程级可变单例，并发请求存在串账风险；
 - 普通问答只保留 prompt / completion / total，丢弃 DeepSeek 的缓存命中与未命中字段；
 - `agent/llmWithTools.ts` 没有解析 usage，而一次 Agent 请求会触发 planner、N 次 loop、最终回答和反思等多次 LLM 调用；
+- `/api/propose-patch` 每次最多调用 LLM 两次，且 prompt 可包含最多 10 个完整文件，是高成本真实路径；
+- Ask 的流式调用失败后会重新发起非流式请求，一次回答可能产生两次真实计费；
 - 记忆提取、历史摘要等后台任务在回答返回后继续消耗 Token，当前无法归属到触发它们的对话轮次；
 - 会话消息没有可持久化的本轮成本汇总，刷新后无法还原；
 - Langfuse 适合链路观测，但本地 UI 和可查询的成本事实不能依赖它是否配置。
 
-本设计建立一套本地、请求级、可持久化的 Token 成本追踪机制，并在每条回答卡片中展示。
+本设计建立一套本地、请求级、可持久化的 Token 成本追踪机制，并在回答卡片或补丁提案结果中展示。
 
 ## 2. 目标
 
-1. 每轮 Ask / Agent 都有稳定 `turnId`，能关联该轮触发的全部前台与后台 LLM 调用。
+1. 每次 Ask / Agent / propose-patch 与 eval judge 都有稳定 `turnId`，能关联该任务触发的全部 LLM 调用。
 2. 每次 LLM 调用记录实际模型、阶段、Token、缓存命中、耗时、状态和人民币成本。
 3. Agent 的 planner、每次常规 loop、必要时的强制 final、reflection、后台 memory/history/trace judge
    成本可以分项分析。
@@ -30,8 +32,9 @@
 6. DeepSeek 按官方人民币单价区分缓存命中输入、未命中输入和输出。
 7. 价格按调用发生时保存快照；未来调价不重算历史金额。
 8. 并发请求不串账，缺失 usage 或单价时不伪装成零成本。
-9. 删除会话或项目时同步删除对应成本数据，迟到后台写入不能产生孤儿记录。
-10. 中断、后台失败或进程重启后仍能得到明确的部分结算结果，不永久停在“结算中”。
+9. 删除会话或项目时清理对应成本数据；极端竞态产生的孤儿记录由启动清扫回收。
+10. 中断、后台失败、后台超时或进程重启后仍能得到明确的部分结算结果，不永久停在“结算中”。
+11. Web、MCP 与 eval 流量可分组，评测成本不会混入“用户交互成本”。
 
 ## 3. 非目标
 
@@ -42,6 +45,8 @@
 - 本期不保存 prompt、回答、reasoning、工具结果或请求头到 usage 表。
 - 本期不保证与供应商账单分毫一致；以 API 返回的 usage 和调用时价格快照做可复算的观测级成本。
 - 本期不把本地 Ollama 推理记成 `¥0`；未配置本地成本模型时只展示 Token，金额为“单价未配置”。
+- 本期不自动清理 usage events；这是为了保留调用级可复算事实。上线后监控行数/文件大小，达到约定阈值后再设计
+  “保留 turn 汇总、按天清理旧 events”的独立策略。
 
 ## 4. 已确认的产品决策
 
@@ -90,13 +95,18 @@
 - `conversations`
 
 无状态 MCP 调用没有 conversation 归属，不受“删除会话”操作影响；删除项目数据时应同时清理该项目的 usage 数据。
-项目创建/删除还必须通过 `ProjectLifecycleService` 更新 SQLite guard，不能只改 `projects.json`。
+项目删除与 API 启动时各执行一次 orphan sweep；不引入 JSON/SQLite 两阶段生命周期协议。
+
+### 4.5 非对话管线
+
+`/api/propose-patch` 使用 `pipeline='patch'` 创建无 conversation 的 turn。Web 补丁结果页展示同一
+`TokenUsagePanel` 摘要；MCP 返回中附加紧凑成本摘要。每次重试分别记录 `patch.propose` event。
 
 ## 5. 总体架构
 
 ```mermaid
 flowchart LR
-    R["Ask / Agent Route<br/>创建 turnId"] --> T["请求级 UsageTracker"]
+    R["Ask / Agent / Patch Route<br/>创建 turnId"] --> T["请求级 UsageTracker"]
     T --> L["LLM Provider Adapter"]
     L --> U["解析 provider usage"]
     U --> P["PricingCatalog<br/>人民币计价快照"]
@@ -145,46 +155,32 @@ interface LlmUsageContext {
 ```ts
 callChatCompletion(messages, {
   signal,
-  usage: { tracker, stage: 'ask.answer' },
+  usage: { tracker, stage: 'ask.answer_complex' },
 })
 ```
 
-当前项目注册表的事实源是 `projects.json`，不能假设存在 SQLite `projects` 表。本期不迁移全部项目 CRUD，
-而是在 v6 新增 SQLite `project_lifecycle` guard，并由统一的 `ProjectLifecycleService` 协调 JSON 与 guard。
-创建持久化 tracker 时：
+项目注册表的事实源仍是 `projects.json`。本期不新增 `project_lifecycle` guard，也不把项目 CRUD 迁入 SQLite。
+成本追踪只做以下低复杂度收口：
 
-1. 项目创建、删除、legacy guard 初始化和 turn 创建共用进程内项目生命周期 mutex；
-2. 在 SQLite turn 创建事务内确认 `project_lifecycle(project_id).state = 'active'`；
-3. 同一事务校验已有 conversation 归属或创建 conversation，再创建 usage turn；
-4. 提交并释放 mutex 后，才开始可产生生成式 LLM 成本的主链路。
+- turn 创建前按现有 `resolveActiveProjectId()` 和 registry/current repo 规则校验项目；
+- 删除项目时，在现有删除流程末尾按 `project_id` 显式删除 usage events/turns；
+- API 启动完成当前 project/repo 解析后，读取 `projects.json` 与当前 legacy id，清扫不属于任何有效项目的
+  usage rows；不能在 `currentRepoName` 尚未恢复前提前清扫；
+- event 写入仍要求 turn 存在；删除会话/项目后的迟到 event no-op，不重建 turn；
+- 极端“删除清理完成后，旧请求才创建 turn”的竞态允许暂存为孤儿，并在下次启动清扫。它不会被当前项目 UI
+  查询到；为这个单进程本地工具不引入跨 JSON/SQLite 两阶段提交协议。
 
-项目删除在 mutex 内先将 guard 改为 `deleting`，阻止新 turn，再写 `projects.json`，最后用 SQLite 事务删除
-conversation/usage 并改为 `deleted`。JSON 写失败则把 guard 回滚为 `active` 并返回错误。启动恢复按以下规则修复
-跨文件崩溃窗口：
+初始 turn 事务发生 SQLite I/O、锁超时或损坏时，一次短重试后 fail-open，创建纯内存 degraded tracker：
 
-- JSON 仍有项目且 guard 是 `deleting`：视为删除未提交，恢复 `active`；
-- JSON 已无项目且 guard 是 `deleting`：完成 usage/conversation 清理并标 `deleted`；
-- JSON 有项目但没有 guard：补建 `active` guard；
-- guard 已 `deleted` 时，不因陈旧内存 projectId 自动复活。
+- 不持久化 conversation/turn，不启动 memory/history 等依赖持久化的回答后任务；
+- 仍在内存汇总 provider usage；
+- 响应固定携带 `partial=true + tracking_write_failed + droppedUsageRecords`；
+- `turnId` 仅用于当前响应，usage endpoint 允许返回 404；
+- UI 提示“本轮追踪未持久化，刷新后不可恢复”。
 
-项目创建在 mutex 内先写 JSON，再 upsert `source='registry' + state='active'`。guard 写失败时回滚刚写入的 JSON
-并返回错误；若进程恰好崩溃在两步之间，启动对账根据 JSON 补建 active guard。
-
-兼容 `resolveActiveProjectId()` 的 `currentRepoName ?? 'default'` 回退：若该 id 不在 JSON，但确实来自当前已加载
-repo 或 `default` 回退，首次使用时在 mutex 内创建 `source='legacy' + state='active'` 的 guard；任意请求参数不能
-自行创建 legacy guard。这样保留现有未注册项目路径，同时项目 API 删除过的正式项目不会被回退逻辑复活。
-
-若请求先前已经捕获 `projectId`，但 guard 在 turn 事务前已进入 `deleting/deleted`，返回 not-found，不创建
-conversation/turn。若删除发生在 turn 创建事务之后，删除事务会清理刚创建的数据。
-
-初始事务的失败语义分开处理：
-
-- guard 为 `deleting/deleted` 是业务 not-found，终止请求且不调用 LLM；
-- SQLite I/O、锁超时或损坏属于观测存储故障；一次短重试仍失败后 fail-open，创建纯内存 degraded tracker，
-  不持久化 conversation/turn，不启动 memory/history 等依赖持久化的回答后任务；
-- degraded tracker 仍在内存汇总 provider usage，响应固定携带
-  `partial=true + tracking_write_failed + droppedUsageRecords`；其 `turnId` 仅用于当前响应，
-  usage endpoint 允许返回 404，UI 必须提示“本轮追踪未持久化，刷新后不可恢复”。
+`pipeline` 使用 `ask | agent | patch | eval`，请求来源使用 `web | mcp | eval`。eval runner 必须显式传
+`source='eval'`；其直接执行的三票 `judgeAnswer()` 另建 `pipeline='eval'` turn，并用 API answer turnId 作为
+可选 parent。成本汇总默认同时提供“全部真实成本”和“排除 eval 的用户交互成本”，不能直接丢弃评测费用。
 
 Agent 已有 options 对象，直接增加 `usage`：
 
@@ -232,6 +228,16 @@ settlementStatus: pending
 - 原本已经是 `aborted` 的执行状态保持不变；
 - 恢复更新与 events 最终重算在同一事务完成，避免 turn 永久显示“结算中”。
 
+长跑进程另有 watchdog，不能依赖重启解卡：
+
+- turn 首次进入 `pending` 时写入 `pendingDeadlineAt`；
+- 默认超时 10 分钟，可通过 `LLM_USAGE_SETTLEMENT_TIMEOUT_MS` 调整；
+- 每分钟扫描一次超过 deadline 的 pending turn，原子清零未完成 job、最终重算、转为 `settled`，并增加
+  `partialReasons=settlement_timeout`；
+- 每个后台 job 接收 deadline/AbortSignal；watchdog 结算后 job handle 进入 expired，迟到的 `done()` 幂等 no-op；
+- 超时后迟到的 LLM event 不再修改已结算 turn；这部分真实成本不可确认，因此 UI 必须维持 partial，而不是
+  显示完整成本。
+
 路由使用一个 `TurnTerminalCoordinator` 覆盖所有出口。成功、业务异常、LLM 异常、提前返回、超时和客户端
 abort 最终都必须调用 `finish(executionResult)`；该方法内部对 `interactiveDone(executionResult)` 做幂等
 compare-and-set，重复调用返回同一终态而不重复结算。成功路径可以发送 `done`，失败路径保持现有 `error`/
@@ -276,9 +282,21 @@ interface PreparedHistoryWindow {
 `background.history_compact`，传入句柄后再启动，因此“不需要压缩”不会产生 pending job，重复调用也由既有
 压缩去重键防止重复任务。
 
-trace 在线判定同样纳入生命周期。`trace.end` 在主链路终态前同步完成采样判定；命中采样时返回惰性的
-`startJudge`，路由在终态步骤 2 登记 `background.trace_judge`，并与其他已登记任务一起在步骤 5、对外
-`done` 之后启动。不得继续无句柄 fire-and-forget，也不得在统一终态步骤前抢先启动。
+trace 在线判定同样纳入生命周期。`trace.end` 在主链路终态前同步完成采样判定与磁盘缓存查询：
+
+- 未采样或 cache hit：不登记 usage background job；cache hit 可直接复用裁决回写 score；
+- 需要真实 LLM：返回惰性的 `startJudge`，路由在终态步骤 2 登记 `background.trace_judge`，并与其他任务
+  一起在步骤 5、对外 `done` 之后启动。
+
+不得继续无句柄 fire-and-forget，也不得在统一终态步骤前抢先启动。采样/缓存判定阶段不占用 judge 并发槽或
+小时配额。`startJudge` 真正启动时才调用 `acquireJudgeSlot()`：
+
+- 获取失败：job 以 `skipped` 正常完成，0 event、无 partial；
+- 获取成功：此时才增加小时计数，并在 judge settle 后释放并发槽；
+- 只有实际发起的 judge HTTP 调用才产生 `background.trace_judge` event。
+
+`AskTrace.end()` 从 `void` 改为返回 `PreparedJudgeTask | undefined`；它不再自行启动 Promise。route 根据
+`kind='cache_hit' | 'needs_llm'` 执行上述分支，保证任务登记与成本终态只有一个编排者。
 
 ## 7. Stage 分类
 
@@ -289,7 +307,10 @@ type LlmUsageStage =
   | 'ask.intent'
   | 'ask.question_plan'
   | 'ask.doc_validation'
-  | 'ask.answer'
+  | 'ask.answer_complex'
+  | 'ask.answer_complex_fallback'
+  | 'ask.answer_simple'
+  | 'ask.answer_simple_fallback'
   | 'ask.reflection'
   | 'ask.reflection_retry'
   | 'agent.planner'
@@ -297,6 +318,8 @@ type LlmUsageStage =
   | 'agent.reflection'
   | 'agent.reflection_retry'
   | 'agent.final'
+  | 'patch.propose'
+  | 'eval.judge'
   | 'background.memory_extract'
   | 'background.history_compact'
   | 'background.trace_judge'
@@ -309,6 +332,12 @@ type LlmUsageStage =
   产生工具调用还是直接给出普通最终答案，都归入 `agent.loop`；
 - `agent.final` 只表示 `forceFinalAnswer` 发起的独立强制收尾调用，例如达到最大轮次或重复工具调用熔断；
   普通无工具终答不得事后改名为 `agent.final`，也不得重复写 event；
+- Ask 主路径使用 `ask.answer_complex`，`composeAnswerWithLlm` 简单定位路径使用 `ask.answer_simple`；
+- 流式调用返回空值/异常后重新发起的非流式调用使用对应 `*_fallback` stage。前一次流式调用与 fallback 是两次
+  真实供应商请求、两次真实计费，不合并、不去重；若流式末帧未到导致 usage 缺失，前一次 event 标
+  `error + usageSource=missing + errorKind=stream_incomplete`；
+- `/api/propose-patch` 的每次有界重试均使用 `patch.propose`，按 `stageCallIndex` 区分；
+- eval runner 的每张真实 LLM 票使用 `eval.judge`；磁盘缓存已有票不生成 event；
 - judge 使用独立模型时记录真实 provider/model；
 - `reasoning_tokens` 是 output 的子集，只做诊断展示，不再次计费；
 - 后续新增 LLM 调用必须选择或新增 stage，不能用无语义的 `other` 长期兜底。
@@ -329,6 +358,9 @@ interface LlmTokenUsage {
 
 type UsageSource = 'provider' | 'estimated' | 'missing'
 type TransportStatus = 'success' | 'error' | 'aborted'
+type LlmPipeline = 'ask' | 'agent' | 'patch' | 'eval'
+type LlmRequestSource = 'web' | 'mcp' | 'eval'
+type PricingMatchKind = 'exact_model' | 'official_alias' | 'custom_override'
 type UsageValidationWarning =
   | 'prompt_cache_mismatch'
   | 'total_token_mismatch'
@@ -340,6 +372,8 @@ interface LlmPricingSnapshot {
   inputCacheHitNanoCnyPerToken: number
   inputCacheMissNanoCnyPerToken: number
   outputNanoCnyPerToken: number
+  matchKind: PricingMatchKind
+  supportsPromptCache: boolean
   catalogVersion: string
   sourceUrl: string
   verifiedAt: string
@@ -355,6 +389,7 @@ interface LlmCallUsage {
   canonicalModel: string
   transportStatus: TransportStatus
   usageSource: UsageSource
+  deliveryMode: 'stream' | 'non_stream'
   validationWarnings: UsageValidationWarning[]
   tokens: LlmTokenUsage
   pricing?: LlmPricingSnapshot
@@ -363,7 +398,7 @@ interface LlmCallUsage {
   outputCostNanoCny?: number
   totalCostNanoCny?: number
   latencyMs: number
-  errorKind?: 'timeout' | 'http_4xx' | 'http_5xx' | 'aborted' | 'network' | 'unknown'
+  errorKind?: 'timeout' | 'http_4xx' | 'http_5xx' | 'aborted' | 'network' | 'stream_incomplete' | 'unknown'
   createdAt: number
 }
 ```
@@ -413,17 +448,29 @@ outputCost = completionTokens * outputNanoCnyPerToken
 totalCost = cacheHitCost + cacheMissCost + outputCost
 ```
 
-UI 展示时除以 `1e9`。金额格式最多保留 6 位小数并移除尾零；只在实际成本为 0 时显示 `¥0`。
+UI 展示时除以 `1e9`，使用以下互斥规则：
+
+- `nanoCny === 0`：显示 `¥0`；
+- `0 < nanoCny < 1000`（小于 ¥0.000001）：摘要显示 `<¥0.000001`；
+- 其他金额：最多保留 6 位小数并移除尾零；
+- 展开明细/tooltip 可显示最多 9 位小数，确保 nano-CNY 可复算。
+
+任何正成本都不能因格式化显示成 `¥0`。
 
 ### 9.3 模型别名
 
-价格目录将以下旧别名 canonicalize 为 `deepseek-v4-flash`：
+DeepSeek 官方文档明确说明以下旧名分别对应 `deepseek-v4-flash` 的非思考/思考模式：
 
 - `deepseek-chat`：非思考模式；
 - `deepseek-reasoner`：思考模式。
 
-这是历史兼容，不应鼓励继续配置旧别名。官方已于 2026-07-24 弃用这两个模型名，项目运行配置应迁移到
-`deepseek-v4-flash` / `deepseek-v4-pro`。
+别名价格只能在 `provider='deepseek'` 且规范化 origin 为官方 `api.deepseek.com` 时匹配；custom provider、
+代理或其他 base URL 不得仅凭模型字符串套用官方别名价格。别名事件保存
+`matchKind='official_alias'`，UI 标“兼容别名计价”，但不把 Token `usageSource` 标成 estimated——usage 是否
+精确与价格匹配来源是两个维度。
+
+官方已于 2026-07-24 弃用这两个模型名。项目源码默认值和 README 已是 `deepseek-v4-flash`，实施时还要检查
+部署环境/运行时配置；发现旧别名则启动告警并迁移配置，不读取或提交 `.env` 中的密钥。
 
 ### 9.4 价格目录与快照
 
@@ -432,7 +479,7 @@ UI 展示时除以 `1e9`。金额格式最多保留 6 位小数并移除尾零�
 - 内置经过测试的 DeepSeek CNY 默认价；
 - 支持 `LLM_PRICING_CNY_JSON` 覆盖或补充自定义模型；
 - 每次调用保存实际使用的价格快照；
-- 价格目录必须有 `catalogVersion`、`sourceUrl`、`verifiedAt`；
+- 价格目录必须有 `catalogVersion`、`sourceUrl`、`verifiedAt` 和 `matchKind`；
 - 未匹配到单价时 Token 正常记录，成本字段为 `null`，`unknownPricingCalls + 1`；
 - 不自动从网页抓价。
 
@@ -462,28 +509,24 @@ reasoning_tokens 不得大于 completion_tokens
 ```
 
 供应商数据不一致时保留原值，并写入 `validationWarnings`；不要静默改写供应商数据。调用事件没有
-`partial` 状态，turn 的 `partial` 由 usage 缺失、未知价格、校验告警、后台失败或进程中断等原因派生。
+`partial` 状态，turn 的 `partial` 由 usage 缺失、未知价格、校验告警、追踪写失败、后台失败/超时或进程中断
+等原因派生。
+
+### 9.6 对账
+
+价格快照只能证明“当时使用了哪份目录”，不能证明目录或路由一定正确。上线验收与后续月度检查增加人工对账：
+
+1. 选定不跨价格版本的时间窗；
+2. 过滤 `provider=deepseek`，分别统计 exact model、official alias 和 eval 流量；
+3. 将本地累计 Token/成本与 DeepSeek 控制台的用量或余额变化核对；
+4. 记录允许偏差与无法归因流量；量级不一致时暂停把本地金额当作完整账单，优先检查 base URL、alias、价格版本
+   与漏接调用路径。
 
 ## 10. 数据库设计
 
 SQLite schema 升级到 v6。
 
-### 10.1 `project_lifecycle`
-
-```sql
-CREATE TABLE project_lifecycle (
-  project_id   TEXT PRIMARY KEY,
-  state        TEXT NOT NULL, -- active | deleting | deleted
-  source       TEXT NOT NULL, -- registry | legacy
-  updated_at   INTEGER NOT NULL
-);
-```
-
-该表只承担跨 `projects.json` 与 usage SQLite 的生命周期 guard，不复制项目名称、路径等业务字段。API 启动时先按
-§6.1 的恢复规则对账，再接收 Ask/Agent 请求。所有 project create/delete 与 turn create 都必须经过
-`ProjectLifecycleService`，禁止路由直接分别写 JSON 和 guard。
-
-### 10.2 `llm_usage_turns`
+### 10.1 `llm_usage_turns`
 
 ```sql
 CREATE TABLE llm_usage_turns (
@@ -491,11 +534,13 @@ CREATE TABLE llm_usage_turns (
   project_id                TEXT NOT NULL,
   conversation_id           TEXT,
   assistant_message_id      TEXT,
+  parent_turn_id            TEXT,
   pipeline                  TEXT NOT NULL,
   source                    TEXT NOT NULL DEFAULT 'web',
   execution_status          TEXT NOT NULL,
   settlement_status         TEXT NOT NULL,
   pending_jobs              INTEGER NOT NULL DEFAULT 0,
+  pending_deadline_at       INTEGER,
   call_count                INTEGER NOT NULL DEFAULT 0,
   success_call_count        INTEGER NOT NULL DEFAULT 0,
   error_call_count          INTEGER NOT NULL DEFAULT 0,
@@ -505,6 +550,7 @@ CREATE TABLE llm_usage_turns (
   unknown_pricing_calls     INTEGER NOT NULL DEFAULT 0,
   dropped_usage_records     INTEGER NOT NULL DEFAULT 0,
   background_failed_jobs    INTEGER NOT NULL DEFAULT 0,
+  background_timed_out_jobs INTEGER NOT NULL DEFAULT 0,
   partial_reasons_json      TEXT NOT NULL DEFAULT '[]',
   prompt_tokens             INTEGER NOT NULL DEFAULT 0,
   cache_hit_tokens          INTEGER NOT NULL DEFAULT 0,
@@ -523,13 +569,16 @@ CREATE INDEX idx_usage_turn_project
 
 CREATE INDEX idx_usage_turn_conversation
   ON llm_usage_turns(conversation_id, created_at);
+
+CREATE INDEX idx_usage_turn_parent
+  ON llm_usage_turns(parent_turn_id, created_at);
 ```
 
 `known_cost_nano_cny` 是已成功持久化且单价已知调用的成本和。若 `unknown_pricing_calls > 0`、
 `usage_missing_calls > 0` 或 `dropped_usage_records > 0`，它只是已知部分，UI 必须显示“部分成本”，不能当作
 完整总价。
 
-### 10.3 `llm_usage_events`
+### 10.2 `llm_usage_events`
 
 ```sql
 CREATE TABLE llm_usage_events (
@@ -542,6 +591,7 @@ CREATE TABLE llm_usage_events (
   canonical_model            TEXT NOT NULL,
   transport_status           TEXT NOT NULL,
   usage_source               TEXT NOT NULL,
+  delivery_mode              TEXT NOT NULL,
   validation_warnings_json   TEXT NOT NULL DEFAULT '[]',
   prompt_tokens              INTEGER,
   cache_hit_tokens           INTEGER,
@@ -569,20 +619,24 @@ CREATE INDEX idx_usage_event_model_stage
   ON llm_usage_events(canonical_model, stage, created_at DESC);
 ```
 
-当前项目的 SQLite 层未依赖外键级联，删除语义继续使用显式事务，但写入端也必须防止删除竞态：
+当前项目的 SQLite 层未依赖外键级联，删除语义继续使用显式事务：
 
-- 创建 conversation/turn 的事务必须先确认 active project guard 仍存在；not-found 时整体回滚；
-- 插入 event 的事务先确认对应 turn 仍存在；不存在则丢弃该迟到事件并记受控 debug 日志，绝不重建 turn；
+- 插入 event 的事务先确认对应 turn 仍存在且未 settled；不存在或已由 watchdog 结算则丢弃迟到事件并记受控
+  debug 日志，绝不重建/重开 turn；
 - 删除 conversation 时，在同一事务依次删除该 conversation 的 events、turns 和 conversation/messages；
 - 删除 project 时，同样显式删除该 project 下的 usage events/turns；
-- 正在运行的后台任务即使晚于删除完成，也只能得到“turn 不存在”的 no-op 结果，不能制造孤儿 event；
+- 正在运行的后台任务晚于删除完成时，迟到 event 因 turn 不存在而 no-op；
 - assistant message meta 的 settle 回写也必须先确认 message 仍存在。
 
-### 10.4 写入与聚合
+启动 orphan sweep 从 `projects.json` 加上当前允许的 legacy project id 构造有效集合，删除集合外 turns 及其
+events。有效集合为空时使用专门的全删分支，不能拼接空 `NOT IN ()`。该 sweep 与项目删除后的同步清扫是本期
+唯一项目一致性机制。
+
+### 10.3 写入与聚合
 
 记录一次调用时，在同一事务中：
 
-1. 校验 turn 存在，不存在则 no-op；
+1. 校验 turn 存在且 `settlement_status != 'settled'`，否则 no-op；
 2. `INSERT` event；
 3. 增量更新 turn 的调用数、Token 和已知成本；
 4. 更新 `updated_at`。
@@ -613,6 +667,7 @@ pricing_unknown
 provider_usage_inconsistent
 tracking_write_failed
 background_failed
+settlement_timeout
 process_interrupted
 ```
 
@@ -635,9 +690,10 @@ usage 追踪写入是 best-effort，但失败不能伪装成完整低成本。`U
 ```text
 turn 的调用数、Token、已知成本和 usage 质量计数 = 该 turn 所有 event 按上述谓词重算
 turn.backgroundFailedJobs = 该 turn 失败且已完成的后台 job 数
+turn.backgroundTimedOutJobs = 该 turn 被 watchdog 到期释放的后台 job 数
 ```
 
-### 10.5 message meta
+### 10.4 message meta
 
 assistant message `meta` 增加：
 
@@ -654,6 +710,7 @@ interface TurnUsageSummary {
     | 'provider_usage_inconsistent'
     | 'tracking_write_failed'
     | 'background_failed'
+    | 'settlement_timeout'
     | 'process_interrupted'
   >
   callCount: number
@@ -665,6 +722,7 @@ interface TurnUsageSummary {
   unknownPricingCalls: number
   droppedUsageRecords: number
   backgroundFailedJobs: number
+  backgroundTimedOutJobs: number
   promptTokens: number
   cacheHitTokens: number
   cacheMissTokens: number
@@ -697,8 +755,25 @@ interface TurnUsageSummary {
 - 解析 hit/miss/reasoning；
 - 在实际 provider 调用的最低层记录 usage，确保 fallback 后记录真实模型；
 - 用 `usageContext` 归属 turn/stage；
-- 删除业务路径对 `getLastLlmCallMeta()` 的依赖；
-- 完成迁移后移除 `lastCallMeta` 单例。
+- 流式首调失败和非流式 fallback 分别完成 event；
+- 删除业务路径对 `getLastLlmCallMeta()` 的依赖。
+
+移除 `lastCallMeta` 前必须先接好 Langfuse。`UsageTracker` 支持请求级 observer：
+
+```ts
+interface LlmUsageObserver {
+  onCallRecorded(
+    usage: LlmCallUsage,
+    ephemeral: { startedAt: number; promptChars?: number; outputChars?: number },
+  ): void
+}
+```
+
+route 创建 tracker 时注入 `LangfuseUsageObserver`。adapter 完成每次调用后尝试持久化 usage，并无论本地写入
+成功与否都通知 observer；
+observer 调用 `trace.generation(stage, ...)`，仅使用内存中的 prompt/output 字符数，不把内容写入 usage 表。
+Ask 现有主回答 Langfuse usage、Agent 多调用、patch 和后台调用都由同一出口上报。只有对应测试证明 Langfuse
+generation 仍收到 model/usage 后，才能移除 `lastCallMeta` 单例与 `ask.ts` 的同步读取。
 
 ### 11.2 Agent
 
@@ -722,11 +797,19 @@ interface TurnUsageSummary {
 - 本轮显示“部分成本”；
 - 不错误套用主模型价格。
 
+`evalJudgeCache.json` 命中时没有供应商调用：0 event、0 Token、0 成本，不能生成
+`background.trace_judge + usage_missing` 假事件。将缓存查询拆到同步 `prepareJudgeTask()`；cache hit 直接
+返回裁决，不登记 usage background job。
+
+eval runner 直接调用 `judgeAnswer()` 时创建无 conversation 的 `pipeline='eval'` tracker，stage 使用
+`eval.judge`，source 固定为 eval。若前一步 `/api/ask` 或 `/api/agent/ask` 返回 turnId，则写入
+`parent_turn_id`；每张未命中缓存的投票各产生一个 event。
+
 ### 11.4 后台任务
 
 `generateMemoriesFromTurn`、`compactHistory` 和 trace 在线 `judgeAnswer` 增加可选 `usageContext`。
 
-路由负责注册 memory/history 句柄并传入。trace scheduler 同步返回可选惰性 `startJudge`，路由负责登记
+路由负责注册 memory/history 句柄并传入。trace scheduler 在 cache miss 时返回可选惰性 `startJudge`，路由负责登记
 `background.trace_judge` 句柄，并在发送 `done` 后统一启动。服务本身继续 best-effort，不向主问答抛错，但失败结果必须通过
 `job.done({ status: 'failed' })` 持久化为 `backgroundFailedJobs + 1` 和 `partialReasons=background_failed`。
 
@@ -735,9 +818,21 @@ interface TurnUsageSummary {
 
 Embedding、向量回填不进入本期 LLM usage 表。
 
+### 11.5 Propose Patch
+
+`/api/propose-patch` 创建 `pipeline='patch'`、无 conversation 的 turn，并把 usage context 注入
+`proposePatch` 的 `deps.llm`：
+
+- 每个 `maxAttempts` 重试产生一条 `patch.propose` event；
+- Web/MCP 请求分别标 `source='web' | 'mcp'`；
+- 成功和失败响应都携带 `turnId` 与 summary；
+- 参数校验失败、未配置 LLM 等尚未发起任何模型调用的早退不创建 turn；
+- patch 无回答后后台任务，正常情况下响应前即可 settled；
+- 原 prompt 可能含最多 10 个完整文件，但 usage 表与日志仍禁止保存 prompt/文件内容。
+
 ## 12. API 与 SSE 契约
 
-### 12.1 AskResponse
+### 12.1 Response
 
 普通非 SSE `/api/ask` 在响应增加：
 
@@ -747,6 +842,16 @@ tokenUsageSummary?: TurnUsageSummary
 ```
 
 MCP 无状态问答也生成 usage turn，但不创建 conversation/message；响应仍可携带 `turnId` 和初步汇总。
+
+`/api/propose-patch` 的成功/业务失败判别式 body 同样增加：
+
+```ts
+turnId?: string
+tokenUsageSummary?: TurnUsageSummary
+```
+
+eval runner 调用 `/api/ask` 和 `/api/agent/ask` 时显式发送 `source='eval'`。Agent request type 需增加 source；
+服务端只接受受控枚举，未知值回退 `web`。
 
 ### 12.2 SSE 终态
 
@@ -831,6 +936,7 @@ tokenUsageLoading?: boolean
 ```
 
 `useConversation.messagesToTurns()` 从 assistant message meta 恢复 summary。
+补丁提案页直接从 `/api/propose-patch` response 读取 summary，不写 conversation meta。
 
 ### 13.2 组件边界
 
@@ -869,10 +975,12 @@ loading: boolean
 摘要：
 
 - Token：优先 `totalTokens`；
-- 缓存命中率：`hit / (hit + miss)`，输入为 0 时不显示；
+- 缓存命中率：只有本轮全部已计 usage 调用使用同一 canonical model，且 PricingCatalog 标记该模型支持
+  prompt cache 时，摘要才显示 `hit / (hit + miss)`；混合 DeepSeek/Ollama、混合模型或输入为 0 时隐藏总命中率，
+  展开区改为按支持缓存的模型分别显示；
 - 调用数：正常显示已持久化的 `callCount`；发生写失败时显示
   “已记录 X 次，另有 Y 次未持久化”，不得把 dropped 混入精确分项；
-- 金额：完整时 `¥x`，未知调用存在时显示“部分成本 ¥x”；
+- 金额：完整时按 §9.2 显示 `¥x`/`<¥0.000001`，未知调用存在时显示“部分成本”；
 - `settlementStatus!='settled'` 显示旋转状态点与“成本结算中”；
 - partial=true 显示警告图标，可在展开区查看原因；
 - `droppedUsageRecords > 0` 时固定显示“追踪写入失败，以下为已记录部分”，即使已知成本为 0 也不能显示
@@ -885,11 +993,14 @@ loading: boolean
 
 `reasoning` 只展示为 output 子集，不再计费。
 
+fallback 行增加“流式失败后整包重试”说明，明确两行都是实际供应商调用，不把它渲染成重复记录 bug。
+`matchKind='official_alias'` 显示“兼容别名计价”徽标。
+
 ## 14. 隐私与安全
 
 usage 表允许保存：
 
-- turn / project / conversation / message 标识；
+- turn / parent turn / project / conversation / message 标识；
 - pipeline、stage、provider、model；
 - Token、成本、价格快照；
 - 延迟、受控状态和错误类别。
@@ -915,13 +1026,16 @@ usage 表允许保存：
 | usage 全缺失 | Token/成本未知，调用仍计数 |
 | 未知模型单价 | Token 可见，金额标“单价未配置” |
 | error / abort | 保存已有 usage；无 usage 时标 missing |
+| 流式失败后 fallback | 首调标 stream/incomplete，fallback 单独计费；UI 解释真实二次调用 |
 | pricing 配置非法 | 启动时告警并忽略该模型价格，不影响 LLM 调用 |
 | usage DB 写失败 | 内存标 `tracking_write_failed`/dropped 数并输出 partial 摘要；日志 + trace；不得让问答失败 |
 | 初始 turn 事务故障 | 短重试后使用纯内存 degraded tracker；不持久化、不启依赖持久化的后台任务 |
-| project guard 非 active | 视为项目已删除/删除中，拒绝请求且不调用 LLM |
 | 后台任务失败 | `finally` 释放 pending；持久化 `background_failed` 后 turn 进入“已结算但不完整” |
+| 后台任务超过 deadline | watchdog 强制释放，标 `settlement_timeout` 后结算为 partial |
+| judge cache 命中 | 不登记 usage job，直接复用裁决；0 event、0 usage_missing |
+| judge 并发槽/配额跳过 | 已登记 job 立即正常完成；0 event、非 partial |
 | 进程中断 | 启动恢复扫描最终重算并标 `process_interrupted`，不永久 pending |
-| 删除时后台迟到写入 | 原子检查 turn 不存在后 no-op，不重建 turn、不产生孤儿 |
+| 删除时后台迟到 event | 原子检查 turn 不存在后 no-op；极端迟到 turn 由启动 orphan sweep 清理 |
 | 前端轮询失败 | 保留初步汇总，允许手动重试 |
 
 ## 16. 测试策略
@@ -931,10 +1045,11 @@ usage 表允许保存：
 - V4 Flash hit / miss / output 的 nano-CNY 精确值；
 - V4 Pro 精确值；
 - 多分项求和；
-- `deepseek-chat` / `deepseek-reasoner` alias；
+- 官方 DeepSeek origin 下 `deepseek-chat` / `deepseek-reasoner` 匹配 Flash 且标 `official_alias`；
+- custom/代理 origin 下同名模型不自动套官方 alias；
 - 自定义价格覆盖；
 - 未知模型返回 `null`；
-- 极小成本不被舍入为零；
+- 1 个 cache-hit token 显示 `<¥0.000001`，不显示 `¥0`；
 - reasoning 不重复收费。
 
 ### 16.2 Adapter 单测
@@ -946,8 +1061,10 @@ usage 表允许保存：
 - usage 全缺失；
 - Ollama `prompt_eval_count` / `eval_count`；
 - HTTP error、timeout、abort；
+- 流式无末帧 usage + 非流式 fallback 产生两条不同 stage event；
 - 独立 judge 模型；
-- fallback 后记录实际 provider/model。
+- fallback 后记录实际 provider/model；
+- Langfuse observer 在移除 `lastCallMeta` 后仍收到 model/token usage。
 
 ### 16.3 UsageTracker 单测
 
@@ -956,6 +1073,8 @@ usage 表允许保存：
 - 两个并发 tracker 不串账；
 - 主链路完成、无后台任务直接 settled；
 - 后台任务 pending → settled；
+- pending 超过 deadline 被 watchdog 结算为 `settlement_timeout` partial；
+- watchdog 后迟到 job.done/event 不重复结算、不改写终态；
 - 后台失败仍释放 pending；
 - aborted 且无后台任务；
 - aborted 且已有后台任务时保持 pending，后台完成后 settled；
@@ -970,8 +1089,8 @@ usage 表允许保存：
 ### 16.4 DB 与路由测试
 
 - v6 migration 可重入；
-- `projects.json` → `project_lifecycle` 启动对账与 legacy/default 兼容；
-- project create/delete 跨 JSON/guard 失败恢复；
+- 启动 orphan sweep 保留 registry + legacy 有效项目，清理无效 project usage；
+- 有效项目集合为空时安全清扫，不生成非法 SQL；
 - turn/event 插入与索引；
 - 同事务 event + aggregate；
 - settle 前最终重算；
@@ -980,9 +1099,9 @@ usage 表允许保存：
 - GET usage 正常、未知 turn、跨项目 404、未登录 401；
 - 删除会话同步删除 usage；
 - 删除 project 同步删除 usage；
-- 项目删除与“已捕获 projectId、尚未创建 conversation/turn”的请求竞态不产生迟到 turn；
 - 初始 turn 事务 I/O/锁故障时 fail-open 为内存 tracker，响应标未持久化且 endpoint 404；
-- conversation/project 删除与后台迟到 event 竞态不产生孤儿；
+- conversation/project 删除后的后台迟到 event no-op；
+- 极端迟到 turn 在下一次启动被 orphan sweep 清理；
 - 删除其他会话不误删；
 - MCP 无 conversation 的 usage 可记录。
 
@@ -994,10 +1113,16 @@ usage 表允许保存：
 - Ask/Agent 的异常、超时、早退和 abort 都 exactly-once 终结 turn，不遗留 collecting；
 - event、aggregate 和 message meta 写失败注入后，当前响应标 partial/tracking_write_failed；
 - Agent planner + N 次常规 loop + 可选强制 final 聚合，普通无工具终答仍属于 loop；
+- Ask complex/simple 与各自 fallback stage 可区分，fallback 两次调用都计数；
 - reflection / retry 单独分阶段；
 - memory/history 后台成本计入原 turn；
 - history 无压缩时不登记任务；需要压缩时先登记再启动；相同压缩任务去重；
-- trace judge 命中采样时计入 `background.trace_judge`，未采样时不登记任务；
+- trace judge 真正发 HTTP 时计入 `background.trace_judge`；
+- judge cache 命中时不登记 usage job；并发槽/小时配额跳过时 job 立即完成；两者均为 0 event、非 partial；
+- judge 槽在 `done` 后真正启动时获取，判定阶段不占槽；
+- propose-patch 1～2 次尝试全部进入同一 `pipeline=patch` turn；
+- eval runner 的 Ask/Agent turn 均标 `source=eval`；
+- eval runner 未命中缓存的 judge 投票进入 `pipeline=eval + stage=eval.judge`，并关联 parent turn；
 - SSE 不等待后台任务；
 - abort 后不启动回答后任务；
 - abort 前已启动的后台任务继续结算；
@@ -1007,6 +1132,10 @@ usage 表允许保存：
 
 - 完整摘要；
 - 缓存命中率；
+- 混合模型或不支持缓存模型时隐藏总命中率，展开区按模型显示；
+- 正成本小于 ¥0.000001 的格式；
+- official alias 计价徽标；
+- fallback “真实二次调用”说明；
 - pending 状态；
 - partial / unknown pricing；
 - 展开阶段与单次调用；
@@ -1028,6 +1157,8 @@ usage 表允许保存：
    memory/history/被采样的 trace judge 都归入同一 turn；
 6. 两个并发请求确认 turn 不串账；
 7. 删除会话后确认对应 usage 行数为 0。
+8. 跑一次最多两轮的 propose-patch，确认所有尝试进入同一 patch turn。
+9. 选定隔离时间窗，与 DeepSeek 控制台用量/余额变化做一次人工量级对账。
 
 活体验收记录模型名、官方价格版本、时间、调用数、hit/miss/output、计算公式和最终金额，不记录 prompt 内容。
 
@@ -1037,7 +1168,7 @@ usage 表允许保存：
 
 - shared types；
 - PricingCatalog；
-- DeepSeek CNY 默认价与 alias；
+- DeepSeek CNY 默认价、origin 约束与 alias provenance；
 - formatter；
 - 单测。
 
@@ -1046,16 +1177,15 @@ usage 表允许保存：
 ### 阶段 2：存储地基
 
 - SQLite v6；
-- `project_lifecycle` guard、启动对账与 ProjectLifecycleService；
 - turn/event store；
 - tracker 生命周期；
+- pending watchdog；
 - 最终重算；
 - 启动恢复；
+- orphan sweep；
 - tracking write failure 降级摘要；
 - 初始 turn 创建失败的纯内存降级；
 - 删除事务；
-- turn 创建与项目删除串行化；
-- 删除与迟到后台写入竞态；
 - DB/Tracker 测试。
 
 完成门槛：并发 tracker 不串账，events 求和等于 turn。
@@ -1064,15 +1194,19 @@ usage 表允许保存：
 
 - `llmService` usage；
 - `llmWithTools` usage；
-- Ask / Agent 各 stage；
+- Ask / Agent / Patch / Eval Judge 各 stage；
+- 流式失败 fallback 的真实二次计费；
 - judge；
 - memory/history/trace judge 后台；
 - Ask/Agent 对外 done 终态编排；
 - 所有非成功出口 exactly-once 终结；
 - history 惰性任务和登记顺序；
-- 淘汰 `lastCallMeta`。
+- Langfuse usage observer；
+- 在 observer 测试通过后淘汰 `lastCallMeta`；
+- eval source 标记。
 
-完成门槛：离线路由测试证明一轮 Agent 全调用都进入同一 turn。
+完成门槛：离线路由/runner 测试证明 Ask/Agent/Patch/Eval Judge 所有生成式 LLM 调用均有归属，
+Langfuse usage 不回退。
 
 ### 阶段 4：API 与 UI
 
@@ -1081,6 +1215,7 @@ usage 表允许保存：
 - assistant meta；
 - polling composable；
 - `TokenUsagePanel.vue`；
+- 补丁提案结果成本摘要；
 - Web 单测、typecheck、build、布局回归。
 
 完成门槛：实时回答和刷新历史都能展示同一份汇总。
@@ -1089,6 +1224,8 @@ usage 表允许保存：
 
 - 真实缓存命中；
 - 官方公式人工复算；
+- official alias/新模型配置核验；
+- DeepSeek 控制台人工对账；
 - 后台结算；
 - 并发隔离；
 - 删除语义；
@@ -1105,14 +1242,18 @@ usage 表允许保存：
 3. 两个并发请求的 usage 不互相污染。
 4. DeepSeek hit/miss/output 按官方人民币价格可人工复算。
 5. usage 缺失或单价未知时 UI 不显示为零成本。
-6. 回答不等待后台任务，后台完成后 summary 由 pending 变 settled。
-7. 刷新会话后成本摘要仍存在。
-8. 删除会话或项目后对应 turns/events 为 0 行，迟到后台任务也不能重建孤儿记录。
-9. usage 表不含 prompt、回答、reasoning、工具结果或密钥。
-10. 进程重启后遗留 collecting/pending turn 被恢复为 settled partial，不永久卡住。
-11. 任一 usage 持久化写失败时，当前响应不能显示为完整成本，必须标记 dropped 数和 partial。
-12. 成功、异常、超时、早退和 abort 都 exactly-once 终结 turn，不遗留 collecting。
-13. API、Web、MCP 现有测试与全仓 typecheck/build 不回退。
+6. 任意正成本都不显示为 `¥0`；小于 ¥0.000001 时显示阈值提示。
+7. 回答不等待后台任务，后台完成后 summary 由 pending 变 settled；超过 deadline 时 watchdog 结算为
+   `settlement_timeout` partial。
+8. 刷新会话后成本摘要仍存在。
+9. 删除会话/项目后正常路径对应 turns/events 为 0；极端孤儿在下次启动清扫。
+10. usage 表不含 prompt、回答、reasoning、工具结果或密钥。
+11. 进程重启后遗留 collecting/pending turn 被恢复为 settled partial，不永久卡住。
+12. 任一 usage 持久化写失败时，当前响应不能显示为完整成本，必须标记 dropped 数和 partial。
+13. 成功、异常、超时、早退和 abort 都 exactly-once 终结 turn，不遗留 collecting。
+14. `/api/propose-patch` 的每次 LLM 尝试都有 patch turn/event，不再成为成本黑洞。
+15. eval 请求与离线 judge turn 均可过滤并保留 parent 关联；Langfuse 在移除 `lastCallMeta` 后仍收到 usage。
+16. API、Web、MCP 现有测试与全仓 typecheck/build 不回退。
 
 ## 19. 实施注意事项
 
@@ -1126,12 +1267,19 @@ usage 表允许保存：
   `background.trace_judge`，实际启动统一放在对外 `done` 之后。
 - Agent 当前会在路由持久化之前产生 `done`；对外唯一终态必须收归路由，先保存 message 和登记后台任务，
   再发送增强后的 `done`。
-- 项目注册表仍是 `projects.json`；turn 创建不能查询不存在的 `projects` 表，必须经过
-  `ProjectLifecycleService` 和 v6 `project_lifecycle` guard。
+- `/api/propose-patch` 的 `deps.llm` 是独立注入点，不能只改 Ask/Agent adapter 调用方。
+- Ask 主路径与 `composeAnswerWithLlm` 都有流式失败回退；四个 answer/fallback stage 必须同时接线。
+- `lastCallMeta` 仍承担 Ask → Langfuse usage 传递；必须先上线 request-scoped observer 再删除。
+- 项目注册表仍是 `projects.json`；本期采用删除时清理 + 启动 orphan sweep，不实现 `project_lifecycle` guard。
+- 运行时若仍配置 `deepseek-chat`/`deepseek-reasoner`，先记录 official alias provenance 并告警，再由运维迁移
+  到 `deepseek-v4-flash`；不要自动改写用户 `.env`。
+- eval runner 必须为 Ask 和 Agent 都传 `source='eval'`，并为直接 judge 投票创建 eval tracker。
 - 成本追踪是观测增强，任何存储或计价异常都不得阻断用户回答。
 
 ## 20. 官方参考
 
 - [DeepSeek 模型 & 价格（人民币）](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)
+- [DeepSeek 首次调用与旧模型名兼容说明](https://api-docs.deepseek.com/zh-cn/)
+- [DeepSeek 更新日志](https://api-docs.deepseek.com/zh-cn/updates)
 - [DeepSeek 上下文硬盘缓存](https://api-docs.deepseek.com/zh-cn/guides/kv_cache)
 - [DeepSeek Chat Completion API](https://api-docs.deepseek.com/api/create-chat-completion/)
