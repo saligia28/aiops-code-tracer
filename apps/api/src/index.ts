@@ -14,6 +14,7 @@ import { shutdownTracing } from './services/traceService.js';
 import { loadGraph, patchIndexTaskState, migrateExistingGraphData } from './services/indexService.js';
 import { initDb } from './db/sqlite.js';
 import { initUsageLifecycle } from './services/usage/usageLifecycle.js';
+import { registerUsage } from './routes/usage.js';
 
 // 路由
 import { registerHealth } from './routes/health.js';
@@ -78,6 +79,7 @@ registerIndexOps(app);
 registerGraph(app);
 registerTraceError(app);
 registerAgent(app);
+registerUsage(app);
 registerConversations(app);
 registerMemories(app);
 registerProposePatch(app);

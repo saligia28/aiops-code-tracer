@@ -8,6 +8,7 @@ import { createConversation, getConversationForProject, appendMessage } from '..
 import { buildHistoryWindow } from '../services/ask/historyCompactor.js';
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js';
 import { getContextBudgets } from '../services/ask/contextBudget.js';
+import { createUsageTracker } from '../services/usage/usageTracker.js';
 
 /** 自校验（P0-A·T1）的 trace 元数据：由 reflecting / done 两个事件拼出。 */
 interface ReflectionSpanMeta {
@@ -19,7 +20,13 @@ interface ReflectionSpanMeta {
 
 export function registerAgent(app: FastifyInstance): void {
   app.post('/api/agent/ask', async (request, reply) => {
-    const { question, conversationId } = request.body as { question?: string; conversationId?: string };
+    const { question, conversationId, source } = request.body as {
+      question?: string;
+      conversationId?: string;
+      /** 分组提示（自声明，非信任边界）：eval runner 显式传 'eval'，未知值回退 web */
+      source?: string;
+    };
+    const usageSource: 'web' | 'mcp' | 'eval' = source === 'mcp' ? 'mcp' : source === 'eval' ? 'eval' : 'web';
     if (!question?.trim()) {
       return reply.code(400).send({ error: 'INVALID_PARAMS', message: '缺少 question 参数' });
     }
@@ -34,15 +41,14 @@ export function registerAgent(app: FastifyInstance): void {
     const projectId = resolveActiveProjectId();
     const memoryBlock = await retrieveMemoryBlock(projectId, q);
     let convId: string | null = null;
+    let historyConvId: string | null = null;
     let history: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
     try {
       // 归属校验（review 修复）：跨项目/失效的 conversationId 视作无效 → 新建会话
       const conv = (conversationId ? getConversationForProject(conversationId, projectId) : null) ?? createConversation(projectId, q.slice(0, 40));
       convId = conv.id;
       // P2-H：超预算历史用 LLM 摘要顶上（后台生成，当轮零延迟），短会话行为与纯截断一致
-      history = buildHistoryWindow(convId, getContextBudgets().history, (err) =>
-        app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
-      );
+      historyConvId = convId;
       appendMessage(convId, { role: 'user', content: q, mode: 'agent' });
     } catch (err) {
       app.log.error(`对话持久化(用户消息)失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -70,6 +76,23 @@ export function registerAgent(app: FastifyInstance): void {
 
     // L4 观测：agent 管线同样上报（未配置 Langfuse 时为 no-op）
     const trace = startAskTrace({ name: 'agent', question: q, projectId, conversationId: convId, repoName: currentRepoName });
+    // 成本追踪：一次 agent 请求 = 一个 turn（planner + N 轮 loop + 反思 + 后台任务全挂它）
+    const usageTracker = createUsageTracker({
+      projectId,
+      conversationId: convId,
+      pipeline: 'agent',
+      source: usageSource,
+      log: app.log,
+    });
+    // 历史窗口在 tracker 之后取：压缩是本轮触发的后台调用，成本归本轮
+    if (historyConvId) {
+      history = buildHistoryWindow(
+        historyConvId,
+        getContextBudgets().history,
+        (err) => app.log.error(`历史摘要压缩失败: ${err instanceof Error ? err.message : String(err)}`),
+        { register: () => usageTracker.registerBackground('background.history_compact') },
+      );
+    }
     const tLoop = Date.now();
 
     // 累积 agent 轨迹与最终答案，用于落库
@@ -84,6 +107,9 @@ export function registerAgent(app: FastifyInstance): void {
     const reflectionRef: { meta: ReflectionSpanMeta | null } = { meta: null };
     // P1-C：执行计划单独落 meta（不进 steps——前端按独立卡片渲染，刷新/切会话后可还原）
     let planSteps: string[] | undefined;
+    // 被拦下的内部 done：由路由在终态编排完成后统一下发（唯一一次）。
+    // 用对象持有而非裸 let——赋值只发生在 sendEvent 闭包里，裸 let 会被 TS 窄化成 never。
+    const doneRef: { event: AgentEvent | null } = { event: null };
 
     const sendEvent = (event: AgentEvent) => {
       if (event.type === 'plan') {
@@ -106,6 +132,11 @@ export function registerAgent(app: FastifyInstance): void {
           retried: event.data.reflectionRetried ?? false,
           startedAt: reflectionRef.meta?.startedAt,
         };
+        // ★ 拦下内部 done 不下发：必须先落库 message、登记后台任务、终结 turn，
+        // 再由路由发出**唯一一次**带成本汇总的 done（设计文档 §6.3/§12.2）。
+        // 否则会出现"done 已发给前端、后台任务随后才登记"的竞态，汇总永远缺一块。
+        doneRef.event = event;
+        return;
       }
       // 断连后不再写死 socket（事件仍计入 steps，供中止前已产生轨迹的落库语义不变）
       if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -119,6 +150,7 @@ export function registerAgent(app: FastifyInstance): void {
         repoPath: currentRepoPath,
         onEvent: sendEvent,
         signal: abortCtl.signal,
+        usage: { tracker: usageTracker },
         llm: {
           provider: getCurrentLlmProvider(),
           model: getCurrentLlmModel(),
@@ -149,7 +181,9 @@ export function registerAgent(app: FastifyInstance): void {
     if (abortCtl.signal.aborted) trace.error(new Error('client_cancelled'));
     trace.end({ answer: finalAnswer, evidence: finalEvidence, intent: 'AGENT', confidence: 1, answeredByLlm: true });
 
-    // 落库 assistant 消息（含 agent 轨迹）
+    // ====== 终态编排（设计文档 §6.3）：落库 → 登记后台任务 → 终结 turn → 发唯一 done ======
+    // 顺序不可调换：先发 done 会让后台任务的成本永远进不了这一轮的汇总。
+    let memoryJob: ReturnType<typeof usageTracker.registerBackground> | null = null;
     if (convId && finalAnswer) {
       try {
         appendMessage(convId, {
@@ -161,8 +195,27 @@ export function registerAgent(app: FastifyInstance): void {
       } catch (err) {
         app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`);
       }
-      // 后台沉淀记忆（fire-and-forget）
-      void generateMemoriesFromTurn(projectId, convId, q, finalAnswer);
+      // 中止后不再登记新的回答后任务（设计文档 §6.2）
+      if (!abortCtl.signal.aborted) memoryJob = usageTracker.registerBackground('background.memory_extract');
+    }
+
+    const executionStatus = abortCtl.signal.aborted ? 'aborted' : finalAnswer ? 'completed' : 'failed';
+    const usageSummary = usageTracker.finish(executionStatus);
+
+    const bufferedDone = doneRef.event;
+    if (bufferedDone && !reply.raw.writableEnded) {
+      const enriched: AgentEvent = {
+        type: 'done',
+        data: { ...bufferedDone.data, turnId: usageTracker.turnId, tokenUsageSummary: usageSummary },
+      };
+      reply.raw.write(`data: ${JSON.stringify(enriched)}\n\n`);
+    }
+
+    // 后台任务在对外 done 之后才启动：SSE 不为等待后台任务而保持连接
+    if (memoryJob && convId && finalAnswer) {
+      void generateMemoriesFromTurn(projectId, convId, q, finalAnswer, memoryJob.usageContext)
+        .then(() => memoryJob!.done())
+        .catch(() => memoryJob!.done({ status: 'failed' }));
     }
 
     reply.raw.end();

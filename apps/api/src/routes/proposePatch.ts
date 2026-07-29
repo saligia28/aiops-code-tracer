@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { currentRepoPath, currentRepoName } from '../context.js';
 import { canUseLlm, callChatCompletion } from '../services/llmService.js';
+import { createUsageTracker } from '../services/usage/usageTracker.js';
+import { resolveActiveProjectId } from '../context.js';
 import { proposePatch } from '../services/patch/proposePatch.js';
 import { applyPatch, rollbackPatch } from '../services/patch/applyPatch.js';
 import { runVerify, getVerifyCommand } from '../services/patch/verifyRunner.js';
@@ -47,6 +49,17 @@ export function registerProposePatch(app: FastifyInstance): void {
       if (!reply.raw.writableEnded) abortCtl.abort();
     });
 
+    // 成本追踪（设计文档 §11.5）：propose-patch 是无 conversation 的独立 turn。
+    // 它此前是成本黑洞——每次最多 2 次 LLM 调用，prompt 还可能塞进最多 10 个完整文件。
+    // 早退分支（参数非法/LLM 未配置）在上面已 return，不建 turn：没发起调用就不该有账。
+    const usageTracker = createUsageTracker({
+      projectId: resolveActiveProjectId(),
+      pipeline: 'patch',
+      source: (request.body as { source?: string })?.source === 'mcp' ? 'mcp' : 'web',
+      log: app.log,
+    });
+    let executionStatus: 'completed' | 'failed' | 'aborted' = 'failed';
+
     try {
       const result = await proposePatch(
         {
@@ -57,7 +70,9 @@ export function registerProposePatch(app: FastifyInstance): void {
         },
         currentRepoPath,
         {
-          llm: callChatCompletion,
+          // 每次有界重试各产生一条 patch.propose event（stageCallIndex 递增）
+          llm: (messages, signal) =>
+            callChatCompletion(messages, signal, { tracker: usageTracker, stage: 'patch.propose' }),
           now: () => new Date().toISOString(),
           newId: () => crypto.randomUUID(),
           signal: abortCtl.signal,
@@ -80,17 +95,34 @@ export function registerProposePatch(app: FastifyInstance): void {
         } catch (err) {
           app.log.error(`提案落库失败: ${err instanceof Error ? err.message : String(err)}`);
         }
+        executionStatus = 'completed';
         return {
           ok: true,
           proposal: result.proposal,
           attempts: result.attempts,
           note: '仅生成提案，未修改被分析仓库任何文件',
+          turnId: usageTracker.turnId,
+          tokenUsageSummary: usageTracker.finish('completed'),
         };
       }
-      return { ok: false, reason: result.error, detail: result.detail, attempts: result.attempts };
+      // 业务失败（打不上的 diff）也是花过钱的：照样带 turnId 与汇总
+      executionStatus = 'completed';
+      return {
+        ok: false,
+        reason: result.error,
+        detail: result.detail,
+        attempts: result.attempts,
+        turnId: usageTracker.turnId,
+        tokenUsageSummary: usageTracker.finish('completed'),
+      };
     } catch (err) {
       app.log.error(`propose-patch 失败: ${err instanceof Error ? err.message : String(err)}`);
+      executionStatus = abortCtl.signal.aborted ? 'aborted' : 'failed';
       return reply.code(500).send({ error: 'PROPOSE_FAILED', message: '提案生成失败，请稍后重试' });
+    } finally {
+      // 兜底：patch 无回答后后台任务，正常情况下响应前即已 settled；
+      // 异常/中止出口靠这里终结，finish 幂等
+      usageTracker.finish(executionStatus);
     }
   });
 

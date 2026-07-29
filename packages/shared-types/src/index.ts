@@ -373,6 +373,10 @@ export interface AgentEvent {
     evidenceCount?: number;
     /** done: 本次回答是否经历过自查重答（P0-A·T1，观测用） */
     reflectionRetried?: boolean;
+    /** done: 本轮成本追踪 id（成本追踪·阶段 3） */
+    turnId?: string;
+    /** done: 本轮成本汇总；后台任务未完成时 settled=false，前端据此轮询 */
+    tokenUsageSummary?: TurnUsageSummary;
   };
 }
 

@@ -1,5 +1,5 @@
 import type { GraphStore } from '@aiops/graph-core'
-import type { AgentEvent, LlmProvider } from '@aiops/shared-types'
+import type { AgentEvent, LlmProvider, LlmUsageStage } from '@aiops/shared-types'
 import { AGENT_MAX_TURNS, AGENT_SINGLE_LLM_TIMEOUT_MS, AGENT_TOTAL_TIMEOUT_MS } from '../context.js'
 import { executeTool, getOpenAITools } from './tools.js'
 import { callChatCompletionWithTools, type ChatMessage, type ToolDefinition } from './llmWithTools.js'
@@ -8,6 +8,7 @@ import { shouldPlan, generatePlan, renderPlanForPrompt } from './planner.js'
 import { getAgentCompressThresholds } from '../services/ask/contextBudget.js'
 import { reflectOnAnswer } from '../services/ask/reflection.js'
 import { indexToolObservations, collectAgentEvidence, type ToolObservation } from './evidenceCollector.js'
+import type { LlmUsageContext, UsageTracker } from '../services/usage/usageTracker.js'
 
 // ============================================================
 // 配置
@@ -38,6 +39,11 @@ export interface AgentLoopOptions {
    * 中止后循环静默退出（不发事件——连接已死，没有观众）。
    */
   signal?: AbortSignal
+  /**
+   * 成本追踪（阶段 3）：一次 agent 请求会打 planner + N 次 loop + 可选 final + 反思重答，
+   * 全部挂同一个 turn，靠 stage 分项。
+   */
+  usage?: { tracker: UsageTracker }
   /** LLM 配置 */
   llm: {
     provider: LlmProvider
@@ -50,6 +56,8 @@ export interface AgentLoopOptions {
 
 export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
   const { question, graphStore, repoPath, onEvent, llm, signal } = opts
+  const usageCtx = (stage: LlmUsageStage): LlmUsageContext | undefined =>
+    opts.usage ? { tracker: opts.usage.tracker, stage } : undefined
 
   if (signal?.aborted) return
 
@@ -73,6 +81,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       apiKey: llm.apiKey,
       timeoutMs: SINGLE_LLM_TIMEOUT_MS,
       signal,
+      usage: usageCtx('agent.planner'),
     })
     if (planSteps) {
       messages.splice(1, 0, { role: 'system', content: renderPlanForPrompt(planSteps) })
@@ -114,6 +123,9 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
         timeoutMs: SINGLE_LLM_TIMEOUT_MS,
         maxTokens: llm.maxTokens,
         signal,
+        // 调用前无法知道这次会不会产生工具调用，因此普通终答也归 agent.loop，
+        // 不得事后改名为 agent.final（那是 forceFinalAnswer 专用）
+        usage: usageCtx('agent.loop'),
       })
     } catch (err) {
       // 断连引发的 AbortError 不是错误，静默退出即可
@@ -210,8 +222,8 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       const allRepeat = toolResults.length > 0 && toolResults.every(r => r.isRepeat)
       stalledTurns = allRepeat ? stalledTurns + 1 : 0
       if (stalledTurns >= STALL_TURN_LIMIT) {
-        const forced = await forceFinalAnswer(messages, question, llm, onEvent, undefined, signal)
-        if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal })
+        const forced = await forceFinalAnswer(messages, question, llm, onEvent, undefined, signal, usageCtx('agent.final'))
+        if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal, usage: usageCtx('agent.reflection_retry') })
         return
       }
 
@@ -220,7 +232,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
 
     // 无工具调用 → 最终回答
     if (result.content) {
-      await finalizeAnswer({ answer: result.content, question, repoPath, observations, messages, llm, onEvent, signal })
+      await finalizeAnswer({ answer: result.content, question, repoPath, observations, messages, llm, onEvent, signal, usage: usageCtx('agent.reflection_retry') })
       return
     }
 
@@ -235,8 +247,9 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
     '【系统指令】已达到最大探索轮次。请立即停止调用任何工具，基于以上已收集的信息用中文给出最终回答：' +
     '若存在执行计划，逐条说明每一步的完成情况与结论；未完成的步骤明确标注"未完成"及原因。',
     signal,
+    usageCtx('agent.final'),
   )
-  if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal })
+  if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal, usage: usageCtx('agent.reflection_retry') })
 }
 
 /**
@@ -257,6 +270,7 @@ async function finalizeAnswer(opts: {
   llm: AgentLoopOptions['llm']
   onEvent: (event: AgentEvent) => void
   signal?: AbortSignal
+  usage?: LlmUsageContext
 }): Promise<void> {
   const { answer, question, repoPath, observations, messages, llm, onEvent, signal } = opts
   if (signal?.aborted) return
@@ -291,6 +305,7 @@ async function finalizeAnswer(opts: {
         timeoutMs: SINGLE_LLM_TIMEOUT_MS,
         maxTokens: llm.maxTokens,
         signal,
+        usage: opts.usage,
       })
       if (retry.content?.trim()) finalText = retry.content.trim()
     } catch {
@@ -350,6 +365,7 @@ async function forceFinalAnswer(
   onEvent: (event: AgentEvent) => void,
   instruction?: string,
   signal?: AbortSignal,
+  usage?: LlmUsageContext,
 ): Promise<string | null> {
   if (signal?.aborted) return null
   messages.push({
@@ -369,6 +385,7 @@ async function forceFinalAnswer(
       timeoutMs: SINGLE_LLM_TIMEOUT_MS,
       maxTokens: llm.maxTokens,
       signal,
+      usage,
     })
     return (
       finalResult.content?.trim() ||

@@ -13,6 +13,7 @@
  *     并回发 plan 更新事件（成本：每轮多一段输出，先不加）。
  */
 import type { ChatMessage } from './llmWithTools.js'
+import type { LlmUsageContext } from '../services/usage/usageTracker.js';
 import { callChatCompletionWithTools } from './llmWithTools.js'
 
 export interface PlanOptions {
@@ -23,6 +24,8 @@ export interface PlanOptions {
   timeoutMs: number
   /** 外部中止信号（客户端断连）——规划调用同样不该在断连后白跑 */
   signal?: AbortSignal
+  /** 成本追踪：规划器是一次独立 LLM 调用，单独分 stage（agent.planner） */
+  usage?: LlmUsageContext
 }
 
 /**
@@ -60,6 +63,7 @@ export async function generatePlan(question: string, llm: PlanOptions): Promise<
       apiKey: llm.apiKey,
       timeoutMs: llm.timeoutMs,
       signal: llm.signal,
+      usage: llm.usage,
     })
     const text = result.content ?? ''
     const start = text.indexOf('{')
