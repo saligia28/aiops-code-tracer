@@ -163,7 +163,8 @@ async function askServer(
     const resp = await fetch(`${API_BASE}/api/ask`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(authCookie ? { cookie: authCookie } : {}) },
-      body: JSON.stringify({ question, ...(conversationId ? { conversationId } : {}) }),
+      // source=eval：评测流量单独分组，跑一轮 K=3 的评测不会把当天的"用户交互成本"翻几倍
+      body: JSON.stringify({ question, source: 'eval', ...(conversationId ? { conversationId } : {}) }),
     });
     if (!resp.ok) return null;
     const json = (await resp.json()) as {
@@ -313,7 +314,7 @@ async function askAgent(
     const resp = await fetch(`${API_BASE}/api/agent/ask`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(authCookie ? { cookie: authCookie } : {}) },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, source: 'eval' }),
     });
     if (!resp.ok || !resp.body) return null;
     const reader = resp.body.getReader();

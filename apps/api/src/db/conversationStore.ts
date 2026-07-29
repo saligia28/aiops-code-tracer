@@ -142,6 +142,33 @@ export function deleteConversation(id: string): void {
 // 消息
 // ============================================================
 
+/**
+ * 局部更新消息 meta（成本追踪 · 阶段 4）。
+ *
+ * 必须**合并**而不是整段覆盖：meta 里已经躺着 followUp / steps / planSteps / evidenceCount，
+ * 直接写会把它们抹掉（刷新后 agent 轨迹和执行计划就没了）。
+ * 消息不存在时静默 no-op——会话可能已被删除，成本回写不该报错。
+ */
+export function updateMessageMeta(messageId: string, patch: Record<string, unknown>): void {
+  const db = getDb();
+  db.transaction(() => {
+    const row = db.prepare('SELECT meta FROM messages WHERE id = ?').get(messageId) as
+      | { meta: string | null }
+      | undefined;
+    if (!row) return;
+    let current: Record<string, unknown> = {};
+    try {
+      current = row.meta ? (JSON.parse(row.meta) as Record<string, unknown>) : {};
+    } catch {
+      current = {};
+    }
+    db.prepare('UPDATE messages SET meta = ? WHERE id = ?').run(
+      JSON.stringify({ ...current, ...patch }),
+      messageId,
+    );
+  })();
+}
+
 export function appendMessage(
   conversationId: string,
   m: { role: ChatRole; content: string; mode?: ChatMode; meta?: unknown },

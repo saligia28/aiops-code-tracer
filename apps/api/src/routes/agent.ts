@@ -4,7 +4,8 @@ import { graphStore, currentRepoPath, currentRepoName, resolveActiveProjectId, L
 import { startAskTrace } from '../services/traceService.js';
 import { agentLoop } from '../agent/index.js';
 import { getCurrentLlmProvider, getCurrentLlmModel, getCurrentLlmBaseUrl } from '../services/llmService.js';
-import { createConversation, getConversationForProject, appendMessage } from '../db/conversationStore.js';
+import { createConversation, getConversationForProject, appendMessage, updateMessageMeta } from '../db/conversationStore.js';
+import { setAssistantMessageId } from '../db/usageStore.js';
 import { buildHistoryWindow } from '../services/ask/historyCompactor.js';
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js';
 import { getContextBudgets } from '../services/ask/contextBudget.js';
@@ -187,14 +188,15 @@ export function registerAgent(app: FastifyInstance): void {
     // ====== 终态编排（设计文档 §6.3）：落库 → 登记后台任务 → 终结 turn → 发唯一 done ======
     // 顺序不可调换：先发 done 会让后台任务的成本永远进不了这一轮的汇总。
     let memoryJob: ReturnType<typeof usageTracker.registerBackground> | null = null;
+    let assistantMessageId: string | null = null;
     if (convId && finalAnswer) {
       try {
-        appendMessage(convId, {
+        assistantMessageId = appendMessage(convId, {
           role: 'assistant',
           content: finalAnswer,
           mode: 'agent',
           meta: { followUp: finalFollowUp, steps, ...(planSteps ? { planSteps } : {}) },
-        });
+        }).id;
       } catch (err) {
         app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -204,6 +206,15 @@ export function registerAgent(app: FastifyInstance): void {
 
     const executionStatus = abortCtl.signal.aborted ? 'aborted' : finalAnswer ? 'completed' : 'failed';
     const usageSummary = usageTracker.finish(executionStatus);
+    // 刷新会话后成本摘要仍在（meta 用 patch 合并，不覆盖 followUp/steps/planSteps）
+    if (assistantMessageId) {
+      try {
+        setAssistantMessageId(usageTracker.turnId, assistantMessageId);
+        updateMessageMeta(assistantMessageId, { tokenUsageSummary: usageSummary });
+      } catch (err) {
+        app.log.warn(`成本汇总回写失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     const bufferedDone = doneRef.event;
     if (bufferedDone && !reply.raw.writableEnded) {

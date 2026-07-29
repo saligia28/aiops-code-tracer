@@ -289,6 +289,15 @@
                     <span>耗时 {{ turn.elapsed }}s</span>
                   </div>
 
+                  <!-- 本轮 Token 成本（成本追踪·阶段 4）：默认只有一行摘要，点开才拉明细 -->
+                  <TokenUsagePanel
+                    v-if="turn.tokenUsageSummary && !turn.loading"
+                    :summary="turn.tokenUsageSummary"
+                    :events="turn.tokenUsageEvents"
+                    :loading="usageLoading[turn.tokenUsageSummary.turnId]"
+                    @expand="loadUsageDetail(turn)"
+                  />
+
                   <!-- 追问建议 TODO:暂时也不要这个模块功能，后续打磨后开放-->
                   <!-- <div v-if="turn.followUp?.length && !turn.loading" class="followup-area">
                         <div class="followup-label">相关问题</div>
@@ -337,7 +346,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed, nextTick, onMounted, reactive } from 'vue'
+import { ref, watch, computed, nextTick, onMounted, onUnmounted, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Marked } from 'marked'
@@ -348,6 +357,8 @@ import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useProject } from '@/composables/useProject'
 import { useConversation, relativeTime, type Conversation, type Memory } from '@/composables/useConversation'
 import { consumePendingQuestion } from '@/composables/usePendingQuestion'
+import TokenUsagePanel from '@/components/TokenUsagePanel.vue'
+import { useTokenUsage, type TokenUsageEvent, type TurnUsageSummary } from '@/composables/useTokenUsage'
 
 const { currentRepo } = useCurrentRepo()
 const { currentProjectId } = useProject()
@@ -388,6 +399,10 @@ interface ConversationTurn {
   stepsCollapsed?: boolean
   /** Agent 执行计划（P1-C plan 事件），一次性下发的步骤清单 */
   planSteps?: string[]
+  /** 本轮成本汇总（成本追踪·阶段 4） */
+  tokenUsageSummary?: TurnUsageSummary
+  /** 展开后按需拉取的调用明细 */
+  tokenUsageEvents?: TokenUsageEvent[]
   // 系统分隔消息
   isSystemDivider?: boolean
   systemText?: string
@@ -538,6 +553,33 @@ const marked = new Marked({
   },
 })
 
+const { events: usageEvents, loading: usageLoading, fetchDetail, startPolling, stopAll: stopUsagePolling } = useTokenUsage()
+
+/**
+ * 从 done 帧接住本轮成本。未结算（还有后台任务在跑）时启动轮询，
+ * 结算后自动停；30 秒仍未结算就停下等用户刷新，不无限占着请求。
+ */
+function captureUsage(turn: ConversationTurn, data: Record<string, unknown>): void {
+  const summary = data.tokenUsageSummary as TurnUsageSummary | undefined
+  if (!summary) return
+  turn.tokenUsageSummary = summary
+  if (!summary.settled) {
+    startPolling(summary.turnId, (fresh) => {
+      turn.tokenUsageSummary = fresh
+      turn.tokenUsageEvents = usageEvents.value[fresh.turnId]
+    })
+  }
+}
+
+/** 展开时才拉明细：一轮 agent 可能几十条 event，没必要每次问答都传 */
+async function loadUsageDetail(turn: ConversationTurn): Promise<void> {
+  const turnId = turn.tokenUsageSummary?.turnId
+  if (!turnId || turn.tokenUsageEvents?.length) return
+  const summary = await fetchDetail(turnId)
+  turn.tokenUsageEvents = usageEvents.value[turnId] ?? []
+  if (summary) turn.tokenUsageSummary = summary
+}
+
 function renderMarkdown(text: string): string {
   if (!text) return ''
   return marked.parse(text) as string
@@ -629,6 +671,7 @@ async function fetchAnswer(q: string) {
               turn.answer = (event.data.answer as string) || turn.answer || '未能生成回答'
               turn.renderedAnswer = renderMarkdown(turn.answer)
               turn.followUp = (event.data.followUp as string[]) || []
+              captureUsage(turn, event.data)
               if (event.data.conversationId) {
                 setActiveConversation(event.data.conversationId as string)
                 syncConversationList(event.data.conversationId as string)
@@ -777,6 +820,7 @@ async function fetchAgentAnswer(q: string) {
               turn.renderedAnswer = renderMarkdown(turn.answer)
               turn.followUp = (event.data.followUp as string[]) || []
               turn.stepsCollapsed = true
+              captureUsage(turn, event.data)
               break
 
             case 'error':
@@ -895,6 +939,11 @@ onMounted(async () => {
   await scrollToBottom()
   inputRef.value?.focus()
 })
+// 组件卸载时停掉所有成本轮询，避免离开页面后仍在后台空转
+onUnmounted(() => {
+  stopUsagePolling()
+})
+
 </script>
 
 <!-- scoped 样式外置到 ./AnswerView.styles.css（保留 scoped 语义，含 :deep() 穿透 v-html 渲染的 markdown） -->

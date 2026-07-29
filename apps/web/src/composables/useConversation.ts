@@ -1,4 +1,5 @@
 import { ref } from 'vue';
+import type { TokenUsageEvent, TurnUsageSummary } from './useTokenUsage';
 import http from '@/lib/http';
 
 // 后端契约类型（来自 @aiops/shared-types，但 web 暂未接入该别名，就地写最小 interface 以能 typecheck）。
@@ -62,6 +63,10 @@ export interface ConversationTurn {
   steps?: AgentStep[];
   stepsCollapsed?: boolean;
   planSteps?: string[];
+  /** 本轮成本汇总（成本追踪·阶段 4）：SSE done 带来，或刷新时从 message meta 还原 */
+  tokenUsageSummary?: TurnUsageSummary;
+  /** 展开后按需拉取的调用明细 */
+  tokenUsageEvents?: TokenUsageEvent[];
   isSystemDivider?: boolean;
   systemText?: string;
 }
@@ -138,6 +143,10 @@ function messagesToTurns(
       }
       if (meta.planSteps !== undefined) {
         target.planSteps = meta.planSteps as string[];
+      }
+      // 刷新/切会话后仍能看到本轮花了多少钱（设计文档 §18.8）
+      if (meta.tokenUsageSummary !== undefined) {
+        target.tokenUsageSummary = meta.tokenUsageSummary as TurnUsageSummary;
       }
       if (meta.aborted !== undefined) {
         target.aborted = meta.aborted as boolean;

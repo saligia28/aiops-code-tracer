@@ -9,7 +9,8 @@ import { sanitizeRetrievedText, sanitizeAskResponseForMachine } from '../service
 import { getContextBudgets } from '../services/ask/contextBudget.js'
 import { callChatCompletion, callChatCompletionStream, canUseLlm } from '../services/llmService.js'
 import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
-import { createConversation, getConversationForProject, appendMessage } from '../db/conversationStore.js'
+import { createConversation, getConversationForProject, appendMessage, updateMessageMeta } from '../db/conversationStore.js'
+import { setAssistantMessageId } from '../db/usageStore.js'
 import { buildHistoryWindow, contextualizeQuestion, SUMMARY_PREFIX } from '../services/ask/historyCompactor.js'
 import { retrieveMemoryBlock, generateMemoriesFromTurn } from '../services/memoryService.js'
 import { createUsageTracker } from '../services/usage/usageTracker.js'
@@ -195,16 +196,18 @@ export function registerAsk(app: FastifyInstance): void {
       // 任务入口（P1-MCP·additive）：anchor/startNode 在下方逐步定位后回填此闭包变量，
       // finalizeResponse 单漏斗下发（快速路径拿 anchor 级、主路径拿 startNode 级，覆盖所有出口）。
       let entryHint: AskResponse['entry'] | undefined
+      // assistant 消息 id：结算后要回写成本汇总到它的 meta
+      let assistantMessageId: string | null = null
       // 返回 undefined = SSE 模式已用 done 帧收尾（handler 不再返回 JSON）
       const finalizeResponse = (resp: AskResponse, extractMemory = false): AskResponse | undefined => {
         if (convId) {
           try {
-            appendMessage(convId, {
+            assistantMessageId = appendMessage(convId, {
               role: 'assistant',
               content: resp.answer,
               mode: 'rag',
               meta: { followUp: resp.followUp, intent: resp.intent, confidence: resp.confidence, evidenceCount: resp.evidence.length, ...(fromMcp ? { source: 'mcp' } : {}) },
-            })
+            }).id
           } catch (err) {
             app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`)
           }
@@ -231,6 +234,16 @@ export function registerAsk(app: FastifyInstance): void {
         if (usageTracker) {
           resp.turnId = usageTracker.turnId
           resp.tokenUsageSummary = usageTracker.finish('completed')
+          // 回写 message meta：刷新会话后仍能看到本轮花了多少钱（设计文档 §18.8）。
+          // 用 patch 合并——meta 里还有 followUp/intent/evidenceCount，整段覆盖会把它们抹掉。
+          if (assistantMessageId) {
+            try {
+              setAssistantMessageId(usageTracker.turnId, assistantMessageId)
+              updateMessageMeta(assistantMessageId, { tokenUsageSummary: resp.tokenUsageSummary })
+            } catch (err) {
+              app.log.warn(`成本汇总回写失败（不影响本次响应）: ${err instanceof Error ? err.message : String(err)}`)
+            }
+          }
         }
         // 机器消费端出口清洗（review 修复，逻辑与边界见 sanitizeAskResponseForMachine 注释）。
         // 必须在落库/trace 之后：入库与观测保留原文；web 通道不动（引用核对要与源码逐字匹配）。

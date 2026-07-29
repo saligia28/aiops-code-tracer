@@ -132,3 +132,25 @@ describe('Ask 路由 · 成本归属', () => {
     expect(s.settlementStatus).not.toBe('collecting');
   });
 });
+
+describe('刷新恢复：成本汇总落进 message meta', () => {
+  it('assistant 消息 meta 带 tokenUsageSummary，且不覆盖既有字段', async () => {
+    const { getConversationWithMessages } = await import('../src/db/conversationStore.ts');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/ask',
+      payload: { question: '订单作废按钮点击后做了什么？' },
+    });
+    const body = res.json() as { conversationId?: string; turnId?: string };
+    expect(body.conversationId).toBeTruthy();
+
+    const conv = getConversationWithMessages(body.conversationId!)!;
+    const assistant = conv.messages.filter((m) => m.role === 'assistant').at(-1)!;
+    const meta = assistant.meta as Record<string, unknown>;
+
+    expect((meta.tokenUsageSummary as { turnId: string }).turnId).toBe(body.turnId);
+    // patch 合并：followUp/intent 这些原有字段必须还在（整段覆盖会让刷新后轨迹丢失）
+    expect(meta.followUp).toBeDefined();
+    expect(meta.intent).toBeDefined();
+  });
+});
