@@ -428,3 +428,166 @@ export interface Memory {
   content: string;
   createdAt: number;
 }
+
+// ============================================================
+// LLM Token 成本追踪（见 docs/superpowers/specs/2026-07-29-token-cost-tracking-design.md）
+// ============================================================
+
+/**
+ * 一次调用的 Token 用量。全部可选：供应商可能不返回、也可能只返回一部分，
+ * 缺失与 0 是两个意思——缺失时字段不存在，不要用 0 冒充。
+ */
+export interface LlmTokenUsage {
+  promptTokens?: number;
+  /** DeepSeek 上下文缓存命中的输入 token（单价远低于未命中） */
+  cacheHitTokens?: number;
+  cacheMissTokens?: number;
+  completionTokens?: number;
+  /** 思考模型的推理 token，是 completion 的子集，只做诊断展示、不二次计费 */
+  reasoningTokens?: number;
+  totalTokens?: number;
+}
+
+/** provider=供应商原样返回；estimated=缺缓存拆分等推算出的保守上界；missing=完全没拿到 */
+export type UsageSource = 'provider' | 'estimated' | 'missing';
+
+export type TransportStatus = 'success' | 'error' | 'aborted';
+
+/** 一次 turn 属于哪条管线 */
+export type LlmPipeline = 'ask' | 'agent' | 'patch' | 'eval';
+
+/**
+ * 请求来源。注意这是调用方**自声明**的分组提示，不是信任边界
+ * （任何客户端都能传 eval 把自己摘出统计），详见设计文档 §12.1。
+ */
+export type LlmRequestSource = 'web' | 'mcp' | 'eval';
+
+/** 价格是怎么匹配上的——别名匹配的可信度低于精确匹配，UI 要能区分 */
+export type PricingMatchKind = 'exact_model' | 'official_alias' | 'custom_override';
+
+/** 供应商 usage 自相矛盾时的告警。保留原值不改写，只记录矛盾 */
+export type UsageValidationWarning =
+  | 'prompt_cache_mismatch'
+  | 'total_token_mismatch'
+  | 'reasoning_exceeds_completion';
+
+/** 调用发生时的价格快照——未来调价不重算历史金额 */
+export interface LlmPricingSnapshot {
+  currency: 'CNY';
+  canonicalModel: string;
+  inputCacheHitNanoCnyPerToken: number;
+  inputCacheMissNanoCnyPerToken: number;
+  outputNanoCnyPerToken: number;
+  matchKind: PricingMatchKind;
+  /** 该模型是否支持 prompt 缓存——决定 UI 是否展示命中率 */
+  supportsPromptCache: boolean;
+  catalogVersion: string;
+  sourceUrl: string;
+  verifiedAt: string;
+}
+
+export type LlmUsageStage =
+  | 'ask.intent'
+  | 'ask.question_plan'
+  | 'ask.answer_complex'
+  | 'ask.answer_complex_fallback'
+  | 'ask.answer_simple'
+  | 'ask.answer_simple_fallback'
+  | 'ask.reflection'
+  | 'ask.reflection_retry'
+  | 'agent.planner'
+  | 'agent.loop'
+  | 'agent.reflection'
+  | 'agent.reflection_retry'
+  | 'agent.final'
+  | 'patch.propose'
+  | 'eval.judge'
+  | 'background.memory_extract'
+  | 'background.history_compact'
+  | 'background.trace_judge';
+
+export type LlmErrorKind =
+  | 'timeout'
+  | 'http_4xx'
+  | 'http_5xx'
+  | 'aborted'
+  | 'network'
+  /** 流式已开始但末帧未到（usage 拿不到，token 却已真实消耗） */
+  | 'stream_incomplete'
+  | 'unknown';
+
+/** 一次 LLM 调用的成本事实。usage 表不保存 prompt/回答/工具结果/密钥 */
+export interface LlmCallUsage {
+  id: string;
+  turnId: string;
+  stage: LlmUsageStage;
+  /** 同一 stage 内的第几次调用，从 0 开始 */
+  stageCallIndex: number;
+  provider: LlmProvider;
+  model: string;
+  canonicalModel: string;
+  transportStatus: TransportStatus;
+  usageSource: UsageSource;
+  deliveryMode: 'stream' | 'non_stream';
+  validationWarnings: UsageValidationWarning[];
+  tokens: LlmTokenUsage;
+  pricing?: LlmPricingSnapshot;
+  cacheHitCostNanoCny?: number;
+  cacheMissCostNanoCny?: number;
+  outputCostNanoCny?: number;
+  totalCostNanoCny?: number;
+  latencyMs: number;
+  errorKind?: LlmErrorKind;
+  createdAt: number;
+}
+
+export type TurnExecutionStatus = 'running' | 'completed' | 'failed' | 'aborted';
+export type TurnSettlementStatus = 'collecting' | 'pending' | 'settled';
+
+/**
+ * 成本不完整的受控原因。三个"不完整计数"语义互不重叠：
+ * tracking_write_failed=写库失败；late_event_dropped=turn 已结算后才回来；
+ * settlement_timeout=job 句柄被 watchdog 释放。
+ */
+export type TurnPartialReason =
+  | 'usage_missing'
+  | 'pricing_unknown'
+  | 'provider_usage_inconsistent'
+  | 'tracking_write_failed'
+  | 'background_failed'
+  | 'settlement_timeout'
+  | 'late_event_dropped'
+  | 'process_interrupted';
+
+/** 一轮的成本汇总（落 assistant message meta，供刷新恢复） */
+export interface TurnUsageSummary {
+  turnId: string;
+  executionStatus: TurnExecutionStatus;
+  settlementStatus: TurnSettlementStatus;
+  settled: boolean;
+  partial: boolean;
+  partialReasons: TurnPartialReason[];
+  callCount: number;
+  successCallCount: number;
+  errorCallCount: number;
+  abortedCallCount: number;
+  usageMissingCalls: number;
+  usageWarningCalls: number;
+  unknownPricingCalls: number;
+  /** 写库失败而丢掉的调用数 */
+  droppedUsageRecords: number;
+  /** turn 已 settled 之后才回来、被拒收的调用数 */
+  lateDroppedEvents: number;
+  backgroundFailedJobs: number;
+  backgroundTimedOutJobs: number;
+  promptTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  /** 仅在全部调用同一 canonical 模型且该模型支持缓存时有值 */
+  cacheHitRate?: number;
+  knownCostNanoCny: number;
+  updatedAt: number;
+}
