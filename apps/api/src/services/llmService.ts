@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from 'fastify';
 import type {
+  LlmCallUsage,
   LlmOption,
   LlmProvider,
   LlmRuntimeConfig,
@@ -19,6 +20,8 @@ import {
   getDefaultApiBaseUrl,
 } from '../context.js';
 import { stripLoneSurrogates } from '../textSafety.js';
+import { recordViaContext, type LlmUsageContext } from './usage/usageTracker.js';
+import type { RawProviderUsage } from './usage/normalizeUsage.js';
 
 let _log: FastifyBaseLogger | undefined;
 
@@ -186,6 +189,60 @@ export interface LlmCallMeta {
 
 let lastCallMeta: LlmCallMeta | null = null;
 
+/**
+ * 把一次真实供应商调用上报给 UsageTracker（成本追踪 · 阶段 3）。
+ * 记在**最低层**：这样 intranet→api 的降级发生后，记的是真正花钱的那个 model/provider，
+ * 而不是调用方以为在用的那个。
+ */
+function reportUsage(
+  ctx: LlmUsageContext | undefined,
+  args: {
+    provider: LlmProvider;
+    model: string;
+    baseUrl?: string;
+    startedAt: number;
+    transportStatus: 'success' | 'error' | 'aborted';
+    deliveryMode: 'stream' | 'non_stream';
+    rawUsage?: RawProviderUsage | null;
+    errorKind?: LlmCallUsage['errorKind'];
+    promptChars?: number;
+    outputChars?: number;
+  },
+): void {
+  if (!ctx) return;
+  recordViaContext(ctx, {
+    provider: args.provider,
+    model: args.model,
+    baseUrl: args.baseUrl,
+    transportStatus: args.transportStatus,
+    deliveryMode: args.deliveryMode,
+    rawUsage: args.rawUsage ?? null,
+    latencyMs: Date.now() - args.startedAt,
+    errorKind: args.errorKind,
+    ephemeral: { promptChars: args.promptChars, outputChars: args.outputChars },
+  });
+}
+
+/** HTTP 状态码 → 受控错误类别（usage 表只存枚举，不存响应原文） */
+function httpErrorKind(status: number): LlmCallUsage['errorKind'] {
+  if (status >= 500) return 'http_5xx';
+  if (status >= 400) return 'http_4xx';
+  return 'unknown';
+}
+
+/** 异常 → 受控错误类别。外部 signal 已 abort 记 aborted，否则超时/网络 */
+function exceptionErrorKind(err: unknown, externalAborted: boolean): LlmCallUsage['errorKind'] {
+  if (externalAborted) return 'aborted';
+  const name = (err as { name?: string })?.name ?? '';
+  if (name === 'AbortError' || name === 'TimeoutError') return 'timeout';
+  if (err instanceof TypeError) return 'network';
+  return 'unknown';
+}
+
+function charsOf(messages: Array<{ content: string }>): number {
+  return messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
+}
+
 export function getLastLlmCallMeta(): LlmCallMeta | null {
   return lastCallMeta;
 }
@@ -195,8 +252,11 @@ export async function callApiCompatibleChatCompletion(
   provider: LlmProvider,
   model: string,
   baseUrl: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  usage?: LlmUsageContext,
 ): Promise<string | null> {
+  const startedAt = Date.now();
+  const effectiveBaseUrl = baseUrl || getDefaultApiBaseUrl(provider);
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (LLM_API_KEY) {
     headers.authorization = `Bearer ${LLM_API_KEY}`;
@@ -212,7 +272,7 @@ export async function callApiCompatibleChatCompletion(
   else signal?.addEventListener('abort', onExternalAbort);
 
   try {
-    const resp = await fetch(resolveChatCompletionUrl(baseUrl || getDefaultApiBaseUrl(provider)), {
+    const resp = await fetch(resolveChatCompletionUrl(effectiveBaseUrl), {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -227,12 +287,17 @@ export async function callApiCompatibleChatCompletion(
 
     if (!resp.ok) {
       _log?.warn(`LLM API 调用失败: ${resp.status} ${resp.statusText}`);
+      reportUsage(usage, {
+        provider, model, baseUrl: effectiveBaseUrl, startedAt,
+        transportStatus: 'error', deliveryMode: 'non_stream',
+        errorKind: httpErrorKind(resp.status), promptChars: charsOf(messages),
+      });
       return null;
     }
 
     const json = await resp.json() as {
       choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      usage?: RawProviderUsage;
     };
     lastCallMeta = {
       model,
@@ -241,14 +306,24 @@ export async function callApiCompatibleChatCompletion(
       totalTokens: json.usage?.total_tokens,
     };
     const rawContent = json.choices?.[0]?.message?.content;
-    if (typeof rawContent === 'string') return rawContent.trim();
-    if (Array.isArray(rawContent)) {
-      const text = rawContent.map((item) => item?.text ?? '').join('').trim();
-      return text || null;
-    }
-    return null;
+    const text = typeof rawContent === 'string'
+      ? rawContent.trim()
+      : Array.isArray(rawContent)
+        ? rawContent.map((item) => item?.text ?? '').join('').trim()
+        : '';
+    reportUsage(usage, {
+      provider, model, baseUrl: effectiveBaseUrl, startedAt,
+      transportStatus: 'success', deliveryMode: 'non_stream', rawUsage: json.usage,
+      promptChars: charsOf(messages), outputChars: text.length,
+    });
+    return text || null;
   } catch (err) {
     _log?.warn(`LLM API 调用异常: ${err instanceof Error ? err.message : String(err)}`);
+    reportUsage(usage, {
+      provider, model, baseUrl: effectiveBaseUrl, startedAt,
+      transportStatus: signal?.aborted ? 'aborted' : 'error', deliveryMode: 'non_stream',
+      errorKind: exceptionErrorKind(err, Boolean(signal?.aborted)), promptChars: charsOf(messages),
+    });
     return null;
   } finally {
     clearTimeout(timer);
@@ -258,11 +333,13 @@ export async function callApiCompatibleChatCompletion(
 
 export async function callOllamaChatCompletion(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  usage?: LlmUsageContext,
 ): Promise<string | null> {
   const baseUrl = INTRANET_OLLAMA_BASE_URL;
   const model = getCurrentLlmModel();
   if (!baseUrl || !model) return null;
+  const startedAt = Date.now();
 
   const timeout = Number.isFinite(INTRANET_OLLAMA_TIMEOUT_MS) && INTRANET_OLLAMA_TIMEOUT_MS > 0 ? INTRANET_OLLAMA_TIMEOUT_MS : 120000;
   const controller = new AbortController();
@@ -287,6 +364,11 @@ export async function callOllamaChatCompletion(
 
     if (!resp.ok) {
       _log?.warn(`内网 Ollama 调用失败: ${resp.status} ${resp.statusText}`);
+      reportUsage(usage, {
+        provider: 'ollama', model, baseUrl, startedAt,
+        transportStatus: 'error', deliveryMode: 'non_stream',
+        errorKind: httpErrorKind(resp.status), promptChars: charsOf(messages),
+      });
       return null;
     }
 
@@ -301,9 +383,21 @@ export async function callOllamaChatCompletion(
       completionTokens: json.eval_count,
       totalTokens: (json.prompt_eval_count ?? 0) + (json.eval_count ?? 0) || undefined,
     };
-    return json.message?.content?.trim() || null;
+    const text = json.message?.content?.trim() || '';
+    reportUsage(usage, {
+      provider: 'ollama', model, baseUrl, startedAt,
+      transportStatus: 'success', deliveryMode: 'non_stream',
+      rawUsage: { prompt_eval_count: json.prompt_eval_count, eval_count: json.eval_count },
+      promptChars: charsOf(messages), outputChars: text.length,
+    });
+    return text || null;
   } catch (err) {
     _log?.warn(`内网 Ollama 调用异常: ${err instanceof Error ? err.message : String(err)}`);
+    reportUsage(usage, {
+      provider: 'ollama', model, baseUrl, startedAt,
+      transportStatus: signal?.aborted ? 'aborted' : 'error', deliveryMode: 'non_stream',
+      errorKind: exceptionErrorKind(err, Boolean(signal?.aborted)), promptChars: charsOf(messages),
+    });
     return null;
   } finally {
     clearTimeout(timer);
@@ -326,7 +420,11 @@ export async function callChatCompletionStream(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   onDelta: (delta: string) => void,
   signal?: AbortSignal,
+  usage?: LlmUsageContext,
 ): Promise<{ text: string; aborted: boolean } | null> {
+  const startedAt = Date.now();
+  // 末帧 usage 是否到手——没到手说明 token 已真实消耗但拿不到数（errorKind=stream_incomplete）
+  let streamUsage: RawProviderUsage | null = null;
   if (!canUseLlm()) return null;
   // intranet 模式：ollama 流式协议未接（见头注 TODO），但若配了 API 兜底则直接用 API 流式——
   // 与非流式路径的降级终点保持一致（intranet 失败 → api）。纯内网无 API key 才返回 null。
@@ -392,6 +490,7 @@ export async function callChatCompletionStream(
           }
           // usage 只出现在最后一个 chunk（choices 为空数组）
           if (chunk.usage) {
+            streamUsage = chunk.usage as RawProviderUsage;
             lastCallMeta = {
               model,
               promptTokens: chunk.usage.prompt_tokens,
@@ -404,25 +503,51 @@ export async function callChatCompletionStream(
         }
       }
     }
+    reportUsage(usage, {
+      provider: llmRuntimeState.apiProvider, model, baseUrl, startedAt,
+      // 流式跑完但末帧 usage 没到：token 真花了、数拿不到，标 missing + stream_incomplete
+      transportStatus: streamUsage ? 'success' : 'error',
+      deliveryMode: 'stream', rawUsage: streamUsage,
+      errorKind: streamUsage ? undefined : 'stream_incomplete',
+      promptChars: charsOf(messages), outputChars: text.length,
+    });
     return { text, aborted: false };
   } catch (err) {
     // 用户中止：返回已累积的部分文本，不算错误
-    if (signal?.aborted) return { text, aborted: true };
+    if (signal?.aborted) {
+      reportUsage(usage, {
+        provider: llmRuntimeState.apiProvider, model, baseUrl, startedAt,
+        transportStatus: 'aborted', deliveryMode: 'stream', rawUsage: streamUsage,
+        errorKind: 'aborted', promptChars: charsOf(messages), outputChars: text.length,
+      });
+      return { text, aborted: true };
+    }
     _log?.warn(`LLM 流式调用异常: ${err instanceof Error ? err.message : String(err)}`);
+    reportUsage(usage, {
+      provider: llmRuntimeState.apiProvider, model, baseUrl, startedAt,
+      transportStatus: 'error', deliveryMode: 'stream', rawUsage: streamUsage,
+      errorKind: streamUsage ? exceptionErrorKind(err, false) : 'stream_incomplete',
+      promptChars: charsOf(messages), outputChars: text.length,
+    });
     return null;
   } finally {
     clearTimeout(timer);
   }
 }
 
+/**
+ * @param usage 成本追踪上下文（可选）。注意 intranet→api 降级时**两次调用各自上报**：
+ * 内网那次真的发生过（失败也可能已消耗 token），不能只记最后成功的那次。
+ */
 export async function callChatCompletion(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  usage?: LlmUsageContext,
 ): Promise<string | null> {
   if (!canUseLlm()) return null;
   if (signal?.aborted) return null;
   if (llmRuntimeState.mode === 'intranet') {
-    const ollamaResult = await callOllamaChatCompletion(messages, signal);
+    const ollamaResult = await callOllamaChatCompletion(messages, signal, usage);
     if (ollamaResult) return ollamaResult;
     if (signal?.aborted) return null;
     if (canUseApiLlm()) {
@@ -433,7 +558,8 @@ export async function callChatCompletion(
         llmRuntimeState.apiProvider,
         llmRuntimeState.apiModel || DEFAULT_API_MODEL,
         llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL,
-        signal
+        signal,
+        usage,
       );
     }
     return null;
@@ -443,6 +569,7 @@ export async function callChatCompletion(
     llmRuntimeState.apiProvider,
     getCurrentLlmModel(),
     llmRuntimeState.apiBaseUrl || DEFAULT_API_BASE_URL,
-    signal
+    signal,
+    usage,
   );
 }

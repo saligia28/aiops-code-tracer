@@ -1,5 +1,7 @@
-import type { LlmProvider } from '@aiops/shared-types';
+import type { LlmCallUsage, LlmProvider } from '@aiops/shared-types';
 import { stripLoneSurrogates } from '../textSafety.js';
+import { recordViaContext, type LlmUsageContext } from '../services/usage/usageTracker.js';
+import type { RawProviderUsage } from '../services/usage/normalizeUsage.js';
 
 // ============================================================
 // 消息类型（支持 tool calling）
@@ -62,10 +64,29 @@ export async function callChatCompletionWithTools(
     maxTokens?: number;
     /** 外部中止信号（客户端断连）——与内部超时先到先杀（P1-D 遗留④：agent 管线 abort 贯穿） */
     signal?: AbortSignal;
+    /** 成本追踪上下文（阶段 3）。agent 一轮会打很多次，靠 stage + stageCallIndex 分项 */
+    usage?: LlmUsageContext;
   },
 ): Promise<ChatCompletionResult> {
-  const { provider, model, baseUrl, apiKey, timeoutMs = 60000, maxTokens = 4096, signal } = opts;
+  const { provider, model, baseUrl, apiKey, timeoutMs = 60000, maxTokens = 4096, signal, usage } = opts;
   const isOllama = provider === 'ollama' || provider === 'local';
+  const startedAt = Date.now();
+  const promptChars = messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
+
+  /** agent 侧的 usage 上报出口。工具轮和最终答案都走这里，只是 stage 不同 */
+  const report = (
+    transportStatus: 'success' | 'error' | 'aborted',
+    rawUsage: RawProviderUsage | null,
+    extra?: { errorKind?: LlmCallUsage['errorKind']; outputChars?: number },
+  ): void => {
+    recordViaContext(usage, {
+      provider, model, baseUrl,
+      transportStatus, deliveryMode: 'non_stream', rawUsage,
+      latencyMs: Date.now() - startedAt,
+      errorKind: extra?.errorKind,
+      ephemeral: { promptChars, outputChars: extra?.outputChars },
+    });
+  };
 
   const url = resolveChatCompletionUrl(baseUrl);
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -88,6 +109,8 @@ export async function callChatCompletionWithTools(
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
+      // 先记账再抛：这次调用真的发生过，失败也要留下痕迹（错误原文不入库，只留状态码类别）
+      report('error', null, { errorKind: resp.status >= 500 ? 'http_5xx' : 'http_4xx' });
       throw new Error(`LLM API ${resp.status}: ${text.slice(0, 200)}`);
     }
 
@@ -105,7 +128,17 @@ export async function callChatCompletionWithTools(
       }>;
       // Ollama 原生格式
       message?: { content?: string };
+      usage?: RawProviderUsage;
+      prompt_eval_count?: number;
+      eval_count?: number;
     };
+
+    // Ollama 原生响应把 token 数放在顶层，OpenAI 兼容放在 usage 里
+    const rawUsage: RawProviderUsage | null =
+      json.usage ??
+      (json.prompt_eval_count !== undefined || json.eval_count !== undefined
+        ? { prompt_eval_count: json.prompt_eval_count, eval_count: json.eval_count }
+        : null);
 
     // OpenAI 格式
     const choice = json.choices?.[0]?.message;
@@ -116,8 +149,10 @@ export async function callChatCompletionWithTools(
         arguments: tc.function.arguments,
       })) ?? null;
 
+      const content = typeof choice.content === 'string' ? choice.content : null;
+      report('success', rawUsage, { outputChars: content?.length });
       return {
-        content: typeof choice.content === 'string' ? choice.content : null,
+        content,
         toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : null,
         reasoningContent: typeof choice.reasoning_content === 'string' ? choice.reasoning_content : null,
       };
@@ -128,14 +163,27 @@ export async function callChatCompletionWithTools(
     if (ollamaContent && isOllama && tools.length > 0) {
       // 尝试从文本中解析工具调用
       const parsed = parseToolCallsFromText(ollamaContent);
-      if (parsed) return parsed;
+      if (parsed) {
+        report('success', rawUsage, { outputChars: ollamaContent.length });
+        return parsed;
+      }
     }
 
+    report('success', rawUsage, { outputChars: ollamaContent?.length });
     return {
       content: typeof ollamaContent === 'string' ? ollamaContent : null,
       toolCalls: null,
       reasoningContent: null,
     };
+  } catch (err) {
+    // 抛给上层前先记账：超时/断连/网络错误都是"真的发起过"的调用。
+    // resp.ok 分支已自行记过账，这里靠 errorKind 区分，不会重复——那条抛出的 Error 不是 AbortError。
+    if (!(err instanceof Error) || !err.message.startsWith('LLM API ')) {
+      report(signal?.aborted ? 'aborted' : 'error', null, {
+        errorKind: signal?.aborted ? 'aborted' : (err as { name?: string })?.name === 'AbortError' ? 'timeout' : 'network',
+      });
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onExternalAbort);
