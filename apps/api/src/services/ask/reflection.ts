@@ -17,6 +17,7 @@
 import type { Evidence } from '@aiops/shared-types';
 import { citationAccuracy } from '../citationCheck.js';
 import { judgeAnswer } from '../answerJudge.js';
+import type { LlmUsageContext } from '../usage/usageTracker.js';
 
 /** L1 引用准确率低于该值触发重试。1=每条引用都必须核实；0=关闭 L1。 */
 const CITATION_MIN = Math.max(0, Math.min(1, Number(process.env.REFLECT_CITATION_MIN || '0.8')));
@@ -82,6 +83,11 @@ export async function reflectOnAnswer(input: {
    *     file:line 引用归零）。所以必须显式要求「保留引用、只降级行号」。
    */
   pipeline?: 'ask' | 'agent';
+  /**
+   * 成本追踪：L2 judge 是一次真实 LLM 调用（可能走独立 judge 模型），透传给 judgeAnswer 记账。
+   * 不传则 judge 调用不入账——REFLECT_JUDGE=1 时调用方必须给（ask.reflection / agent.reflection）。
+   */
+  usage?: LlmUsageContext;
 }): Promise<ReflectionResult> {
   const meta: ReflectionResult['meta'] = { citationAccuracy: null, judgeFaithful: null };
 
@@ -110,7 +116,7 @@ export async function reflectOnAnswer(input: {
   // ---- L2：judge 忠实度（LLM，一票，显式开启才跑）----
   if (JUDGE_ENABLED) {
     try {
-      const judged = await judgeAnswer({ question: input.question, answer: input.answer, evidence: input.evidence, codeContext: input.codeContext }, 1);
+      const judged = await judgeAnswer({ question: input.question, answer: input.answer, evidence: input.evidence, codeContext: input.codeContext }, 1, input.usage);
       if (judged) {
         meta.judgeFaithful = judged.verdict.faithful;
         if (!judged.verdict.faithful) {

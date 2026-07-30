@@ -642,6 +642,7 @@ ${trimmedGraphContext}${docBlock}`
             evidence: composed.evidence,
             repoPath: currentRepoPath,
             codeContext,
+            usage: usageCtx('ask.reflection'),
           })
           // 流式模式跳过重试：token 已推给用户，重答会造成"答案被撤回"的割裂体验。
           // 反思结果仍进 trace（可观测流式答案的质量水位）。

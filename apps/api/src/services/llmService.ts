@@ -435,6 +435,13 @@ export async function callChatCompletionStream(
     });
     if (!resp.ok || !resp.body) {
       _log?.warn(`LLM 流式调用失败: ${resp.status} ${resp.statusText}`);
+      // HTTP 层失败也要入账：非流式路径同款纪律（调用发生了就不能从账本上消失），
+      // 否则「流式常态 + 上游持续 5xx」会表现为账本一片安静。
+      reportUsage(usage, {
+        provider: llmRuntimeState.apiProvider, model, baseUrl, startedAt,
+        transportStatus: 'error', deliveryMode: 'stream',
+        errorKind: httpErrorKind(resp.status), promptChars: charsOf(messages),
+      });
       return null;
     }
 

@@ -137,6 +137,21 @@ describe('llmService 流式采集', () => {
     expect(e.totalCostNanoCny).toBe(50 * 20 + 8 * 2000);
   });
 
+  it('HTTP 层直接失败（流都没建立）→ error + http_5xx，调用不从账本上消失', async () => {
+    stubFetch(() => new Response('upstream boom', { status: 500 }));
+    const t = tracker();
+    const result = await callChatCompletionStream(MESSAGES, () => {}, undefined, { tracker: t, stage: 'ask.answer_complex' });
+
+    expect(result).toBeNull();
+    const [e] = getTurnEvents(t.turnId);
+    expect(e.transportStatus).toBe('error');
+    expect(e.errorKind).toBe('http_5xx');
+    expect(e.deliveryMode).toBe('stream');
+    expect(e.usageSource).toBe('missing');
+    // 错误响应正文绝不入库（与非流式同款断言）
+    expect(JSON.stringify(e)).not.toContain('boom');
+  });
+
   it('末帧没到（token 已真实消耗但拿不到数）→ error + stream_incomplete + missing', async () => {
     stubFetch(() => sseResponse(['data: {"choices":[{"delta":{"content":"半"}}]}\n\n']));
     const t = tracker();

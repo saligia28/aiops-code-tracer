@@ -223,7 +223,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
       stalledTurns = allRepeat ? stalledTurns + 1 : 0
       if (stalledTurns >= STALL_TURN_LIMIT) {
         const forced = await forceFinalAnswer(messages, question, llm, onEvent, undefined, signal, usageCtx('agent.final'))
-        if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal, usage: usageCtx('agent.reflection_retry') })
+        if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal, reflectionUsage: usageCtx('agent.reflection'), retryUsage: usageCtx('agent.reflection_retry') })
         return
       }
 
@@ -232,7 +232,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
 
     // 无工具调用 → 最终回答
     if (result.content) {
-      await finalizeAnswer({ answer: result.content, question, repoPath, observations, messages, llm, onEvent, signal, usage: usageCtx('agent.reflection_retry') })
+      await finalizeAnswer({ answer: result.content, question, repoPath, observations, messages, llm, onEvent, signal, reflectionUsage: usageCtx('agent.reflection'), retryUsage: usageCtx('agent.reflection_retry') })
       return
     }
 
@@ -249,7 +249,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<void> {
     signal,
     usageCtx('agent.final'),
   )
-  if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal, usage: usageCtx('agent.reflection_retry') })
+  if (forced !== null) await finalizeAnswer({ answer: forced, question, repoPath, observations, messages, llm, onEvent, signal, reflectionUsage: usageCtx('agent.reflection'), retryUsage: usageCtx('agent.reflection_retry') })
 }
 
 /**
@@ -270,7 +270,10 @@ async function finalizeAnswer(opts: {
   llm: AgentLoopOptions['llm']
   onEvent: (event: AgentEvent) => void
   signal?: AbortSignal
-  usage?: LlmUsageContext
+  /** 成本追踪：L2 judge（agent.reflection，REFLECT_JUDGE=1 时才真的调 LLM）的记账上下文 */
+  reflectionUsage?: LlmUsageContext
+  /** 成本追踪：反思不过后重答一次（agent.reflection_retry）的记账上下文 */
+  retryUsage?: LlmUsageContext
 }): Promise<void> {
   const { answer, question, repoPath, observations, messages, llm, onEvent, signal } = opts
   if (signal?.aborted) return
@@ -279,7 +282,7 @@ async function finalizeAnswer(opts: {
   const lineIndex = indexToolObservations(observations)
   const evidence = collectAgentEvidence(answer, lineIndex)
   // pipeline:'agent' —— 重答时禁用工具，反馈必须给"降级行号"的路子而不是"删掉引用"（T20）
-  const reflection = await reflectOnAnswer({ question, answer, evidence, repoPath, pipeline: 'agent' })
+  const reflection = await reflectOnAnswer({ question, answer, evidence, repoPath, pipeline: 'agent', usage: opts.reflectionUsage })
 
   let finalText = answer
   if (!reflection.pass && reflection.feedback && !signal?.aborted) {
@@ -305,7 +308,7 @@ async function finalizeAnswer(opts: {
         timeoutMs: SINGLE_LLM_TIMEOUT_MS,
         maxTokens: llm.maxTokens,
         signal,
-        usage: opts.usage,
+        usage: opts.retryUsage,
       })
       if (retry.content?.trim()) finalText = retry.content.trim()
     } catch {
