@@ -61,7 +61,8 @@ eval runner 离线 judge 未接入、`REFLECT_JUDGE` 反思裁决漏记、MCP/�
 
 ## P2（中）`REFLECT_JUDGE=1` 时反思裁决漏记账
 
-- [ ] 状态：未修复
+- [x] 状态：已修复（455bc56，fix/usage-review-p2-p3；agent 侧 finalizeAnswer 拆
+  reflectionUsage/retryUsage 两个上下文，回归见 test/reflectionUsage.test.ts）
 
 **现象**：`apps/api/src/services/ask/reflection.ts:113` 调 `judgeAnswer(..., 1)` 不传
 usage，而 `judgeAnswer` 有可选 usage 参数（`apps/api/src/services/answerJudge.ts:302`）。
@@ -85,7 +86,8 @@ L2 的 `judgeAnswer`；ask 侧传 `usageCtx('ask.reflection')`，agent 侧传
 
 ## P3（中低）流式调用 HTTP 层失败不记 event
 
-- [ ] 状态：未修复
+- [x] 状态：已修复（455bc56，fix/usage-review-p2-p3；回归见 usageAdapter.test.ts
+  「HTTP 层直接失败」用例）
 
 **现象**：`apps/api/src/services/llmService.ts:436` `callChatCompletionStream` 里
 `!resp.ok || !resp.body` 直接 `return null`，没有 `reportUsage`。
