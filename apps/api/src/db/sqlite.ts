@@ -247,7 +247,9 @@ export function getDb(): Database.Database {
   // WAL 是「一写多读」，仍然单写者。默认 busy_timeout=0 时第二个写进程碰到写锁会**立刻**
   // 拿到 SQLITE_BUSY 而不是等待——成本追踪让 eval runner 成为第二个写进程（设计文档 §11.3.1），
   // 不设这个值的话 eval 的 usage 会经常静默落不进去。
-  database.pragma('busy_timeout = 5000');
+  // AIOPS_SQLITE_BUSY_TIMEOUT_MS 仅供锁竞争测试把等待调短（不必真等 5 秒），生产别设。
+  const busyRaw = Number(process.env.AIOPS_SQLITE_BUSY_TIMEOUT_MS);
+  database.pragma(`busy_timeout = ${Number.isFinite(busyRaw) && busyRaw >= 0 ? busyRaw : 5000}`);
   migrate(database);
 
   db = database;

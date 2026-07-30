@@ -24,6 +24,7 @@ import { firstHitRank, recallAtK, reciprocalRank, mean } from './metrics.ts';
 import { findRelevantNodes, findRelevantNodesWithSemantic } from '../../src/services/ask/recall.ts';
 import { loadSemanticFileIndex, buildSemanticFileIndex } from '../../src/services/ask/semanticRecall.ts';
 import { checkMentions, checkHallucinations, judgeAnswer, canUseLlm } from './judge.ts';
+import { createUsageTracker, type UsageTracker } from '../../src/services/usage/usageTracker.ts';
 import { citationAccuracy } from './citation.ts';
 import { DATA_DIR } from '../../src/context.ts';
 import fs from 'node:fs';
@@ -126,6 +127,41 @@ interface AnswerCase {
 
 const API_BASE = process.env.EVAL_API ?? 'http://localhost:4299';
 
+// ---- 成本追踪（§11.3）：runner 自己发起的 judge 投票也要入账 ----
+// 每条 case（agent 模式为每次 run）建一个无 conversation 的 pipeline='eval' turn，
+// parentTurnId 指向被评测的 ask/agent turn；缓存命中的票没有供应商调用，0 event（judge 缓存语义）。
+// 本进程由此成为 app.db 的第二个写进程（§11.3.1，busy_timeout 已在 db/sqlite.ts 统一设置）：
+// 写失败由 tracker 自行降级，绝不打断评测；结束时统一交代，不允许静默。
+let evalTurnCount = 0;
+let evalUnpersisted = 0;
+
+function evalJudgeTracker(parentTurnId?: string): UsageTracker {
+  evalTurnCount++;
+  return createUsageTracker({
+    projectId: REPO,
+    pipeline: 'eval',
+    source: 'eval',
+    parentTurnId: parentTurnId ?? null,
+    log: { warn: (m) => console.warn(`  ${m}`) },
+  });
+}
+
+/** judge 完成后结算 turn，并累计未持久化数（降级 tracker 的全部调用都没落库）。 */
+function settleEvalTurn(tracker: UsageTracker, ok: boolean): void {
+  const s = tracker.finish(ok ? 'completed' : 'failed');
+  evalUnpersisted += tracker.degraded ? s.callCount : s.droppedUsageRecords;
+}
+
+/** §11.3.1 第 3 条：runner 结束时必须交代 usage 持久化情况。 */
+function reportEvalUsage(): void {
+  if (evalTurnCount === 0) return;
+  if (evalUnpersisted > 0) {
+    console.warn(`⚠️ 本次评测有 ${evalUnpersisted} 次 usage 未持久化（SQLite 写入失败已降级，成本口径不完整）\n`);
+  } else {
+    console.log(`judge 成本已入账 ${evalTurnCount} 个 eval turn（Web 成本页按 source=eval 分组可见；缓存命中的票 0 event）\n`);
+  }
+}
+
 /** 从项目注册表解析被分析仓库的磁盘路径（L2 引用核对要读真实源码）。 */
 function resolveRepoPath(repoId: string): string | null {
   try {
@@ -158,7 +194,7 @@ async function loginIfNeeded(): Promise<void> {
 async function askServer(
   question: string,
   conversationId?: string,
-): Promise<{ answer: string; evidence: Evidence[]; conversationId?: string; codeContextPreview?: string } | null> {
+): Promise<{ answer: string; evidence: Evidence[]; conversationId?: string; codeContextPreview?: string; turnId?: string } | null> {
   try {
     const resp = await fetch(`${API_BASE}/api/ask`, {
       method: 'POST',
@@ -172,6 +208,7 @@ async function askServer(
       evidence?: Evidence[];
       conversationId?: string;
       codeContextPreview?: string;
+      turnId?: string;
     };
     return {
       answer: json.answer ?? '',
@@ -179,6 +216,8 @@ async function askServer(
       conversationId: json.conversationId,
       // judge 口径对齐（v4）的忠实度锚——此前被这里剥掉，judge 一直在用弱化口径评分（review 实锤）
       codeContextPreview: json.codeContextPreview,
+      // judge 记账的 parent_turn_id（§11.3）：eval turn 挂到被评测的 ask turn 之下
+      turnId: json.turnId,
     };
   } catch {
     return null;
@@ -241,7 +280,14 @@ async function answers(): Promise<void> {
     const citation = repoPath ? citationAccuracy(resp.evidence, repoPath) : null;
     if (citation) citationRates.push(citation.accuracy);
     // codeContext 透传 = judge 口径对齐（v4）：忠实度以答案的真实信息源为锚，而非仅 12 条清单
-    const judged = await judgeAnswer({ question: c.question, answer: resp.answer, evidence: resp.evidence, referenceAnswer: c.referenceAnswer, codeContext: resp.codeContextPreview });
+    // 3 票 judge 是评测里最贵的开销之一，挂 pipeline='eval' turn 记账（§11.3）
+    const judgeUsage = evalJudgeTracker(resp.turnId);
+    const judged = await judgeAnswer(
+      { question: c.question, answer: resp.answer, evidence: resp.evidence, referenceAnswer: c.referenceAnswer, codeContext: resp.codeContextPreview },
+      3,
+      { tracker: judgeUsage, stage: 'eval.judge' },
+    );
+    settleEvalTurn(judgeUsage, judged !== null);
 
     if (men.ok) mentionPass++;
     if (hal.ok) halluFree++;
@@ -284,12 +330,20 @@ async function answers(): Promise<void> {
     { tag: '答案照抄文档（期望 codeFirst=❌）', expect: false, answer: '根据运营手册，状态为 1（待约仓）的单据可以点击「发货」按钮。' },
   ];
   for (const cc of conflictCases) {
-    const judged = await judgeAnswer({ question: '什么条件下可以点击发货按钮？', answer: cc.answer, evidence: conflictEvidence, docSnippet });
+    // 合成 fixture 不走 /api/ask，没有可挂的 parent turn
+    const judgeUsage = evalJudgeTracker();
+    const judged = await judgeAnswer(
+      { question: '什么条件下可以点击发货按钮？', answer: cc.answer, evidence: conflictEvidence, docSnippet },
+      3,
+      { tracker: judgeUsage, stage: 'eval.judge' },
+    );
+    settleEvalTurn(judgeUsage, judged !== null);
     const got = judged?.verdict.codeFirst;
     const pass = got === cc.expect;
     console.log(`  ${pass ? '✅' : '❌'} ${cc.tag} → judge 判 codeFirst=${got === null || got === undefined ? '—' : got ? 'true' : 'false'}  ${judged?.verdict.reasons.codeFirst?.slice(0, 70) ?? ''}`);
   }
   console.log('');
+  reportEvalUsage();
 }
 
 // ============ P1-C 长任务完整度（agent 模式） ============
@@ -309,7 +363,7 @@ interface AgentTaskCase {
  */
 async function askAgent(
   question: string,
-): Promise<{ answer: string; toolCalls: number; evidence: Evidence[] } | null> {
+): Promise<{ answer: string; toolCalls: number; evidence: Evidence[]; turnId?: string } | null> {
   try {
     const resp = await fetch(`${API_BASE}/api/agent/ask`, {
       method: 'POST',
@@ -323,6 +377,7 @@ async function askAgent(
     let answer = '';
     let toolCalls = 0;
     let evidence: Evidence[] = [];
+    let turnId: string | undefined;
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -337,13 +392,15 @@ async function askAgent(
           else if (ev.type === 'done') {
             answer = (ev.data?.answer as string) ?? answer;
             evidence = (ev.data?.evidence as Evidence[]) ?? evidence;
+            // judge 记账的 parent_turn_id（§11.3）：agent 路由在 done 事件里带 turnId
+            turnId = (ev.data?.turnId as string | undefined) ?? turnId;
           }
         } catch {
           /* 跳过半截行 */
         }
       }
     }
-    return { answer, toolCalls, evidence };
+    return { answer, toolCalls, evidence, turnId };
   } catch {
     return null;
   }
@@ -391,14 +448,20 @@ async function agentTasks(): Promise<void> {
       toolCounts.push(resp.toolCalls);
       if (!c.mustMention || checkMentions(resp.answer, c.mustMention).ok) menPass++;
       evidenceSum += resp.evidence.length;
-      const judged = await judgeAnswer({
-        question: c.question,
-        answer: resp.answer,
-        // T19：agent 的结构化证据（答案引用 × 模型看过的行）。EVAL_AGENT_NO_EVIDENCE=1 走旧口径对照。
-        evidence: noEvidence ? [] : resp.evidence,
-        referenceAnswer: c.referenceAnswer,
-        coverageChecklist: c.coverageChecklist,
-      });
+      const judgeUsage = evalJudgeTracker(resp.turnId);
+      const judged = await judgeAnswer(
+        {
+          question: c.question,
+          answer: resp.answer,
+          // T19：agent 的结构化证据（答案引用 × 模型看过的行）。EVAL_AGENT_NO_EVIDENCE=1 走旧口径对照。
+          evidence: noEvidence ? [] : resp.evidence,
+          referenceAnswer: c.referenceAnswer,
+          coverageChecklist: c.coverageChecklist,
+        },
+        3,
+        { tracker: judgeUsage, stage: 'eval.judge' },
+      );
+      settleEvalTurn(judgeUsage, judged !== null);
       if (judged) {
         judgedCnt++;
         if (judged.verdict.faithful) faithfulCnt++;
@@ -426,6 +489,7 @@ async function agentTasks(): Promise<void> {
   console.log(`  但长任务答案常常一个 file:line 都不给（上面「平均证据」若接近 0 即是），此时 judge 仍是空手评忠实、分数照样偏低——`);
   console.log(`  所以低分先看平均证据条数，再决定该怪答案还是怪口径。EVAL_AGENT_NO_EVIDENCE=1 可复现 T19 前口径做对照。`);
   console.log(`  对照实验：分别在默认 与 PLANNER_DISABLE=1 下跑 \`eval -- agent\`，比对覆盖率与平均工具调用数。\n`);
+  reportEvalUsage();
 }
 
 const [mode, ...rest] = argv;
