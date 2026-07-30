@@ -441,13 +441,21 @@ export function settleTimedOutTurns(now = Date.now()): string[] {
 
   const settled: string[] = [];
   for (const row of rows) {
-    db.transaction(() => {
+    const didSettle = db.transaction((): boolean => {
+      // 事务内复查（评审观察 #3）：eval runner 成为第二写进程后，SELECT 到这里之间
+      // 该 turn 可能已被正常结算——不复查会把刚结算完的 turn 再计一次 timed_out。
+      // pending_jobs 也取事务内的当前值，不用外面的快照。
+      const cur = db
+        .prepare(`SELECT settlement_status, pending_jobs FROM llm_usage_turns WHERE turn_id = ?`)
+        .get(row.turn_id) as { settlement_status: string; pending_jobs: number } | undefined;
+      if (!cur || cur.settlement_status !== 'pending') return false;
       db.prepare(
         `UPDATE llm_usage_turns SET background_timed_out_jobs = background_timed_out_jobs + ? WHERE turn_id = ?`,
-      ).run(Math.max(0, row.pending_jobs), row.turn_id);
+      ).run(Math.max(0, cur.pending_jobs), row.turn_id);
       settleInTx(row.turn_id, 'settlement_timeout');
+      return true;
     })();
-    settled.push(row.turn_id);
+    if (didSettle) settled.push(row.turn_id);
   }
   return settled;
 }

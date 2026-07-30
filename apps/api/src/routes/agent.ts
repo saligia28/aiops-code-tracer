@@ -171,75 +171,82 @@ export function registerAgent(app: FastifyInstance): void {
       });
     }
 
-    trace.span('agent_loop', tLoop, { steps: steps.length });
-    // 反思观测（P0-A·T1）：只要跑完一次收尾就记，pass 与否都有数——
-    // 没有这条就只能看到"重答过的那些"，算不出反思的触发率
-    const reflection = reflectionRef.meta;
-    if (reflection) {
-      trace.span('reflection', reflection.startedAt ?? Date.now(), {
-        citationAccuracy: reflection.citationAccuracy ?? null,
-        retried: reflection.retried,
-      });
-    }
-    // 中止收尾：观测记 cancelled（与 ask 管线同款语义），不算成功完成
-    if (abortCtl.signal.aborted) trace.error(new Error('client_cancelled'));
-    // end() 只判定采样并返回惰性任务；登记句柄 → finish → 发 done 之后再启动（设计文档 §6.3）
-    const preparedJudge = trace.end({ answer: finalAnswer, evidence: finalEvidence, intent: 'AGENT', confidence: 1, answeredByLlm: true });
-    const judgeJob = preparedJudge && !abortCtl.signal.aborted ? usageTracker.registerBackground('background.trace_judge') : null;
-
-    // ====== 终态编排（设计文档 §6.3）：落库 → 登记后台任务 → 终结 turn → 发唯一 done ======
-    // 顺序不可调换：先发 done 会让后台任务的成本永远进不了这一轮的汇总。
-    let memoryJob: ReturnType<typeof usageTracker.registerBackground> | null = null;
-    let assistantMessageId: string | null = null;
-    if (convId && finalAnswer) {
-      try {
-        assistantMessageId = appendMessage(convId, {
-          role: 'assistant',
-          content: finalAnswer,
-          mode: 'agent',
-          meta: { followUp: finalFollowUp, steps, ...(planSteps ? { planSteps } : {}) },
-        }).id;
-      } catch (err) {
-        app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`);
+    // 全出口兜底（§6.2，评审 P7）：下面终态编排的任何一步（trace/落库/SSE 写）抛异常，
+    // 都不能让 turn 停在 executionStatus=running + settlementStatus=collecting。
+    // finally 的 finish 幂等——正常路径已按真实终态结算过，届时它是 no-op。
+    try {
+      trace.span('agent_loop', tLoop, { steps: steps.length });
+      // 反思观测（P0-A·T1）：只要跑完一次收尾就记，pass 与否都有数——
+      // 没有这条就只能看到"重答过的那些"，算不出反思的触发率
+      const reflection = reflectionRef.meta;
+      if (reflection) {
+        trace.span('reflection', reflection.startedAt ?? Date.now(), {
+          citationAccuracy: reflection.citationAccuracy ?? null,
+          retried: reflection.retried,
+        });
       }
-      // 中止后不再登记新的回答后任务（设计文档 §6.2）
-      if (!abortCtl.signal.aborted) memoryJob = usageTracker.registerBackground('background.memory_extract');
-    }
+      // 中止收尾：观测记 cancelled（与 ask 管线同款语义），不算成功完成
+      if (abortCtl.signal.aborted) trace.error(new Error('client_cancelled'));
+      // end() 只判定采样并返回惰性任务；登记句柄 → finish → 发 done 之后再启动（设计文档 §6.3）
+      const preparedJudge = trace.end({ answer: finalAnswer, evidence: finalEvidence, intent: 'AGENT', confidence: 1, answeredByLlm: true });
+      const judgeJob = preparedJudge && !abortCtl.signal.aborted ? usageTracker.registerBackground('background.trace_judge') : null;
 
-    const executionStatus = abortCtl.signal.aborted ? 'aborted' : finalAnswer ? 'completed' : 'failed';
-    const usageSummary = usageTracker.finish(executionStatus);
-    // 刷新会话后成本摘要仍在（meta 用 patch 合并，不覆盖 followUp/steps/planSteps）
-    if (assistantMessageId) {
-      try {
-        setAssistantMessageId(usageTracker.turnId, assistantMessageId);
-        updateMessageMeta(assistantMessageId, { tokenUsageSummary: usageSummary });
-      } catch (err) {
-        app.log.warn(`成本汇总回写失败: ${err instanceof Error ? err.message : String(err)}`);
+      // ====== 终态编排（设计文档 §6.3）：落库 → 登记后台任务 → 终结 turn → 发唯一 done ======
+      // 顺序不可调换：先发 done 会让后台任务的成本永远进不了这一轮的汇总。
+      let memoryJob: ReturnType<typeof usageTracker.registerBackground> | null = null;
+      let assistantMessageId: string | null = null;
+      if (convId && finalAnswer) {
+        try {
+          assistantMessageId = appendMessage(convId, {
+            role: 'assistant',
+            content: finalAnswer,
+            mode: 'agent',
+            meta: { followUp: finalFollowUp, steps, ...(planSteps ? { planSteps } : {}) },
+          }).id;
+        } catch (err) {
+          app.log.error(`对话持久化(回答)失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        // 中止后不再登记新的回答后任务（设计文档 §6.2）
+        if (!abortCtl.signal.aborted) memoryJob = usageTracker.registerBackground('background.memory_extract');
       }
-    }
 
-    const bufferedDone = doneRef.event;
-    if (bufferedDone && !reply.raw.writableEnded) {
-      const enriched: AgentEvent = {
-        type: 'done',
-        data: { ...bufferedDone.data, turnId: usageTracker.turnId, tokenUsageSummary: usageSummary },
-      };
-      reply.raw.write(`data: ${JSON.stringify(enriched)}\n\n`);
-    }
+      const executionStatus = abortCtl.signal.aborted ? 'aborted' : finalAnswer ? 'completed' : 'failed';
+      const usageSummary = usageTracker.finish(executionStatus);
+      // 刷新会话后成本摘要仍在（meta 用 patch 合并，不覆盖 followUp/steps/planSteps）
+      if (assistantMessageId) {
+        try {
+          setAssistantMessageId(usageTracker.turnId, assistantMessageId);
+          updateMessageMeta(assistantMessageId, { tokenUsageSummary: usageSummary });
+        } catch (err) {
+          app.log.warn(`成本汇总回写失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
 
-    // 后台任务在对外 done 之后才启动：SSE 不为等待后台任务而保持连接
-    if (preparedJudge) {
-      void preparedJudge
-        .startJudge(judgeJob?.usageContext)
-        .then(() => judgeJob?.done())
-        .catch(() => judgeJob?.done({ status: 'failed' }));
-    }
-    if (memoryJob && convId && finalAnswer) {
-      void generateMemoriesFromTurn(projectId, convId, q, finalAnswer, memoryJob.usageContext)
-        .then(() => memoryJob!.done())
-        .catch(() => memoryJob!.done({ status: 'failed' }));
-    }
+      const bufferedDone = doneRef.event;
+      if (bufferedDone && !reply.raw.writableEnded) {
+        const enriched: AgentEvent = {
+          type: 'done',
+          data: { ...bufferedDone.data, turnId: usageTracker.turnId, tokenUsageSummary: usageSummary },
+        };
+        reply.raw.write(`data: ${JSON.stringify(enriched)}\n\n`);
+      }
 
-    reply.raw.end();
+      // 后台任务在对外 done 之后才启动：SSE 不为等待后台任务而保持连接
+      if (preparedJudge) {
+        void preparedJudge
+          .startJudge(judgeJob?.usageContext)
+          .then(() => judgeJob?.done())
+          .catch(() => judgeJob?.done({ status: 'failed' }));
+      }
+      if (memoryJob && convId && finalAnswer) {
+        void generateMemoriesFromTurn(projectId, convId, q, finalAnswer, memoryJob.usageContext)
+          .then(() => memoryJob!.done())
+          .catch(() => memoryJob!.done({ status: 'failed' }));
+      }
+    } finally {
+      // 正常路径 no-op（上面已 finish）；异常路径把 turn 收口为 aborted/failed
+      usageTracker.finish(abortCtl.signal.aborted ? 'aborted' : 'failed');
+      if (!reply.raw.writableEnded) reply.raw.end();
+    }
   });
 }

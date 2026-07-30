@@ -19,7 +19,7 @@ import {
   type QuestionPlan,
   type CodeLocation,
 } from '../../context.js';
-import { callChatCompletion, callChatCompletionStream, canUseLlm } from '../llmService.js';
+import { callChatCompletion, callChatCompletionStream, canAttemptStreamLlm, canUseLlm } from '../llmService.js';
 import { stripLoneSurrogates } from '../../textSafety.js';
 import { parseLine, estimateTokens, escapeRegex, NODE_TYPE_SCORE, tokenizeForRecall } from './textUtils.js';
 import { findFunctionBoundary } from './codeScan.js';
@@ -558,10 +558,11 @@ export async function composeAnswerWithLlm(
 
   // 流式优先：SSE 模式（有 onDelta）逐 token 下发；流式不可用（返回 null）时回退非流式整包。
   // 中止（aborted）时直接返回部分文本，不再发起非流式兜底——用户已经不要这个答案了。
-  // 尝试过流式 → 后面那次非流式就是 fallback；没尝试过（非 SSE）→ 它本身就是主调用。
+  // 尝试过流式 → 后面那次非流式就是 fallback；没尝试过（非 SSE，或流式发不出请求）→ 它本身就是主调用。
   // 两条路共用下面同一行 callChatCompletion，所以 stage 必须在这里按"是否尝试过"分岔（设计文档 §11.1）。
-  const triedStream = Boolean(streamOpts?.onDelta);
-  if (streamOpts?.onDelta) {
+  // canAttemptStreamLlm=false（如纯内网无 API 兜底）时流式压根不会发请求，不算"尝试过"（评审 P4）。
+  const triedStream = Boolean(streamOpts?.onDelta) && canAttemptStreamLlm();
+  if (streamOpts?.onDelta && triedStream) {
     const streamed = await callChatCompletionStream(
       messages,
       streamOpts.onDelta,

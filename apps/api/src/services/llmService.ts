@@ -110,6 +110,17 @@ export function canUseLlm(): boolean {
   return canUseApiLlm();
 }
 
+/**
+ * callChatCompletionStream 会不会真的发起请求（评审 P4）。
+ * false = 它在发请求前就返回 null（LLM 未配置，或纯内网无 API 兜底——ollama 流式协议未接）。
+ * 调用方据此区分"没尝试"与"尝试失败"：没尝试过流式时，后面的非流式是主调用，
+ * 不能记成 *_fallback，否则"流式失败率"从配置层面就被污染（设计文档 §11.1）。
+ */
+export function canAttemptStreamLlm(): boolean {
+  if (!canUseLlm()) return false;
+  return !(llmRuntimeState.mode === 'intranet' && !canUseApiLlm());
+}
+
 export function buildLlmRuntimeConfig(): LlmRuntimeConfig {
   const mode = llmRuntimeState.mode;
   const availableModes: LlmOption[] = [
@@ -400,10 +411,11 @@ export async function callChatCompletionStream(
   const startedAt = Date.now();
   // 末帧 usage 是否到手——没到手说明 token 已真实消耗但拿不到数（errorKind=stream_incomplete）
   let streamUsage: RawProviderUsage | null = null;
-  if (!canUseLlm()) return null;
-  // intranet 模式：ollama 流式协议未接（见头注 TODO），但若配了 API 兜底则直接用 API 流式——
-  // 与非流式路径的降级终点保持一致（intranet 失败 → api）。纯内网无 API key 才返回 null。
-  if (llmRuntimeState.mode === 'intranet' && !canUseApiLlm()) return null;
+  // 「没尝试」出口（P4）：与下面所有"尝试后失败"的 null 不同，这里未发生任何请求、
+  // 不产生 usage event；调用方用 canAttemptStreamLlm() 预判，别把后续非流式记成 fallback。
+  // （intranet 模式 ollama 流式协议未接——见头注 TODO；配了 API 兜底则直接用 API 流式，
+  //   与非流式路径的降级终点保持一致：intranet 失败 → api。）
+  if (!canAttemptStreamLlm()) return null;
 
   const model = llmRuntimeState.mode === 'intranet'
     ? (llmRuntimeState.apiModel || DEFAULT_API_MODEL)

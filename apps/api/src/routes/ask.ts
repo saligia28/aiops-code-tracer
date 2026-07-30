@@ -7,7 +7,7 @@ import { reflectOnAnswer } from '../services/ask/reflection.js'
 import { retrieveDocEvidence, renderDocEvidenceForPrompt } from '../services/ask/docRecall.js'
 import { sanitizeRetrievedText, sanitizeAskResponseForMachine } from '../services/ask/promptSafety.js'
 import { getContextBudgets } from '../services/ask/contextBudget.js'
-import { callChatCompletion, callChatCompletionStream, canUseLlm } from '../services/llmService.js'
+import { callChatCompletion, callChatCompletionStream, canAttemptStreamLlm, canUseLlm } from '../services/llmService.js'
 import { startAskTrace, setTraceServiceLogger, type AskTrace } from '../services/traceService.js'
 import { createConversation, getConversationForProject, appendMessage, updateMessageMeta } from '../db/conversationStore.js'
 import { setAssistantMessageId } from '../db/usageStore.js'
@@ -200,6 +200,9 @@ export function registerAsk(app: FastifyInstance): void {
       let assistantMessageId: string | null = null
       // 返回 undefined = SSE 模式已用 done 帧收尾（handler 不再返回 JSON）
       const finalizeResponse = (resp: AskResponse, extractMemory = false): AskResponse | undefined => {
+        // 非 SSE 断连后仍会走到这里（LLM 被 abort → 规则兜底答案照常返回）。答案照常落库，
+        // 但按 §6.2：abort 后不再登记/启动任何回答后任务（memory/judge），终态记 aborted（评审 P8）。
+        const clientAborted = abortCtl.signal.aborted
         if (convId) {
           try {
             assistantMessageId = appendMessage(convId, {
@@ -214,7 +217,7 @@ export function registerAsk(app: FastifyInstance): void {
           // 后台沉淀记忆（fire-and-forget，不阻断响应）。
           // 机器来源恒不抽取（review 修复）：MCP 提问蒸馏出的"用户偏好/事实"会永久混入
           // 项目记忆库、与人类记忆竞争 top-5 注入位，且无 UI 可辨别清理。
-          if (extractMemory && !fromMcp) {
+          if (extractMemory && !fromMcp && !clientAborted) {
             // 先登记再启动：反过来会出现"主链路已结算、后台任务随后才登记"的竞态
             const job = usageTracker?.registerBackground('background.memory_extract')
             void generateMemoriesFromTurn(projectId, convId, question, resp.answer, job?.usageContext)
@@ -231,12 +234,13 @@ export function registerAsk(app: FastifyInstance): void {
         // end() 只做采样判定并返回惰性任务：命中时先登记后台句柄，再在 finish 之后启动，
         // 否则这次 judge 调用既不属于任何 turn、也不会让 turn 等它（成本漏计）。
         const preparedJudge = trace?.end({ answer: resp.answer, evidence: resp.evidence, intent: resp.intent, confidence: resp.confidence, answeredByLlm: extractMemory })
-        const judgeJob = preparedJudge && usageTracker ? usageTracker.registerBackground('background.trace_judge') : null
+        // abort 后不登记也不启动 judge（§6.2）：惰性任务未 start 就不占并发槽、不花钱
+        const judgeJob = preparedJudge && usageTracker && !clientAborted ? usageTracker.registerBackground('background.trace_judge') : null
         // 成本终结：必须在后台任务登记之后（否则 pendingJobs 还没加上就结算了）。
         // finish 幂等，异常路径的 catch/finally 再调也只生效一次。
         if (usageTracker) {
           resp.turnId = usageTracker.turnId
-          resp.tokenUsageSummary = usageTracker.finish('completed')
+          resp.tokenUsageSummary = usageTracker.finish(clientAborted ? 'aborted' : 'completed')
           // 回写 message meta：刷新会话后仍能看到本轮花了多少钱（设计文档 §18.8）。
           // 用 patch 合并——meta 里还有 followUp/intent/evidenceCount，整段覆盖会把它们抹掉。
           if (assistantMessageId) {
@@ -249,7 +253,7 @@ export function registerAsk(app: FastifyInstance): void {
           }
         }
         // 抽样 judge 在结算编排之后才真正启动（并发槽也推迟到这一刻才取）
-        if (preparedJudge) {
+        if (preparedJudge && !clientAborted) {
           void preparedJudge
             .startJudge(judgeJob?.usageContext)
             .then(() => judgeJob?.done())
@@ -582,8 +586,11 @@ ${trimmedGraphContext}${docBlock}`
           })
         }
         // 流式优先（P1-D）：SSE 模式逐 token 下发；流式不可用（内网模式/网络失败）自动降级整包。
+        // canAttemptStreamLlm=false 时流式发不出请求（评审 P4）：跳过尝试，
+        // 后面的非流式是主调用而非 fallback，别污染"流式失败率"（§11.1）。
         let llmAnswer: string | null = null
-        if (sse) {
+        const triedStream = sse && canAttemptStreamLlm()
+        if (triedStream) {
           const streamed = await callChatCompletionStream(
             llmMessages,
             (delta) => {
@@ -607,7 +614,7 @@ ${trimmedGraphContext}${docBlock}`
           llmAnswer = await callChatCompletion(
             llmMessages,
             abortCtl.signal,
-            usageCtx(sse ? 'ask.answer_complex_fallback' : 'ask.answer_complex'),
+            usageCtx(triedStream ? 'ask.answer_complex_fallback' : 'ask.answer_complex'),
           )
         }
 
