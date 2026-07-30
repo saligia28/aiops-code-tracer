@@ -26,9 +26,13 @@ eval runner 离线 judge 未接入、`REFLECT_JUDGE` 反思裁决漏记、MCP/�
 
 ## P1（中高）eval runner 直连 judge 完全未接入成本追踪
 
-- [x] 状态：代码已修复（394fa96，fix/usage-review-p1，合并时经 rebase 改号；锁竞争回归见
-  test/usageSecondWriter.test.ts）。活体验收待跑：起服务后 `pnpm --filter @aiops/api eval -- answers`，
-  查 `llm_usage_turns` 出现 `pipeline='eval'` 行且 `parent_turn_id` 指向对应 ask turn。
+- [x] 状态：已修复（394fa96，fix/usage-review-p1，合并时经 rebase 改号；锁竞争回归见
+  test/usageSecondWriter.test.ts）。**活体验收已完成**（2026-07-30，3 用例小轮 + 2 冲突 fixture）：
+  `llm_usage_turns` 出现 5 行 `pipeline='eval'`；3 行 `parent_turn_id` 指向对应 ask turn
+  （parent 为 `pipeline='ask'/source='eval'`）；每 turn 3 张 `eval.judge` event，记 judge
+  真实模型（deepseek-chat），首票贵、后两票便宜（DeepSeek prompt 缓存跨票生效，账目如实反映）；
+  冲突 fixture 两 turn 判缓存全命中 → 0 event（§11.3 语义）；runner 报「已入账 5 个 eval turn」，
+  无未持久化告警。
 
 **现象**：`apps/api/test/eval/run.ts:244`、`:287`、`:394` 三处直接调用
 `judgeAnswer(...)`，均未传 usage context，也从未创建 `pipeline='eval'` 的 tracker。

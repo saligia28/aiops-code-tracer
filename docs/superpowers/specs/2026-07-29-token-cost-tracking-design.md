@@ -1458,9 +1458,9 @@ turnId 不同、账目独立。旧的 `lastCallMeta` 单例在这个场景下必
   没有构造干净的冷启动对照。
 - **watchdog 超时结算未在活体触发**：只有离线单测覆盖（真实后台任务都在秒级完成）。
 - **propose-patch / agent 管线未跑活体**：两条链路的归属由离线路由测试覆盖。
-- **eval 记账的活体对账未跑**（§11.3）：runner 接入已落地（评审 P1，394fa96——
-  `pipeline='eval'` turn、`eval.judge` event、`parent_turn_id` 关联、写失败降级计数与
-  第二写进程锁竞争测试均已实现），但尚未起服务真跑一轮 eval 验证落库与 parent 关联。
+- ~~eval 记账的活体对账未跑~~：已完成（2026-07-30，3 用例小轮）——5 个 `pipeline='eval'`
+  turn 落库，`parent_turn_id` 指向对应 ask turn，9 张 `eval.judge` event 带真实 judge 模型；
+  缓存命中的冲突 fixture 0 event（§11.3 语义）。runner 接入见评审 P1（394fa96）。
 - ~~`REFLECT_JUDGE=1` 的反思裁决漏记账~~：已修（评审 P2，455bc56），`ask.reflection` /
   `agent.reflection` 两个 stage 激活，回归见 test/reflectionUsage.test.ts。
 - 完整问题清单与修复要点见
