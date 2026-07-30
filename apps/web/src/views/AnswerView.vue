@@ -479,6 +479,7 @@ async function switchConversation(id: string) {
   try {
     const { turns } = await loadConversation(id, renderMarkdown)
     history.value = turns.map(t => reactive(t))
+    resumeUsagePolling()
     setActiveConversation(id)
     if (window.innerWidth <= 768) sidebarCollapsed.value = true
     await scrollToBottom()
@@ -565,6 +566,22 @@ function captureUsage(turn: ConversationTurn, data: Record<string, unknown>): vo
   turn.tokenUsageSummary = summary
   if (!summary.settled) {
     startPolling(summary.turnId, (fresh) => {
+      turn.tokenUsageSummary = fresh
+      turn.tokenUsageEvents = usageEvents.value[fresh.turnId]
+    })
+  }
+}
+
+/**
+ * 恢复会话后的续轮询（§12.4，评审 P6）：message meta 里的 summary 是当时写库的快照，
+ * 服务端多半早已结算完（后台任务秒级/watchdog 强制结算）。恢复到未结算快照时重新轮询，
+ * 否则"成本结算中"会一直挂着，直到用户手动展开明细才被动刷新一次。
+ */
+function resumeUsagePolling(): void {
+  for (const turn of history.value) {
+    const s = turn.tokenUsageSummary
+    if (!s || s.settled) continue
+    startPolling(s.turnId, (fresh) => {
       turn.tokenUsageSummary = fresh
       turn.tokenUsageEvents = usageEvents.value[fresh.turnId]
     })
@@ -922,6 +939,7 @@ onMounted(async () => {
     const { conversation, turns } = await restoreConversation(renderMarkdown)
     if (conversation && conversation.projectId === currentProjectId.value) {
       history.value = turns.map(t => reactive(t))
+      resumeUsagePolling()
     } else if (conversation) {
       clearActiveConversation()
     }

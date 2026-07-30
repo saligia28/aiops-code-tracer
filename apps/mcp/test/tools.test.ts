@@ -214,7 +214,7 @@ describe('tools', () => {
     expect(mockGet).not.toHaveBeenCalled();
   });
 
-  it('propose_patch posts to /api/propose-patch with {question,files} + 专用长超时，格式化提案', async () => {
+  it('propose_patch posts to /api/propose-patch with {question,files,source:mcp} + 专用长超时，格式化提案', async () => {
     mockPost.mockResolvedValue({
       ok: true,
       proposal: {
@@ -233,7 +233,7 @@ describe('tools', () => {
 
     expect(mockPost).toHaveBeenCalledWith(
       '/api/propose-patch',
-      { question: '订单作废 id 为空应抛错', files: ['src/api/orderVoid.ts'] },
+      { question: '订单作废 id 为空应抛错', files: ['src/api/orderVoid.ts'], source: 'mcp' },
       { timeoutMs: 120_000 },
     );
     const t = out.content[0].text;

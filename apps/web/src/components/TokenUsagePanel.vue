@@ -32,7 +32,8 @@
       <p v-else-if="!events.length" class="usage-loading">本轮追踪未持久化，刷新后不可恢复</p>
 
       <template v-else>
-        <!-- 先按阶段聚合：一轮 agent 可能有几十次调用，直接铺开没法看 -->
+        <!-- 先按阶段聚合：一轮 agent 可能有几十次调用，直接铺开没法看。
+             列对齐 §13.3（评审 P9）：状态有自己的列，不再挤在"次数"下面；耗时来自 event.latencyMs -->
         <table class="usage-table">
           <thead>
             <tr>
@@ -40,7 +41,9 @@
               <th>次数</th>
               <th class="num">输入 hit/miss</th>
               <th class="num">输出</th>
+              <th class="num">耗时</th>
               <th class="num">成本</th>
+              <th>状态</th>
             </tr>
           </thead>
           <tbody>
@@ -53,7 +56,9 @@
                 <td>{{ group.count }}</td>
                 <td class="num">{{ group.hit }} / {{ group.miss }}</td>
                 <td class="num">{{ group.output }}</td>
+                <td class="num" title="该阶段各次调用耗时之和（并行调用会大于墙钟时间）">{{ formatLatency(group.latency) }}</td>
                 <td class="num">{{ formatNanoCny(group.cost) }}</td>
+                <td></td>
               </tr>
               <tr v-for="e in openStages.has(group.stage) ? group.events : []" :key="e.id" class="call-row">
                 <td class="call-model">
@@ -64,9 +69,7 @@
                     流式失败后重试
                   </span>
                 </td>
-                <td>
-                  <span :class="statusClass(e)">{{ statusText(e) }}</span>
-                </td>
+                <td></td>
                 <td class="num">{{ e.tokens.cacheHitTokens ?? '—' }} / {{ e.tokens.cacheMissTokens ?? '—' }}</td>
                 <td class="num">
                   {{ e.tokens.completionTokens ?? '—' }}
@@ -74,8 +77,12 @@
                     (含推理 {{ e.tokens.reasoningTokens }})
                   </span>
                 </td>
+                <td class="num">{{ formatLatency(e.latencyMs) }}</td>
                 <td class="num" :title="e.totalCostNanoCny ? formatNanoCnyPrecise(e.totalCostNanoCny) : '单价未配置'">
                   {{ e.totalCostNanoCny === undefined ? '单价未配置' : formatNanoCnyPrecise(e.totalCostNanoCny) }}
+                </td>
+                <td>
+                  <span :class="statusClass(e)">{{ statusText(e) }}</span>
                 </td>
               </tr>
             </template>
@@ -101,6 +108,9 @@ import {
   formatNanoCnyPrecise,
   formatTokens,
   formatCacheHitRate,
+  formatLatency,
+  formatCostText,
+  formatCallCountText,
   canShowCacheHitRate,
   PARTIAL_REASON_TEXT,
   type TokenUsageEvent,
@@ -132,18 +142,9 @@ const showHitRate = computed(
   () => props.summary.cacheHitRate !== undefined && canShowCacheHitRate(props.events),
 )
 
-/** 写失败时不能把 dropped 混进精确分项，要分开说 */
-const callCountText = computed(() => {
-  const dropped = props.summary.droppedUsageRecords
-  return dropped > 0
-    ? `已记录 ${props.summary.callCount} 次，另有 ${dropped} 次未持久化`
-    : `${props.summary.callCount} 次调用`
-})
-
-const costText = computed(() => {
-  const money = formatNanoCny(props.summary.knownCostNanoCny)
-  return props.summary.partial ? `部分成本 ${money}` : money
-})
+// 文案规则抽到 useTokenUsage 成纯函数（可单测：¥0 纪律 / partial 文案 / dropped 分开说）
+const callCountText = computed(() => formatCallCountText(props.summary))
+const costText = computed(() => formatCostText(props.summary))
 
 interface StageGroup {
   stage: string
@@ -151,6 +152,7 @@ interface StageGroup {
   hit: number
   miss: number
   output: number
+  latency: number
   cost: number
   events: TokenUsageEvent[]
 }
@@ -158,11 +160,12 @@ interface StageGroup {
 const stageGroups = computed<StageGroup[]>(() => {
   const map = new Map<string, StageGroup>()
   for (const e of events.value) {
-    const g = map.get(e.stage) ?? { stage: e.stage, count: 0, hit: 0, miss: 0, output: 0, cost: 0, events: [] }
+    const g = map.get(e.stage) ?? { stage: e.stage, count: 0, hit: 0, miss: 0, output: 0, latency: 0, cost: 0, events: [] }
     g.count += 1
     g.hit += e.tokens.cacheHitTokens ?? 0
     g.miss += e.tokens.cacheMissTokens ?? 0
     g.output += e.tokens.completionTokens ?? 0
+    g.latency += e.latencyMs ?? 0
     g.cost += e.totalCostNanoCny ?? 0
     g.events.push(e)
     map.set(e.stage, g)

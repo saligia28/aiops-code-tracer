@@ -1,5 +1,6 @@
 import { ref } from 'vue';
 import http from '@/lib/http';
+import type { TurnUsageSummary } from '@/composables/useTokenUsage';
 
 // ============================================================
 // propose_patch（P2-G）前端调用
@@ -24,9 +25,14 @@ export interface Proposal {
   validatedAt: string;
 }
 
-export type ProposeResult =
+export type ProposeResult = (
   | { ok: true; proposal: Proposal; attempts?: number; note?: string }
-  | { ok: false; reason: string; detail?: string; attempts?: number };
+  | { ok: false; reason: string; detail?: string; attempts?: number }
+) & {
+  /** 成本追踪（§13.1）：成功与业务失败都带——打不上的 diff 也是花过钱的 */
+  turnId?: string;
+  tokenUsageSummary?: TurnUsageSummary;
+};
 
 export type ApplyState = 'idle' | 'applying' | 'applied' | 'rolling' | 'rolled';
 

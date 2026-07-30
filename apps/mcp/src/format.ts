@@ -1,5 +1,25 @@
-import type { AskResponse, DocEvidence, Evidence, GraphEdge, GraphNode } from '@aiops/shared-types';
+import type { AskResponse, DocEvidence, Evidence, GraphEdge, GraphNode, TurnUsageSummary } from '@aiops/shared-types';
 import type { AnalysisPacket } from './analysisPacket.js';
+
+/**
+ * 紧凑成本摘要（设计文档 §4.5）：机器消费端输出末尾/头部的一行人话。
+ * 与 Web 面板同纪律：正成本不显示 ¥0（最小已知成本 20 nano = 第 8 位小数）；
+ * partial 时明说"部分成本"，不冒充完整总价；未结算（后台任务在跑）时标注。
+ */
+export function formatUsageLine(summary?: TurnUsageSummary): string[] {
+  if (!summary || summary.callCount === 0) return [];
+  const nano = summary.knownCostNanoCny;
+  const money =
+    !Number.isFinite(nano) || nano <= 0
+      ? '¥0'
+      : nano < 1000
+        ? '<¥0.000001'
+        : `¥${(nano / 1e9).toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
+  const tok = summary.totalTokens;
+  const tokens = tok < 1000 ? String(tok) : `${(tok / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+  const cost = summary.partial ? `部分成本 ${money}` : money;
+  return [`成本：${tokens} tokens · ${summary.callCount} 次调用 · ${cost}${summary.settled ? '' : '（结算中）'}`];
+}
 
 export function formatNode(n: GraphNode): string {
   const kind = n.meta?.kind ? `${n.type}/${n.meta.kind}` : n.type;
@@ -194,6 +214,9 @@ export function formatAskResponse(
     }
   }
 
+  // 紧凑成本摘要（§4.5）：放头部，长回答被 clamp 也砍不到
+  sections.push(...formatUsageLine(response.tokenUsageSummary));
+
   sections.push(
     '',
     '回答：',
@@ -326,9 +349,14 @@ export interface ProposalView {
   validatedAt: string;
 }
 
-export type ProposePatchResponse =
+export type ProposePatchResponse = (
   | { ok: true; proposal: ProposalView; attempts?: number; note?: string }
-  | { ok: false; reason: string; detail?: string; attempts?: number };
+  | { ok: false; reason: string; detail?: string; attempts?: number }
+) & {
+  /** 成本追踪（§4.5）：成功与业务失败都带——打不上的 diff 也是花过钱的 */
+  turnId?: string;
+  tokenUsageSummary?: TurnUsageSummary;
+};
 
 function formatProposalFailure(reason: string, detail?: string, attempts?: number): string {
   const attemptStr = attempts ? `（尝试 ${attempts} 次）` : '';
@@ -356,13 +384,16 @@ function formatProposalFailure(reason: string, detail?: string, attempts?: numbe
 export function formatProposal(data: ProposePatchResponse, opts: { limit?: number } = {}): string {
   const limit = opts.limit ?? DEFAULT_ASK_OUTPUT_LIMIT;
   if (!data.ok) {
-    return formatProposalFailure(data.reason, data.detail, data.attempts);
+    // 失败也渲染成本：业务失败（打不上的 diff）同样真实花了 LLM 的钱
+    return [formatProposalFailure(data.reason, data.detail, data.attempts), ...formatUsageLine(data.tokenUsageSummary)].join('\n');
   }
   const p = data.proposal;
   const sections: string[] = [
     '✅ 已生成可应用的修改提案（已通过 git apply --check；未改动仓库任何文件）',
     `仓库：${p.repoName}    提案 id：${p.proposalId}`,
     `诉求：${p.question}`,
+    // 成本放头部：clampText 保头弃尾，diff 很大时也砍不到它
+    ...formatUsageLine(data.tokenUsageSummary),
     '',
     `涉及文件（${p.files.length}）：`,
     ...p.files.map(

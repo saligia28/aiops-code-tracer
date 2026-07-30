@@ -154,6 +154,27 @@ export function formatCacheHitRate(rate: number): string {
   return `${stripZeros((rate * 100).toFixed(1))}%`
 }
 
+/** 明细表"耗时"列（§13.3）：毫秒级人话 */
+export function formatLatency(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${stripZeros((ms / 1000).toFixed(1))}s`
+}
+
+/** 摘要行金额文案：partial 时明说"部分成本"，不冒充完整总价 */
+export function formatCostText(summary: Pick<TurnUsageSummary, 'partial' | 'knownCostNanoCny'>): string {
+  const money = formatNanoCny(summary.knownCostNanoCny)
+  return summary.partial ? `部分成本 ${money}` : money
+}
+
+/** 摘要行调用数文案：写失败的 dropped 不能混进精确分项，要分开说 */
+export function formatCallCountText(summary: Pick<TurnUsageSummary, 'callCount' | 'droppedUsageRecords'>): string {
+  const dropped = summary.droppedUsageRecords
+  return dropped > 0
+    ? `已记录 ${summary.callCount} 次，另有 ${dropped} 次未持久化`
+    : `${summary.callCount} 次调用`
+}
+
 /** partial 原因 → 人话。UI 不能只显示一个感叹号让用户猜 */
 export const PARTIAL_REASON_TEXT: Record<string, string> = {
   usage_missing: '有调用未返回用量数据',

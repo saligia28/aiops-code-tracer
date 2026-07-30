@@ -31,7 +31,8 @@ export const proposePatch: ToolDescriptor = {
     const { question, files } = args as { question: string; files: string[] };
     const data = await analyzerPost<ProposePatchResponse>(
       '/api/propose-patch',
-      { question, files },
+      // source=mcp：成本按来源分组（§11.5）。不带的话服务端按 web 兜底，MCP 的 patch 开销全记错组
+      { question, files, source: 'mcp' },
       { timeoutMs: PROPOSE_TIMEOUT_MS },
     );
     // 锁仓 post-check（同 prepare_fix_context）：pre-check 通过后、生成完成前仓库仍可能被切走

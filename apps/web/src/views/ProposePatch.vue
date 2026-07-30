@@ -59,6 +59,14 @@
       <p>{{ failText }}</p>
       <p class="detail" v-if="result.detail">技术细节：{{ result.detail }}</p>
       <p class="detail" v-if="result.attempts">已尝试 {{ result.attempts }} 次</p>
+      <!-- 失败也花了钱（LLM 真调过）：照样交代成本（§13.1，评审 P6） -->
+      <TokenUsagePanel
+        v-if="result.tokenUsageSummary"
+        :summary="result.tokenUsageSummary"
+        :events="result.turnId ? usageEvents[result.turnId] : undefined"
+        :loading="result.turnId ? usageLoading[result.turnId] : false"
+        @expand="loadUsageDetail"
+      />
     </div>
 
     <!-- 成功：提案 -->
@@ -89,6 +97,14 @@
             </li>
           </ul>
         </div>
+        <!-- 本次提案的 LLM 成本（§13.1，评审 P6）：数据直接来自响应，不写 conversation meta -->
+        <TokenUsagePanel
+          v-if="result.tokenUsageSummary"
+          :summary="result.tokenUsageSummary"
+          :events="result.turnId ? usageEvents[result.turnId] : undefined"
+          :loading="result.turnId ? usageLoading[result.turnId] : false"
+          @expand="loadUsageDetail"
+        />
       </div>
 
       <div class="diff-card">
@@ -157,11 +173,20 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import PageHeader from '@/components/PageHeader.vue';
+import TokenUsagePanel from '@/components/TokenUsagePanel.vue';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
 import { useProposePatch } from '@/composables/useProposePatch';
+import { useTokenUsage } from '@/composables/useTokenUsage';
 
 const { currentRepo } = useCurrentRepo();
 const { result, loading, error, applyState, applyError, verifying, verifyResult, propose, apply, rollback, verify } = useProposePatch();
+
+// 成本明细按需取（§13.1）：面板展开时才拉 events，摘要本身来自 propose 响应
+const { events: usageEvents, loading: usageLoading, fetchDetail } = useTokenUsage();
+function loadUsageDetail(): void {
+  const turnId = result.value?.turnId;
+  if (turnId && !usageEvents.value[turnId]?.length) void fetchDetail(turnId);
+}
 
 const question = ref('');
 const fileInput = ref('');

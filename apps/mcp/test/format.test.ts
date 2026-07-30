@@ -144,3 +144,84 @@ describe('format', () => {
     expect(formatAskResponse('q', base)).not.toContain('已新开会话');
   });
 });
+
+// ============ 紧凑成本摘要（§4.5，评审 P5）============
+
+import type { TurnUsageSummary } from '@aiops/shared-types';
+import { formatUsageLine, formatProposal } from '../src/format.js';
+
+function usageSummary(over: Partial<TurnUsageSummary> = {}): TurnUsageSummary {
+  return {
+    turnId: 't1',
+    executionStatus: 'completed',
+    settlementStatus: 'settled',
+    settled: true,
+    partial: false,
+    partialReasons: [],
+    callCount: 3,
+    successCallCount: 3,
+    errorCallCount: 0,
+    abortedCallCount: 0,
+    usageMissingCalls: 0,
+    usageWarningCalls: 0,
+    unknownPricingCalls: 0,
+    droppedUsageRecords: 0,
+    lateDroppedEvents: 0,
+    backgroundFailedJobs: 0,
+    backgroundTimedOutJobs: 0,
+    promptTokens: 1000,
+    cacheHitTokens: 600,
+    cacheMissTokens: 400,
+    completionTokens: 200,
+    reasoningTokens: 0,
+    totalTokens: 1200,
+    knownCostNanoCny: 812_000,
+    updatedAt: 0,
+    ...over,
+  };
+}
+
+describe('formatUsageLine（§4.5 紧凑成本摘要）', () => {
+  it('完整成本：tokens/次数/金额一行', () => {
+    expect(formatUsageLine(usageSummary())).toEqual(['成本：1.2k tokens · 3 次调用 · ¥0.000812']);
+  });
+
+  it('partial 时明说"部分成本"，未结算标注"结算中"', () => {
+    const [line] = formatUsageLine(usageSummary({ partial: true, settled: false, settlementStatus: 'pending' }));
+    expect(line).toContain('部分成本 ¥0.000812');
+    expect(line).toContain('（结算中）');
+  });
+
+  it('正成本永不显示 ¥0：低于展示精度显示 <¥0.000001', () => {
+    expect(formatUsageLine(usageSummary({ knownCostNanoCny: 20 }))[0]).toContain('<¥0.000001');
+  });
+
+  it('无摘要或零调用（缓存全命中 judge 等）→ 不输出成本行', () => {
+    expect(formatUsageLine(undefined)).toEqual([]);
+    expect(formatUsageLine(usageSummary({ callCount: 0 }))).toEqual([]);
+  });
+});
+
+describe('formatProposal 渲染成本（评审 P5）', () => {
+  const proposal = {
+    proposalId: 'p-1',
+    repoName: 'demo',
+    question: '修个东西',
+    unifiedDiff: '--- a/x\n+++ b/x\n',
+    files: [{ file: 'x.ts', baselineSha256: 'a'.repeat(64), reason: '' }],
+    verifyCommands: [],
+    validatedAt: '2026-07-30',
+  };
+
+  it('成功提案头部带成本行（clamp 保头弃尾，大 diff 砍不到）', () => {
+    const out = formatProposal({ ok: true, proposal, tokenUsageSummary: usageSummary() });
+    expect(out).toContain('成本：1.2k tokens');
+    expect(out.indexOf('成本：')).toBeLessThan(out.indexOf('统一 diff'));
+  });
+
+  it('业务失败（打不上的 diff）也渲染成本——失败同样花了钱', () => {
+    const out = formatProposal({ ok: false, reason: 'PATCH_NOT_APPLICABLE', tokenUsageSummary: usageSummary() });
+    expect(out).toContain('未能生成可干净应用的补丁');
+    expect(out).toContain('成本：1.2k tokens');
+  });
+});
