@@ -26,7 +26,9 @@ eval runner 离线 judge 未接入、`REFLECT_JUDGE` 反思裁决漏记、MCP/�
 
 ## P1（中高）eval runner 直连 judge 完全未接入成本追踪
 
-- [ ] 状态：未修复
+- [x] 状态：代码已修复（69c9fe1，fix/usage-review-p1；锁竞争回归见
+  test/usageSecondWriter.test.ts）。活体验收待跑：起服务后 `pnpm --filter @aiops/api eval -- answers`，
+  查 `llm_usage_turns` 出现 `pipeline='eval'` 行且 `parent_turn_id` 指向对应 ask turn。
 
 **现象**：`apps/api/test/eval/run.ts:244`、`:287`、`:394` 三处直接调用
 `judgeAnswer(...)`，均未传 usage context，也从未创建 `pipeline='eval'` 的 tracker。
