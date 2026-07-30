@@ -108,7 +108,8 @@ L2 的 `judgeAnswer`；ask 侧传 `usageCtx('ask.reflection')`，agent 侧传
 
 ## P4（低）内网模式无 API key 时 fallback stage 误标
 
-- [ ] 状态：未修复
+- [x] 状态：已修复（5ee3c76，fix/usage-review-p4-p9；新增 canAttemptStreamLlm()，
+  回归见 test/streamNotAttempted.test.ts）
 
 **现象**：`callChatCompletionStream` 在 intranet 且无 API 兜底时**未发任何请求**就
 返回 null（`llmService.ts:406`）。但两处 fallback stage 推导只看"是否 SSE"：
@@ -127,7 +128,8 @@ L2 的 `judgeAnswer`；ask 侧传 `usageCtx('ask.reflection')`，agent 侧传
 
 ## P5（低）MCP 侧两处缺失
 
-- [ ] 状态：未修复
+- [x] 状态：已修复（6f882ee，fix/usage-review-p4-p9；formatUsageLine 同时接入
+  formatProposal 与 formatAskResponse，用例见 apps/mcp/test/format.test.ts）
 
 1. **patch 来源误标**：`apps/mcp/src/tools/proposePatch.ts:33` 请求体不带
    `source: 'mcp'`，服务端 `apps/api/src/routes/proposePatch.ts` 按 `'web'` 兜底 →
@@ -142,7 +144,9 @@ L2 的 `judgeAnswer`；ask 侧传 `usageCtx('ask.reflection')`，agent 侧传
 
 ## P6（低）Web 侧缺失
 
-- [ ] 状态：未修复
+- [x] 状态：已修复（6f882ee，fix/usage-review-p4-p9）。说明：③ 的组件覆盖走的是
+  "面板文案规则抽成纯函数 + node 环境直测"（apps/web/tests/useTokenUsage.test.ts），
+  未引入 DOM 测试栈——¥0 纪律/partial 文案/混合模型隐藏命中率三条决策逻辑均有断言。
 
 1. **补丁页无成本面板**：`ProposePatch.vue` / `useProposePatch.ts` 零改动，
    `/api/propose-patch` 响应里的 `tokenUsageSummary` 被丢弃（§13.1、阶段 4 交付项
@@ -161,7 +165,7 @@ L2 的 `judgeAnswer`；ask 侧传 `usageCtx('ask.reflection')`，agent 侧传
 
 ## P7（低）agent 路由缺 finally 兜底
 
-- [ ] 状态：未修复
+- [x] 状态：已修复（5ee3c76，fix/usage-review-p4-p9；终态编排段 try/finally + 幂等 finish 兜底）
 
 **现象**：ask 路由用 `finally` 保证 `finish()` 全出口覆盖
 （`apps/api/src/routes/ask.ts:731`）；agent 路由（`apps/api/src/routes/agent.ts`）没有。
@@ -180,7 +184,8 @@ fail-open），但属于设计明文要求。
 
 ## P8（低）非 SSE 请求中途断连时终态误标
 
-- [ ] 状态：未修复
+- [x] 状态：已修复（5ee3c76，fix/usage-review-p4-p9；finalizeResponse 感知 abort，
+  跳过 memory/judge 登记与启动，finish 记 aborted）
 
 **现象**：非 SSE + 客户端断连时，LLM 调用被 abort 后走规则 fallback 答案 →
 `finalizeResponse` 照常执行 → `finish('completed')` 先落定（幂等使 `finally` 的
@@ -197,7 +202,9 @@ judge 登记，`finish('aborted')`。
 
 ## P9（外观）明细表格与 §13.3 有出入
 
-- [ ] 状态：未修复
+- [x] 状态：已修复（6f882ee，fix/usage-review-p4-p9；状态独立成列 + 新增耗时列。
+  reasoning 保持"输出列内注"而非独立列——它是 output 子集，单列会造成重复计数错觉，
+  §13.3 的意图（reasoning 可见）已满足，此为有意偏离）
 
 `apps/web/src/components/TokenUsagePanel.vue:36-83`：表头 5 列
 （阶段/次数/输入/输出/成本）与调用行内容错位（"次数"列下渲染的是状态徽标），
@@ -223,6 +230,7 @@ judge 登记，`finish('aborted')`。
    `settlement_status='pending'`。单进程内同步执行无竞态；只有 P1 落地（eval 成为
    第二写进程）后才可能出现"job 刚结算完又被计入 timed_out"。做 P1 时在
    `settleInTx` 前补一次状态复查即可。
+   → **已修**（5ee3c76，随 P4–P9 分支）：事务内复查 pending 状态与 pending_jobs 当前值。
 4. **设计文档头部表述**：§21.5 的"未做"清单缺 P1/P2 两项，且文档头
    "阶段 1–5 落地"会掩盖缺口——已在设计文档 §21.5 补充指向本清单。
 
