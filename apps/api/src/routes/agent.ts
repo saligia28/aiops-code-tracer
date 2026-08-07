@@ -189,20 +189,24 @@ export function registerAgent(app: FastifyInstance): void {
           retried: reflection.retried,
         });
       }
+      // 中止快照（评审 #3）：终态编排全程只认这一次读数，避免 abort 信号在
+      // trace.error / preparedJudge / 落库 / executionStatus 几处读取之间翻转导致口径不一
+      const clientAborted = abortCtl.signal.aborted;
       // 中止收尾：观测记 cancelled（与 ask 管线同款语义），不算成功完成
-      if (abortCtl.signal.aborted) trace.error(new Error('client_cancelled'));
+      if (clientAborted) trace.error(new Error('client_cancelled'));
       // end() 只判定采样并返回惰性任务；登记句柄 → finish → 发 done 之后再启动（设计文档 §6.3）
       const preparedJudge = trace.end({ answer: finalAnswer, evidence: finalEvidence, intent: 'AGENT', confidence: 1, answeredByLlm: true });
-      const judgeJob = preparedJudge && !abortCtl.signal.aborted ? usageTracker.registerBackground('background.trace_judge') : null;
+      const judgeJob = preparedJudge && !clientAborted ? usageTracker.registerBackground('background.trace_judge') : null;
 
       // ====== 终态编排（设计文档 §6.3）：落库 → 登记后台任务 → 终结 turn → 发唯一 done ======
       // 顺序不可调换：先发 done 会让后台任务的成本永远进不了这一轮的汇总。
       let memoryJob: ReturnType<typeof usageTracker.registerBackground> | null = null;
       let assistantMessageId: string | null = null;
-      const clientAborted = abortCtl.signal.aborted;
+      // 部分答案只在"客户端中止"时落库(带 aborted 标记);非中止的失败路径不落部分文本——
+      // 无标记的截断答案会被当成完整回答展示(agent 转 token 级流式那天这就是活雷,评审 #2)
+      const persistContent = finalAnswer || (clientAborted ? partialAnswer : '');
       // 中止也落库（切会话中断修复）：部分答案 + aborted 标记入库，切回/刷新不再出现
       // "只有提问没有回答"的空白孤儿轮；完全没流出内容时落空串，前端靠 meta.aborted 显示"已中止"
-      const persistContent = finalAnswer || partialAnswer;
       if (convId && (persistContent || clientAborted)) {
         try {
           assistantMessageId = appendMessage(convId, {
