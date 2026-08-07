@@ -54,11 +54,16 @@
                 v-for="c in conversations"
                 :key="c.id"
                 class="conversation-item"
-                :class="{ active: c.id === activeConversationId }"
+                :class="{ active: c.id === currentViewKey }"
                 @click="switchConversation(c.id)"
               >
                 <div class="conv-main">
                   <span class="conv-title">{{ conversationLabel(c) }}</span>
+                  <span
+                    v-if="streamSession && streamSession.key === c.id"
+                    class="conv-streaming-dot"
+                    title="生成中"
+                  />
                   <span class="conv-time">{{ relativeTime(c.updatedAt) }}</span>
                 </div>
                 <div class="conv-actions">
@@ -258,15 +263,6 @@
                     <span v-if="turn.elapsed > 0" class="loading-elapsed">{{ turn.elapsed }}s</span>
                   </div>
 
-                  <!-- 中止状态 -->
-                  <div v-else-if="turn.aborted" class="aborted-msg">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                      <circle cx="12" cy="12" r="10" />
-                      <line x1="8" y1="12" x2="16" y2="12" />
-                    </svg>
-                    <span>已中止</span>
-                  </div>
-
                   <!-- 错误状态 -->
                   <div v-else-if="turn.error" class="error-msg">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -277,8 +273,17 @@
                     {{ turn.error }}
                   </div>
 
-                  <!-- 正常回答（Markdown 渲染） -->
-                  <div v-else class="answer-content markdown-body" v-html="turn.renderedAnswer"></div>
+                  <!-- 正常/中止：有部分答案照常渲染，中止轮追加徽标（B：部分答案不再被"已中止"吞掉） -->
+                  <template v-else>
+                    <div v-if="turn.renderedAnswer" class="answer-content markdown-body" v-html="turn.renderedAnswer"></div>
+                    <div v-if="turn.aborted" class="aborted-msg">
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="8" y1="12" x2="16" y2="12" />
+                      </svg>
+                      <span>{{ turn.answer ? '已中止——以上为中止前的部分回答' : '已中止' }}</span>
+                    </div>
+                  </template>
 
                   <!-- 耗时标签 -->
                   <div v-if="!turn.loading && !turn.error && !turn.aborted && turn.elapsed > 0" class="answer-duration">
@@ -322,16 +327,16 @@
             <input
               ref="inputRef"
               v-model="newQuestion"
-              placeholder="继续提问..."
+              :placeholder="streamRunning && !viewOwnsStream ? '另一会话正在生成中，完成后可继续提问' : '继续提问...'"
               @keyup.enter="handleAsk"
-              :disabled="isAnyLoading"
+              :disabled="streamRunning"
             />
-            <button v-if="isAnyLoading" class="stop-btn" @click="handleAbort" title="中止">
+            <button v-if="viewOwnsStream" class="stop-btn" @click="handleAbort" title="中止">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                 <rect x="5" y="5" width="14" height="14" rx="2" />
               </svg>
             </button>
-            <button v-else class="send-btn" @click="handleAsk" :disabled="!newQuestion.trim()">
+            <button v-else class="send-btn" @click="handleAsk" :disabled="!newQuestion.trim() || streamRunning">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
               </svg>
@@ -356,6 +361,7 @@ import ProjectIcon from '@/components/ProjectIcon.vue'
 import { useCurrentRepo } from '@/composables/useCurrentRepo'
 import { useProject } from '@/composables/useProject'
 import { useConversation, relativeTime, type Conversation, type Memory } from '@/composables/useConversation'
+import { useStreamSession } from '@/composables/useStreamSession'
 import { consumePendingQuestion } from '@/composables/usePendingQuestion'
 import TokenUsagePanel from '@/components/TokenUsagePanel.vue'
 import { useTokenUsage, type TokenUsageEvent, type TurnUsageSummary } from '@/composables/useTokenUsage'
@@ -417,12 +423,18 @@ const newQuestion = ref('')
 const history = ref<ConversationTurn[]>([])
 const mode = ref<AnswerMode>('agent')
 
-const isAnyLoading = computed(() => history.value.some(t => t.loading))
-const currentAbortController = ref<AbortController | null>(null)
+const { session: streamSession, nextTempKey, beginStream, attachConversationId, endStream } = useStreamSession()
+
+// 当前视图 key：查看已落库会话=会话 id；新会话（未落库）=null，首问时铸临时 key
+const currentViewKey = ref<string | null>(activeConversationId.value)
+// 全局是否有流在跑（单流门控：输入框停用）/当前视图是否就是那条流（停止按钮、自动滚动）
+const streamRunning = computed(() => streamSession.value !== null)
+const viewOwnsStream = computed(
+  () => streamSession.value !== null && streamSession.value.key === currentViewKey.value,
+)
 
 function handleAbort() {
-  currentAbortController.value?.abort()
-  currentAbortController.value = null
+  streamSession.value?.ctrl.abort()
 }
 
 // ---- 左侧栏：会话列表 + 记忆面板 ----
@@ -461,25 +473,35 @@ async function refreshMemories() {
   }
 }
 
-// 新建会话：复用切项目时的清空逻辑（活动会话 id 置空 + 清空 history），起一条干净新会话。
+// 新建会话：清空视图起一条干净会话。后台流（如有）继续跑完并由后端落库，完成后可从侧栏切回
 function startNewConversation() {
-  if (isAnyLoading.value) handleAbort()
   clearActiveConversation()
   history.value = []
+  currentViewKey.value = null
   if (window.innerWidth <= 768) sidebarCollapsed.value = true
 }
 
-// 切换会话：GET 该会话消息 → messagesToTurns 还原 → 填进 history 并设为活动会话。
+// 切换会话：活流会话直接还原内存 turns；其余 GET 该会话消息 → messagesToTurns 还原
 async function switchConversation(id: string) {
-  if (id === activeConversationId.value) {
+  if (id === currentViewKey.value) {
     if (window.innerWidth <= 768) sidebarCollapsed.value = true
     return
   }
-  if (isAnyLoading.value) handleAbort()
+  // 切到正在 streaming 的会话：还原内存 turns（assistant 还没落库，GET 会缺最后一轮），不打请求
+  const live = streamSession.value
+  if (live && live.key === id) {
+    history.value = live.turns
+    currentViewKey.value = id
+    setActiveConversation(id)
+    if (window.innerWidth <= 768) sidebarCollapsed.value = true
+    await scrollToBottom()
+    return
+  }
   try {
     const { turns } = await loadConversation(id, renderMarkdown)
     history.value = turns.map(t => reactive(t))
     resumeUsagePolling()
+    currentViewKey.value = id
     setActiveConversation(id)
     if (window.innerWidth <= 768) sidebarCollapsed.value = true
     await scrollToBottom()
@@ -513,13 +535,17 @@ async function renameConversationPrompt(c: Conversation) {
   }
 }
 
-// 删除：DELETE → 若删的是当前活动会话则清空 history + 活动 id → 刷新列表。
+// 删除：DELETE → 若删的是当前视图/活动会话则清空 history + 活动 id → 刷新列表。
 async function removeConversation(c: Conversation) {
   try {
+    // 删除正在 streaming 的会话：先中止流（继续为已删除的会话生成没有意义；
+    // 服务端中止落库会因会话已删而失败，只留 error 日志，可接受）
+    if (streamSession.value?.key === c.id) streamSession.value.ctrl.abort()
     await deleteConversation(c.id)
-    if (c.id === activeConversationId.value) {
+    if (c.id === activeConversationId.value || c.id === currentViewKey.value) {
       clearActiveConversation()
       history.value = []
+      currentViewKey.value = null
     }
     await refreshConversations()
   } catch {
@@ -541,6 +567,17 @@ async function removeMemory(m: Memory) {
 function syncConversationList(conversationId: string | null | undefined) {
   if (!conversationId) return
   void refreshConversations()
+}
+
+// 后端回带会话 id：重挂流会话 key；仅当用户仍停留在这条流的视图时才落活动会话——
+// 无条件 setActiveConversation 会在用户已切走时把侧栏高亮/localStorage 强行拉回（A 之前的隐性 bug）
+function onStreamConversationId(id: string): void {
+  const prevKey = attachConversationId(id)
+  if (prevKey !== null && prevKey === currentViewKey.value) {
+    currentViewKey.value = id
+    setActiveConversation(id)
+  }
+  syncConversationList(id)
 }
 
 // 配置 marked + highlight.js
@@ -629,7 +666,9 @@ async function fetchAnswer(q: string) {
     turn.elapsed++
   }, 1000)
   const ctrl = new AbortController()
-  currentAbortController.value = ctrl
+  // 流会话登记：视图无会话 id（新会话首问）时铸临时 key，后端回带 id 后重挂
+  if (!currentViewKey.value) currentViewKey.value = nextTempKey()
+  beginStream({ key: currentViewKey.value, conversationId: activeConversationId.value, turns: history.value, ctrl })
 
   try {
     // 流式（P1-D）：stream:true 走 SSE，answer_delta 逐 token 打字机渲染，
@@ -690,8 +729,7 @@ async function fetchAnswer(q: string) {
               turn.followUp = (event.data.followUp as string[]) || []
               captureUsage(turn, event.data)
               if (event.data.conversationId) {
-                setActiveConversation(event.data.conversationId as string)
-                syncConversationList(event.data.conversationId as string)
+                onStreamConversationId(event.data.conversationId as string)
               }
               break
 
@@ -700,7 +738,7 @@ async function fetchAnswer(q: string) {
               break
           }
 
-          await scrollToBottom()
+          if (viewOwnsStream.value) await scrollToBottom()
         } catch {
           // 忽略单帧 JSON 解析错误
         }
@@ -715,8 +753,10 @@ async function fetchAnswer(q: string) {
   } finally {
     clearInterval(elapsedTimer)
     turn.loading = false
-    currentAbortController.value = null
-    await scrollToBottom()
+    // 只清理本流自己的登记——挂载路径可能已有新流顶替，不能误清
+    const owned = viewOwnsStream.value && streamSession.value?.ctrl === ctrl
+    if (streamSession.value?.ctrl === ctrl) endStream()
+    if (owned) await scrollToBottom()
     // 一轮结束后同步会话列表（标题/排序）与记忆（问答可能沉淀新记忆）。
     void refreshConversations()
     void refreshMemories()
@@ -745,7 +785,9 @@ async function fetchAgentAnswer(q: string) {
     turn.elapsed++
   }, 1000)
   const ctrl = new AbortController()
-  currentAbortController.value = ctrl
+  // 流会话登记：视图无会话 id（新会话首问）时铸临时 key，后端回带 id 后重挂
+  if (!currentViewKey.value) currentViewKey.value = nextTempKey()
+  beginStream({ key: currentViewKey.value, conversationId: activeConversationId.value, turns: history.value, ctrl })
 
   try {
     const resp = await fetch('/api/agent/ask', {
@@ -796,8 +838,7 @@ async function fetchAgentAnswer(q: string) {
           switch (event.type) {
             case 'conversation':
               if (event.data.conversationId) {
-                setActiveConversation(event.data.conversationId as string)
-                syncConversationList(event.data.conversationId as string)
+                onStreamConversationId(event.data.conversationId as string)
               }
               break
 
@@ -845,7 +886,7 @@ async function fetchAgentAnswer(q: string) {
               break
           }
 
-          await scrollToBottom()
+          if (viewOwnsStream.value) await scrollToBottom()
         } catch {
           // 忽略 JSON 解析错误
         }
@@ -860,8 +901,10 @@ async function fetchAgentAnswer(q: string) {
   } finally {
     clearInterval(elapsedTimer)
     turn.loading = false
-    currentAbortController.value = null
-    await scrollToBottom()
+    // 只清理本流自己的登记——挂载路径可能已有新流顶替，不能误清
+    const owned = viewOwnsStream.value && streamSession.value?.ctrl === ctrl
+    if (streamSession.value?.ctrl === ctrl) endStream()
+    if (owned) await scrollToBottom()
     // 一轮结束后同步会话列表（标题/排序）与记忆（问答可能沉淀新记忆）。
     void refreshConversations()
     void refreshMemories()
@@ -884,7 +927,7 @@ async function scrollToBottom() {
 
 function handleAsk() {
   const q = newQuestion.value.trim()
-  if (!q || isAnyLoading.value) return
+  if (!q || streamRunning.value) return
   newQuestion.value = ''
 
   if (mode.value === 'agent') {
@@ -895,7 +938,7 @@ function handleAsk() {
 }
 
 function askFollowUp(q: string) {
-  if (isAnyLoading.value) return
+  if (streamRunning.value) return
   if (mode.value === 'agent') {
     fetchAgentAnswer(q)
   } else {
@@ -907,8 +950,11 @@ function askFollowUp(q: string) {
 // 同时刷新侧栏会话列表与项目记忆（两者均随当前项目变化）。
 watch(currentRepo, (newRepo, oldRepo) => {
   if (oldRepo && newRepo && newRepo !== oldRepo) {
+    // 旧项目的流没有归宿：显式中止（B 会落库部分答案），避免它继续往旧项目会话里写
+    streamSession.value?.ctrl.abort()
     clearActiveConversation()
     history.value = []
+    currentViewKey.value = null
     void refreshConversations()
     void refreshMemories()
   }
@@ -931,17 +977,28 @@ onMounted(async () => {
   // 无则是刷新 / 直接重进问答页，才恢复上次活动会话（保持刷新态）。
   const pendingQuestion = consumePendingQuestion()
   if (pendingQuestion) {
+    // 从首页发起新问题 = 新意图：旧的后台流（若有）显式中止（B 方案会落库部分答案）
+    streamSession.value?.ctrl.abort()
     // 从首页进入 = 新会话：清掉活动会话 id 与历史，提问时 conversationId 为空 → 后端新建会话。
     clearActiveConversation()
     history.value = []
+    currentViewKey.value = null
   } else {
-    // 刷新 / 重进：恢复活动会话，若会话归属项目与当前项目不一致则视为无效、起空会话。
-    const { conversation, turns } = await restoreConversation(renderMarkdown)
-    if (conversation && conversation.projectId === currentProjectId.value) {
-      history.value = turns.map(t => reactive(t))
-      resumeUsagePolling()
-    } else if (conversation) {
-      clearActiveConversation()
+    // 路由离开再回来且流还在跑：优先还原内存活流（库里还没有 assistant 消息）
+    const live = streamSession.value
+    if (live && live.key === activeConversationId.value) {
+      history.value = live.turns
+      currentViewKey.value = live.key
+    } else {
+      // 刷新 / 重进：恢复活动会话，若会话归属项目与当前项目不一致则视为无效、起空会话。
+      const { conversation, turns } = await restoreConversation(renderMarkdown)
+      if (conversation && conversation.projectId === currentProjectId.value) {
+        history.value = turns.map(t => reactive(t))
+        resumeUsagePolling()
+      } else if (conversation) {
+        clearActiveConversation()
+      }
+      currentViewKey.value = activeConversationId.value
     }
   }
 

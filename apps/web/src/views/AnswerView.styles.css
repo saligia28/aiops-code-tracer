@@ -988,3 +988,19 @@
     display: none;
   }
 }
+
+/* 侧栏：正在 streaming 的会话指示点（切会话中断修复 A） */
+.conv-streaming-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--el-color-primary, #409eff);
+  display: inline-block;
+  margin-left: 6px;
+  flex-shrink: 0;
+  animation: conv-streaming-pulse 1.2s ease-in-out infinite;
+}
+@keyframes conv-streaming-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
