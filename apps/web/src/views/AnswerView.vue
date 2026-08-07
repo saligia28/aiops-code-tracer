@@ -576,6 +576,9 @@ function onStreamConversationId(id: string): void {
   if (prevKey !== null && prevKey === currentViewKey.value) {
     currentViewKey.value = id
     setActiveConversation(id)
+  } else if (currentViewKey.value === id && streamSession.value) {
+    // 视图已停在这条会话上（切走期间经 GET 加载过快照）：活流刚认领同一 id，快照缺流式轮，直接重绑活 turns
+    history.value = streamSession.value.turns
   }
   syncConversationList(id)
 }
@@ -591,7 +594,7 @@ const marked = new Marked({
   },
 })
 
-const { events: usageEvents, loading: usageLoading, fetchDetail, startPolling, stopAll: stopUsagePolling } = useTokenUsage()
+const { events: usageEvents, loading: usageLoading, fetchDetail, startPolling, stopPolling, stopAll: stopUsagePolling } = useTokenUsage()
 
 /**
  * 从 done 帧接住本轮成本。未结算（还有后台任务在跑）时启动轮询，
@@ -618,6 +621,8 @@ function resumeUsagePolling(): void {
   for (const turn of history.value) {
     const s = turn.tokenUsageSummary
     if (!s || s.settled) continue
+    // 旧回调可能还绑在已被替换的 turn 对象上——先停再起，让新视图的 turn 接住结算更新
+    stopPolling(s.turnId)
     startPolling(s.turnId, (fresh) => {
       turn.tokenUsageSummary = fresh
       turn.tokenUsageEvents = usageEvents.value[fresh.turnId]
@@ -989,6 +994,8 @@ onMounted(async () => {
     if (live && live.key === activeConversationId.value) {
       history.value = live.turns
       currentViewKey.value = live.key
+      // 离开路由时 onUnmounted 停掉了所有成本轮询，回来后本会话更早的未结算轮要接着轮
+      resumeUsagePolling()
     } else {
       // 刷新 / 重进：恢复活动会话，若会话归属项目与当前项目不一致则视为无效、起空会话。
       const { conversation, turns } = await restoreConversation(renderMarkdown)
