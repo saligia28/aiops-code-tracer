@@ -19,8 +19,11 @@
             placeholder="请输入访问密码"
             :disabled="loading"
             autocomplete="current-password"
+            @input="stripNonAscii"
+            @compositionend="stripNonAscii"
           />
         </div>
+        <div v-if="imeHint" class="ime-hint">已过滤中文/全角字符，请用英文输入法输入密码</div>
         <div v-if="errorMsg" class="error-text">{{ errorMsg }}</div>
         <button type="submit" class="login-btn" :disabled="loading || !password.trim()">
           <span v-if="loading" class="spinner" />
@@ -45,6 +48,23 @@ const passwordRef = ref<HTMLInputElement>();
 const password = ref('');
 const loading = ref(false);
 const errorMsg = ref('');
+const imeHint = ref(false);
+
+// 网页无法强制系统输入法切英文（Safari 对密码框会自动切 ABC，Chrome/第三方输入法不会）。
+// 中文输入法下选词上屏的汉字、全角标点（！。）会混进密码导致校验失败，这里直接过滤非 ASCII 字符。
+// 组合期间（isComposing）不动 DOM，否则会打断 IME 候选框；最终由 compositionend 兜底清理。
+function stripNonAscii(e: Event) {
+  if ((e as InputEvent).isComposing) return;
+  const el = e.target as HTMLInputElement;
+  const cleaned = el.value.replace(/[^\x20-\x7E]/g, '');
+  if (cleaned !== el.value) {
+    el.value = cleaned;
+    password.value = cleaned;
+    imeHint.value = true;
+  } else if (imeHint.value && el.value) {
+    imeHint.value = false;
+  }
+}
 
 async function handleLogin() {
   const pwd = password.value.trim();
@@ -163,6 +183,13 @@ onMounted(() => {
 
 .error-text {
   color: var(--qg-danger);
+  font-size: 13px;
+  text-align: center;
+  margin: -4px 0;
+}
+
+.ime-hint {
+  color: var(--qg-muted);
   font-size: 13px;
   text-align: center;
   margin: -4px 0;
