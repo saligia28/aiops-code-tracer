@@ -53,6 +53,9 @@ const STORAGE_KEY = 'aiops-current-project';
 const currentProjectId = ref<string>(localStorage.getItem(STORAGE_KEY) ?? '');
 const projects = ref<ProjectInfo[]>([]);
 const loading = ref(false);
+// 首次 fetchProjects 成功后置真：消费方（Home）借此区分「列表还没加载」与「确实没有项目」，
+// 避免刷新瞬间误闪「暂无项目」提示。
+const initialized = ref(false);
 
 const currentProject = computed(() =>
   projects.value.find((p) => p.id === currentProjectId.value) ?? null,
@@ -87,9 +90,15 @@ async function fetchProjects() {
       persist(saved);
     } else if (apiCurrent && ids.includes(apiCurrent)) {
       persist(apiCurrent);
+    } else if (ids.length > 0) {
+      // 本地无记忆、后端也无当前项目时，默认选中第一个项目
+      // （switch 对未构建图谱的项目同样返回 200，只是 graphLoaded=false）。
+      await http.post(`/api/projects/${ids[0]}/switch`, {});
+      persist(ids[0]);
     } else {
       persist('');
     }
+    initialized.value = true;
   } finally {
     loading.value = false;
   }
@@ -136,6 +145,7 @@ export function useProject() {
     currentProject,
     projects,
     loading,
+    initialized,
     fetchProjects,
     switchProject,
     createProject,

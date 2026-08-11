@@ -15,18 +15,21 @@
         <input
           ref="inputRef"
           v-model="question"
-          :placeholder="hasHistory ? '继续提问...' : '描述你想了解的代码逻辑'"
+          :placeholder="placeholder"
           @keyup.enter="handleAsk"
-          :disabled="loading"
+          :disabled="loading || noProjects"
         />
-        <button class="ask-btn" @click="handleAsk" :disabled="loading || !question.trim()">
+        <button class="ask-btn" @click="handleAsk" :disabled="loading || noProjects || !question.trim()">
           <span v-if="loading" class="spinner" />
           <svg v-else viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
           </svg>
         </button>
       </div>
-      <div class="suggestions" v-if="!hasHistory">
+      <div class="no-project-hint" v-if="noProjects">
+        暂无项目，请先<button class="hint-link" @click="openProjectPanel">新建并构建项目</button>后再提问
+      </div>
+      <div class="suggestions" v-if="!hasHistory && !noProjects">
         <button
           v-for="s in suggestions"
           :key="s"
@@ -34,7 +37,7 @@
           @click="question = s; handleAsk()"
         >{{ s }}</button>
       </div>
-      <div class="tool-links" v-if="!hasHistory">
+      <div class="tool-links" v-if="!hasHistory && !noProjects">
         <button class="tool-link" @click="router.push({ name: 'ProposePatch' })">✎ 生成修改提案</button>
       </div>
     </div>
@@ -65,9 +68,11 @@ import { useRouter } from 'vue-router';
 import http from '@/lib/http';
 import ProjectIcon from '@/components/ProjectIcon.vue';
 import { useCurrentRepo } from '@/composables/useCurrentRepo';
+import { useProject } from '@/composables/useProject';
 import { setPendingQuestion } from '@/composables/usePendingQuestion';
 
 const { currentRepo } = useCurrentRepo();
+const { projects, initialized: projectsInitialized } = useProject();
 
 const router = useRouter();
 const inputRef = ref<HTMLInputElement>();
@@ -82,6 +87,18 @@ const indexStatus = ref<{
 } | null>(null);
 
 const hasHistory = computed(() => recentQuestions.value.length > 0);
+
+// 项目列表已加载且为空 → 禁用提问并引导先建项目；未加载完前不判定，避免闪现提示
+const noProjects = computed(() => projectsInitialized.value && projects.value.length === 0);
+
+const placeholder = computed(() => {
+  if (noProjects.value) return '暂无项目，构建后才能提问';
+  return hasHistory.value ? '继续提问...' : '描述你想了解的代码逻辑';
+});
+
+function openProjectPanel() {
+  window.dispatchEvent(new CustomEvent('open-project-panel'));
+}
 
 const suggestions = [
   '订单列表的分页是怎么实现的？',
@@ -100,7 +117,7 @@ async function fetchIndexStatus() {
 
 function handleAsk() {
   const q = question.value.trim();
-  if (!q || loading.value) return;
+  if (!q || loading.value || noProjects.value) return;
   recentQuestions.value.unshift(q);
   question.value = '';
   setPendingQuestion(q);
@@ -237,6 +254,28 @@ onMounted(() => {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+.no-project-hint {
+  margin-top: var(--qg-space-4);
+  text-align: center;
+  color: var(--qg-muted);
+  font-size: 13px;
+}
+
+.hint-link {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--qg-fg);
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.hint-link:hover {
+  opacity: 0.75;
 }
 
 .suggestions {
