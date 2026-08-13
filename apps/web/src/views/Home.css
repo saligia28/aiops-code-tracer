@@ -1,0 +1,202 @@
+.home {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--qg-space-8) var(--qg-space-6);
+  transition: all 0.3s ease;
+}
+
+.home .home-header {
+  text-align: center;
+  margin-bottom: 48px;
+  transition: all 0.3s ease;
+}
+
+.home .home-header.compact {
+  margin-bottom: 20px;
+}
+
+.home .logo-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--qg-space-3);
+  margin-bottom: var(--qg-space-3);
+}
+
+.home .logo-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.home .logo-area h1 {
+  font-family: var(--qg-font-display);
+  font-size: 36px;
+  font-weight: 500;
+  color: var(--qg-fg);
+  letter-spacing: -0.5px;
+}
+
+.home .subtitle {
+  color: var(--qg-muted);
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: 0.2px;
+}
+
+.home .search-area {
+  width: 100%;
+  max-width: 680px;
+  transition: all 0.3s ease;
+}
+
+.home .search-box {
+  display: flex;
+  align-items: center;
+  background: var(--qg-elevated);
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  padding: 4px 4px 4px 20px;
+  transition: border-color var(--qg-duration) ease;
+}
+
+.home .search-box:focus-within {
+  border-color: var(--qg-line-strong);
+}
+
+.home .search-box input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 15px;
+  color: var(--qg-fg);
+  background: transparent;
+  line-height: 44px;
+}
+
+.home .search-box input::placeholder {
+  color: var(--qg-faint);
+}
+
+.home .ask-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 2px;
+  border: 1px solid var(--qg-fg);
+  background: var(--qg-fg);
+  color: var(--qg-bg);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: opacity var(--qg-duration) ease, background-color var(--qg-duration) ease;
+}
+
+.home .ask-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.home .ask-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.home .spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid color-mix(in srgb, var(--qg-bg) 35%, transparent);
+  border-top-color: var(--qg-bg);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.home .suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--qg-space-2);
+  margin-top: var(--qg-space-4);
+  justify-content: center;
+}
+
+.home .suggestion-chip {
+  padding: 8px 16px;
+  border-radius: 2px;
+  border: 1px solid var(--qg-line);
+  background: transparent;
+  color: var(--qg-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--qg-duration) ease, color var(--qg-duration) ease, background-color var(--qg-duration) ease;
+  white-space: nowrap;
+}
+
+.home .suggestion-chip:hover {
+  border-color: var(--qg-line-strong);
+  color: var(--qg-fg);
+  background: var(--qg-surface);
+}
+
+.home .tool-links {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+
+.home .tool-link {
+  background: none;
+  border: none;
+  color: var(--qg-muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 2px;
+  transition: color var(--qg-duration) ease, background-color var(--qg-duration) ease;
+}
+
+.home .tool-link:hover {
+  color: var(--qg-fg);
+  background: var(--qg-surface);
+}
+
+.home .stats-bar {
+  display: flex;
+  gap: var(--qg-space-3);
+  margin-top: 40px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.home .stat-pill {
+  padding: 6px 14px;
+  border-radius: 2px;
+  border: 1px solid var(--qg-line);
+  background: var(--qg-surface);
+  color: var(--qg-muted);
+  font-family: var(--qg-font-mono);
+  font-size: 13px;
+}
+
+.home .stat-pill strong {
+  color: var(--qg-fg);
+  font-weight: 600;
+}
+
+.home .stat-pill.status.ready {
+  color: var(--qg-success);
+}
+
+.home .stat-pill.status.building {
+  color: var(--qg-warning);
+}
+
+.home .stat-pill.repo-pill {
+  border-color: var(--qg-line-strong);
+}

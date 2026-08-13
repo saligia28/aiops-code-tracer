@@ -1,0 +1,99 @@
+.page-header {
+  min-width: 0;
+  padding-bottom: var(--qg-space-4);
+  border-bottom: 1px solid var(--qg-line);
+}
+
+/* Meta row: editorial folio (index · kicker) + optional back link. */
+.page-header .page-header__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--qg-space-2);
+  min-width: 0;
+  margin-bottom: var(--qg-space-3);
+}
+
+.page-header .page-header__folio {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--qg-space-1);
+  min-width: 0;
+}
+
+.page-header .page-header__index,
+.page-header .page-header__sep,
+.page-header .page-header__kicker {
+  font-family: var(--qg-font-mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--qg-faint);
+}
+
+.page-header .page-header__back {
+  margin-left: auto;
+  font-family: var(--qg-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--qg-muted);
+  text-decoration: none;
+  transition: color var(--qg-duration) ease;
+}
+
+.page-header .page-header__back:hover {
+  color: var(--qg-fg);
+}
+
+/* Title row: title + right-aligned actions. */
+.page-header .page-header__bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--qg-space-4);
+  min-width: 0;
+}
+
+.page-header .page-header__title {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--qg-font-display);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--qg-fg);
+}
+
+.page-header .page-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--qg-space-2);
+  min-width: 0;
+}
+
+.page-header .page-header__desc {
+  margin: var(--qg-space-2) 0 0;
+  color: var(--qg-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Stack title above actions on narrow viewports. */
+@media (max-width: 900px) {
+.page-header .page-header__bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--qg-space-2);
+  }
+}
+
+/* Let actions wrap without ever overlapping the title. */
+@media (max-width: 768px) {
+.page-header .page-header__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--qg-space-2);
+    min-width: 0;
+  }
+}

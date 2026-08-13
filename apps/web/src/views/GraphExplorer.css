@@ -1,0 +1,25 @@
+.graph-explorer {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 20px;
+}
+
+.graph-explorer .toolbar {
+  display: flex;
+  align-items: center;
+  margin: 20px 0;
+}
+
+.graph-explorer .graph-canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--qg-surface);
+}

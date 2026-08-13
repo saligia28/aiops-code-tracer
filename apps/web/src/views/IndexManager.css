@@ -1,0 +1,23 @@
+.index-manager {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 20px;
+}
+
+.index-manager .status-card {
+  margin: 20px 0;
+}
+
+.index-manager .actions {
+  margin-bottom: 20px;
+}
+
+.index-manager .progress-card {
+  margin-bottom: 20px;
+}
+
+.index-manager .progress-text {
+  margin-top: 12px;
+  color: var(--qg-muted);
+  font-size: 13px;
+}

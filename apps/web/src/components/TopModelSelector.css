@@ -1,0 +1,280 @@
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+/* ---- 浮窗容器 ---- */
+.llm-floating {
+  position: relative;
+  z-index: 1200;
+  display: flex;
+  align-items: flex-end;
+}
+
+.llm-floating.is-expanded {
+  z-index: 1210;
+}
+
+/* ---- 触发按钮 ---- */
+.llm-floating .llm-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 140px;
+  max-width: 240px;
+  padding: 8px 14px;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-elevated);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.3s;
+}
+
+/* 内网 / API 态：边框保持中性，状态由圆点与徽标文字表达 */
+.llm-floating .llm-trigger.is-intranet {
+  border-color: var(--qg-line);
+}
+
+.llm-floating .llm-trigger.is-api {
+  border-color: var(--qg-line);
+}
+
+.llm-floating .llm-trigger:hover {
+  border-color: var(--qg-line-strong);
+}
+
+/* 展开态 */
+.llm-floating .llm-trigger.is-active {
+  border-color: var(--qg-fg);
+}
+
+/* 错误态 */
+.llm-floating .llm-trigger.is-error {
+  border-color: var(--qg-danger);
+}
+
+/* ---- 状态圆点 ---- */
+.llm-floating .trigger-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--qg-faint);
+}
+
+.llm-floating .is-intranet .trigger-dot {
+  background: var(--qg-fg);
+}
+
+.llm-floating .is-api .trigger-dot {
+  background: var(--qg-fg);
+}
+
+.llm-floating .is-error .trigger-dot {
+  background: var(--qg-danger);
+}
+
+.llm-floating .is-loading .trigger-dot {
+  background: var(--qg-faint);
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+
+/* ---- 移动端图标（桌面隐藏）---- */
+.llm-floating .mobile-icon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--qg-fg);
+}
+
+/* ---- 按钮文字 ---- */
+.llm-floating .trigger-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.llm-floating .trigger-model {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--qg-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llm-floating .trigger-badge {
+  flex-shrink: 0;
+  font-family: var(--qg-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2.5px 6px;
+  border-radius: 2px;
+  background: var(--qg-surface);
+  color: var(--qg-muted);
+}
+
+.llm-floating .is-error .trigger-badge {
+  color: var(--qg-danger);
+}
+
+/* ---- 展开面板 ---- */
+.llm-floating .llm-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 340px;
+  padding: 14px;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-elevated);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+}
+
+.llm-floating .llm-panel.panel-intranet {
+  border-color: var(--qg-line);
+}
+
+.llm-floating .llm-panel.panel-api {
+  border-color: var(--qg-line);
+}
+
+.llm-floating .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.llm-floating .panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--qg-fg);
+}
+
+.llm-floating .panel-close {
+  border: none;
+  background: transparent;
+  color: var(--qg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: color 0.2s;
+}
+
+.llm-floating .panel-close:hover {
+  color: var(--qg-fg);
+}
+
+.llm-floating .toolbar-row {
+  display: flex;
+  gap: 8px;
+}
+
+.llm-floating .toolbar-select {
+  width: 120px;
+}
+
+.llm-floating .toolbar-model {
+  flex: 1;
+}
+
+.llm-floating .toolbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--qg-muted);
+  line-height: 1.4;
+}
+
+.llm-floating .meta-sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--qg-faint);
+  flex-shrink: 0;
+}
+
+.llm-floating .toolbar-status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--qg-muted);
+  line-height: 1.5;
+}
+
+.llm-floating .toolbar-status.error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--qg-danger);
+}
+
+.llm-floating .retry-btn {
+  border: none;
+  background: transparent;
+  color: var(--qg-fg);
+  cursor: pointer;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.llm-floating .retry-btn:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+.llm-floating {
+    position: fixed;
+    bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+    right: 16px;
+    left: auto;
+    z-index: 1200;
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+/* 触发按钮变圆形 */
+.llm-floating .llm-trigger {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    max-width: 44px;
+    border-radius: 2px;
+    padding: 0;
+    justify-content: center;
+    position: relative;
+  }
+
+/* 文字标签隐藏，图标显示 */
+.llm-floating .trigger-body {
+    display: none;
+  }
+
+.llm-floating .mobile-icon {
+    display: flex;
+  }
+
+/* 移动端隐藏状态圆点，状态由边框呼吸效果体现 */
+.llm-floating .trigger-dot {
+    display: none;
+  }
+
+/* 面板从右侧弹出，宽度自适应 */
+.llm-floating .llm-panel {
+    position: static;
+    top: auto;
+    right: auto;
+    width: min(340px, calc(100vw - 32px));
+    max-width: none;
+    margin-bottom: 8px;
+  }
+}

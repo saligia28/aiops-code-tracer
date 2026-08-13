@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:e2e": "playwright test --config playwright.config.ts quiet-grid-layout.spec.ts",
     "test:screenshots": "playwright test --config playwright.config.ts screenshots.spec.ts",
@@ -16,18 +16,19 @@
   "dependencies": {
     "@antv/g6": "^5.0.0",
     "axios": "^1.7.0",
-    "element-plus": "^2.9.0",
     "highlight.js": "^11.11.1",
     "marked": "^17.0.4",
-    "vue": "^3.5.0",
-    "vue-router": "^4.5.0"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.1.0"
   },
   "devDependencies": {
     "@playwright/test": "1.54.1",
-    "@vitejs/plugin-vue": "^5.2.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.0",
     "vite": "^6.1.0",
-    "vitest": "3.0.9",
-    "vue-tsc": "^2.2.0"
+    "vitest": "3.0.9"
   }
 }

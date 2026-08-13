@@ -20,7 +20,7 @@ import {
   canShowCacheHitRate,
   type TurnUsageSummary,
   type TokenUsageEvent,
-} from '@/composables/useTokenUsage';
+} from '@/hooks/useTokenUsage';
 
 const mockGet = vi.mocked(http.get);
 

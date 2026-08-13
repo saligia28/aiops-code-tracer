@@ -1,0 +1,344 @@
+.project-floating {
+  position: relative;
+  z-index: 1200;
+  display: flex;
+  align-items: flex-end;
+}
+
+.project-floating.is-expanded {
+  z-index: 1210;
+}
+
+/* ---- 移动端图标（桌面隐藏）---- */
+.project-floating .mobile-icon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--qg-fg);
+}
+
+/* ---- 触发按钮 ---- */
+.project-floating .project-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 120px;
+  max-width: 260px;
+  padding: 8px 14px;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-elevated);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.3s;
+}
+
+.project-floating .project-trigger:hover {
+  border-color: var(--qg-line-strong);
+}
+
+.project-floating .project-trigger.is-active {
+  border-color: var(--qg-fg);
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+.project-floating .trigger-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--qg-fg);
+}
+
+.project-floating .is-loading .trigger-dot {
+  background: var(--qg-faint);
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+
+.project-floating .trigger-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.project-floating .trigger-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--qg-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-floating .trigger-badge {
+  flex-shrink: 0;
+  font-family: var(--qg-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2.5px 6px;
+  border-radius: 2px;
+  background: var(--qg-surface);
+  color: var(--qg-muted);
+}
+
+/* ---- 展开面板 ---- */
+.project-floating .project-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 300px;
+  padding: 14px;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: var(--qg-elevated);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+}
+
+.project-floating .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.project-floating .panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--qg-fg);
+}
+
+.project-floating .panel-close {
+  border: none;
+  background: transparent;
+  color: var(--qg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: color 0.2s;
+}
+
+.project-floating .panel-close:hover {
+  color: var(--qg-fg);
+}
+
+.project-floating .panel-status {
+  font-size: 12px;
+  color: var(--qg-muted);
+  line-height: 1.5;
+}
+
+/* ---- 项目列表 ---- */
+.project-floating .project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.project-floating .project-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  transition: all 0.15s;
+}
+
+.project-floating .project-item:hover {
+  background: var(--qg-surface);
+}
+
+.project-floating .project-item.active {
+  background: var(--qg-surface);
+  border-color: var(--qg-line-strong);
+  box-shadow: inset 2px 0 0 var(--qg-fg);
+}
+
+.project-floating .project-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-floating .project-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.project-floating .project-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--qg-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-floating .project-item.active .project-name {
+  color: var(--qg-fg);
+  font-weight: 600;
+}
+
+.project-floating .project-fw {
+  flex-shrink: 0;
+  font-family: var(--qg-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 2px;
+  background: var(--qg-surface);
+  color: var(--qg-muted);
+}
+
+.project-floating .project-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--qg-muted);
+}
+
+.project-floating .project-meta.no-graph {
+  color: var(--qg-faint);
+}
+
+.project-floating .project-build-btn {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--qg-fg);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.project-floating .project-build-btn:hover:not(:disabled) {
+  background: var(--qg-surface);
+  border-color: var(--qg-line-strong);
+}
+
+.project-floating .project-build-btn.building {
+  color: var(--qg-faint);
+  border-color: var(--qg-line);
+  background: var(--qg-surface);
+  cursor: not-allowed;
+}
+
+.project-floating .project-delete-btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--qg-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.project-floating .project-delete-btn:hover {
+  background: color-mix(in srgb, var(--qg-danger) 12%, transparent);
+  color: var(--qg-danger);
+}
+
+.project-floating .new-project-btn {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 0;
+  border: 1px dashed var(--qg-line-strong);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--qg-fg);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.project-floating .new-project-btn:hover {
+  background: var(--qg-surface);
+}
+
+@media (max-width: 768px) {
+.project-floating {
+    position: fixed;
+    bottom: calc(140px + env(safe-area-inset-bottom, 0px));
+    right: 16px;
+    left: auto;
+    z-index: 1200;
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+.project-floating.is-expanded {
+    z-index: 1210;
+  }
+
+/* 触发按钮变圆形 */
+.project-floating .project-trigger {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    max-width: 44px;
+    border-radius: 2px;
+    padding: 0;
+    justify-content: center;
+    position: relative;
+  }
+
+/* 文字标签隐藏，图标显示 */
+.project-floating .trigger-body {
+    display: none;
+  }
+
+.project-floating .mobile-icon {
+    display: flex;
+  }
+
+/* 移动端隐藏状态圆点，状态由边框体现 */
+.project-floating .trigger-dot {
+    display: none;
+  }
+
+/* 面板从右侧弹出，宽度自适应 */
+.project-floating .project-panel {
+    position: static;
+    top: auto;
+    right: auto;
+    width: min(300px, calc(100vw - 32px));
+    max-width: none;
+    margin-bottom: 8px;
+  }
+}

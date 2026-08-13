@@ -4,7 +4,7 @@
 
 <p>
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict%20%2B%20ESM-3178C6?logo=typescript&logoColor=white">
-  <img alt="Vue 3" src="https://img.shields.io/badge/Vue_3-Vite-42b883?logo=vuedotjs&logoColor=white">
+  <img alt="React 19" src="https://img.shields.io/badge/React_19-Vite-61dafb?logo=react&logoColor=white">
   <img alt="Fastify" src="https://img.shields.io/badge/Fastify_5-Node.js-000000?logo=fastify&logoColor=white">
   <img alt="pnpm" src="https://img.shields.io/badge/pnpm-monorepo-F69220?logo=pnpm&logoColor=white">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-Claude_Code-8A2BE2">
@@ -99,7 +99,7 @@ flowchart LR
     end
 
     Consumers{{"消费方"}}
-    WEB["Web (Vue 3 + G6)"]
+    WEB["Web (React 19 + G6)"]
     MCP["MCP → Claude Code"]
     LLM["LLM<br/>DeepSeek / OpenAI / Ollama / 百炼"]
 
@@ -118,7 +118,7 @@ flowchart LR
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | Vue 3 + Vite + Element Plus + AntV G6 |
+| 前端 | React 19 + Vite + AntV G6（Element Plus 皮肤：内联 theme-chalk 子集 + 同构 React 组件） |
 | 后端 | Fastify 5（Node.js，纯 ESM） |
 | AST 解析 | TypeScript Compiler API · `@vue/compiler-sfc` · tree-sitter（Java，wasm 运行时） |
 | 存储 | SQLite（对话 / 记忆） + JSON 索引产物 |
@@ -134,7 +134,7 @@ flowchart LR
 
 ```
 apps/
-  web/        → @aiops/web       Vue 3 前端（端口 4200）
+  web/        → @aiops/web       React 19 前端（端口 4200）
   api/        → @aiops/api       Fastify API：鉴权 / 项目注册 / 索引 / 图谱 / RAG / Agent / 对话 / 记忆
   indexer/    → @aiops/indexer   CLI 索引工具
   mcp/        → @aiops/mcp       Claude Code 的 stdio MCP 服务（9 个分析工具）

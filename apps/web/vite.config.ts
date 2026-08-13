@@ -1,5 +1,5 @@
 import { defineConfig, loadEnv } from 'vite'
-import vue from '@vitejs/plugin-vue'
+import react from '@vitejs/plugin-react'
 import { resolve } from 'path'
 
 // 端口/后端目标读取自仓库根 .env（与 apps/api 经 dotenv 读取的同一份，单一事实源：API_PORT / WEB_PORT），
@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
   const WS_TARGET = API_TARGET.replace(/^http/, 'ws')
 
   return {
-    plugins: [vue()],
+    plugins: [react()],
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src'),

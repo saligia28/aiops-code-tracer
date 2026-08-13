@@ -1,0 +1,24 @@
+.theme-toggle {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--qg-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--qg-fg);
+  cursor: pointer;
+  transition: border-color var(--qg-duration) ease;
+}
+
+.theme-toggle:hover {
+  border-color: var(--qg-line-strong);
+}
+
+@media (max-width: 768px) {
+.theme-toggle {
+    width: 44px;
+    height: 44px;
+  }
+}

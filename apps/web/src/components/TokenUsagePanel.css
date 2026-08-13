@@ -1,0 +1,103 @@
+.token-usage {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.token-usage .usage-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary, #6b7280);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.token-usage .usage-summary:hover {
+  border-color: var(--accent, #2563eb);
+  color: var(--text-primary, #111827);
+}
+
+.token-usage .usage-sep { opacity: 0.4; }
+
+.token-usage .usage-cost { font-variant-numeric: tabular-nums; }
+
+.token-usage .usage-cost.is-partial { color: var(--warning, #b45309); }
+
+.token-usage .usage-warn { color: var(--warning, #b45309); }
+
+.token-usage .usage-caret { opacity: 0.5; }
+
+.token-usage .usage-settling { display: inline-flex; align-items: center; gap: 4px; }
+
+.token-usage .settling-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent, #2563eb);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+.token-usage .usage-detail {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 8px;
+  background: var(--surface-subtle, #f9fafb);
+}
+
+.token-usage .usage-reasons {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  color: var(--warning, #b45309);
+}
+
+.token-usage .usage-loading { margin: 0; color: var(--text-secondary, #6b7280); }
+
+.token-usage .usage-table { width: 100%; border-collapse: collapse; }
+
+.token-usage .usage-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-secondary, #6b7280);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-subtle, #e5e7eb);
+}
+
+.token-usage .usage-table td { padding: 4px 6px; }
+
+.token-usage .usage-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.token-usage .stage-row { cursor: pointer; }
+
+.token-usage .stage-row:hover { background: var(--surface-hover, rgba(0, 0, 0, 0.03)); }
+
+.token-usage .stage-caret { display: inline-block; width: 12px; opacity: 0.6; }
+
+.token-usage .call-row { color: var(--text-secondary, #6b7280); }
+
+.token-usage .call-model { padding-left: 18px !important; }
+
+.token-usage .reasoning { opacity: 0.7; }
+
+.token-usage .badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--warning-bg, #fef3c7);
+  color: var(--warning, #b45309);
+  font-size: 11px;
+}
+
+.token-usage .badge-plain { background: var(--surface-hover, rgba(0, 0, 0, 0.05)); color: inherit; }
+
+.token-usage .st-ok { color: var(--success, #059669); }
+
+.token-usage .st-warn { color: var(--warning, #b45309); }
+
+.token-usage .st-err { color: var(--danger, #dc2626); }
