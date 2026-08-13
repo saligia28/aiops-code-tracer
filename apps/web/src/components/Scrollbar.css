@@ -1,0 +1,42 @@
+/* 自绘滚动条。antd 没有滚动条组件，而问答页侧栏需要"隐藏原生条 + 悬停显示细滑块"
+   这种观感（迁移前用的是 el-scrollbar）。样式按 Quiet Grid 令牌复刻同一套尺寸：
+   6px 宽、贴右 2px、圆角 4px、常态 30% 不透明度、悬停 50%。 */
+.qg-scrollbar {
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.qg-scrollbar__wrap {
+  height: 100%;
+  overflow: auto;
+  scrollbar-width: none;
+}
+
+.qg-scrollbar__wrap::-webkit-scrollbar {
+  display: none;
+}
+
+.qg-scrollbar__bar {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  bottom: 2px;
+  width: 6px;
+  border-radius: 4px;
+  z-index: 1;
+}
+
+.qg-scrollbar__thumb {
+  display: block;
+  width: 100%;
+  border-radius: inherit;
+  background-color: var(--qg-muted);
+  opacity: 0.3;
+  cursor: pointer;
+  transition: opacity var(--qg-duration) ease, background-color var(--qg-duration) ease;
+}
+
+.qg-scrollbar__thumb:hover {
+  opacity: 0.5;
+}

@@ -1,6 +1,5 @@
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
-import './styles/element-plus.css';
 import './styles/quiet-grid.css';
 import App from './App';
 

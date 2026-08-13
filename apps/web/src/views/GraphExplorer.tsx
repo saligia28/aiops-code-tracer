@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { PageHeader } from '@/components/PageHeader';
-import { ElEmpty, ElInput, ElSelect } from '@/components/el';
+import { Empty, Input, Select } from 'antd';
 import './GraphExplorer.css';
 
 const NODE_TYPE_OPTIONS = [
@@ -21,24 +21,24 @@ export default function GraphExplorer() {
       <PageHeader index="02" kicker="GRAPH" title="图谱浏览器" backTo="/" />
 
       <div className="toolbar">
-        <ElInput
-          modelValue={searchQuery}
-          onChange={setSearchQuery}
+        <Input
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="搜索符号..."
           style={{ width: 300 }}
         />
-        <ElSelect
-          modelValue={filterType}
-          onChange={setFilterType}
+        <Select
+          value={filterType || undefined}
+          onChange={(value) => setFilterType(value ?? '')}
           options={NODE_TYPE_OPTIONS}
           placeholder="节点类型"
-          clearable
+          allowClear
           style={{ width: 160, marginLeft: 12 }}
         />
       </div>
 
       <div className="graph-canvas" ref={canvasRef}>
-        <ElEmpty description="图谱可视化加载中... (AntV G6)" />
+        <Empty description="图谱可视化加载中... (AntV G6)" />
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import http from '@/lib/http';
-import { ElMessage, ElSelect } from '@/components/el';
+import { Select } from 'antd';
+import { message } from '@/components/antd/feedback';
 import './TopModelSelector.css';
 
 interface LlmOption {
@@ -25,6 +26,9 @@ interface LlmRuntimeConfig {
 
 const CONFIG_TIMEOUT_MS = 4000;
 
+/** 下拉浮层的承载类：面板的"点击外部收起"靠 closest(...) 认它，别改名。 */
+const LLM_POPUP_CLASS = 'llm-floating-owned-popper';
+
 export function TopModelSelector() {
   const [config, setConfig] = useState<LlmRuntimeConfig | null>(null);
   const [mode, setMode] = useState<'api' | 'intranet'>('api');
@@ -33,6 +37,7 @@ export function TopModelSelector() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [expanded, setExpanded] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
   const floatingRef = useRef<HTMLDivElement | null>(null);
 
   const availableModes: LlmOption[] = config?.availableModes ?? [{ value: 'api', label: 'API / 默认' }];
@@ -42,6 +47,13 @@ export function TopModelSelector() {
     : model
       ? [{ value: model, label: model }]
       : [];
+
+  // 输入了候选之外的名字时把它作为一条可选项置顶（等价迁移前 el-select 的 allow-create）。
+  const modelOptions = (() => {
+    const query = modelSearch.trim();
+    if (!query || availableModels.some((o) => o.value === query)) return availableModels;
+    return [{ value: query, label: query }, ...availableModels];
+  })();
 
   const providerLabel = loading
     ? '加载中'
@@ -113,10 +125,10 @@ export function TopModelSelector() {
       // 提示里用刚落地的配置算标签，别用这一轮渲染的旧值。
       const label =
         res.data.mode === 'intranet' ? '内网 Ollama' : `API / ${res.data.apiProvider}`;
-      ElMessage.success(`已切换到 ${label} / ${res.data.model}`);
+      message.success(`已切换到 ${label} / ${res.data.model}`);
     } catch {
       setErrorMessage('切换模型失败，请确认后端接口可用');
-      ElMessage.error('切换模型失败');
+      message.error('切换模型失败');
       await fetchConfig();
     } finally {
       setSaving(false);
@@ -128,6 +140,7 @@ export function TopModelSelector() {
   }
 
   function handleModelChange(value: string) {
+    setModelSearch('');
     void saveConfig({ model: value });
   }
 
@@ -201,24 +214,28 @@ export function TopModelSelector() {
           </div>
 
           <div className="toolbar-row">
-            <ElSelect
-              modelValue={mode}
+            <Select
+              value={mode}
               options={availableModes}
               size="small"
               className="toolbar-select"
-              popperClass="llm-floating-owned-popper"
+              classNames={{ popup: { root: LLM_POPUP_CLASS } }}
               disabled={saving || loading || !config}
               onChange={handleModeChange}
             />
-            <ElSelect
-              modelValue={model}
-              options={availableModels}
+            <Select
+              value={model}
+              options={modelOptions}
               size="small"
               className="toolbar-select toolbar-model"
-              filterable
-              allowCreate
-              defaultFirstOption
-              popperClass="llm-floating-owned-popper"
+              // 允许填写候选之外的模型名：输入时临时插一条同名选项供选中。
+              showSearch
+              searchValue={modelSearch}
+              onSearch={setModelSearch}
+              filterOption={(input, option) =>
+                String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+              }
+              classNames={{ popup: { root: LLM_POPUP_CLASS } }}
               disabled={saving || loading || !config}
               onChange={handleModelChange}
             />

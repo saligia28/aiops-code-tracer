@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import http from '@/lib/http';
 import { PageHeader } from '@/components/PageHeader';
-import { ElButton, ElCard, ElDescriptions, ElProgress, ElTag } from '@/components/el';
+import { Button, Card, Descriptions, Progress, Tag } from 'antd';
 import { useCurrentRepo } from '@/hooks/useCurrentRepo';
 import './IndexManager.css';
 
@@ -18,11 +18,12 @@ interface IndexStatus {
   error?: string;
 }
 
-function statusTagType(s?: string) {
+/** 索引状态 → 标签配色（与迁移前 el-tag 的 success/warning/danger/info 一一对应）。 */
+function statusTagColor(s?: string) {
   if (s === 'ready') return 'success' as const;
   if (s === 'building') return 'warning' as const;
-  if (s === 'error') return 'danger' as const;
-  return 'info' as const;
+  if (s === 'error') return 'error' as const;
+  return 'default' as const;
 }
 
 export default function IndexManager() {
@@ -131,37 +132,41 @@ export default function IndexManager() {
     <div className="index-manager">
       <PageHeader index="03" kicker="INDEX" title="索引管理" backTo="/" />
 
-      <ElCard className="status-card" header="索引状态">
-        <ElDescriptions
+      <Card className="status-card" title="索引状态">
+        <Descriptions
           column={2}
-          border
+          bordered
           items={[
-            { label: '状态', content: <ElTag type={statusTagType(status.status)}>{status.status}</ElTag> },
-            { label: '仓库', content: status.repoName || '--' },
-            { label: '文件数', content: status.totalFiles || '--' },
-            { label: '节点数', content: status.totalNodes || '--' },
-            { label: '边数', content: status.totalEdges || '--' },
-            { label: '最近构建', content: status.lastBuildTime || '--' },
-            { label: '阶段', content: status.phase || '--' },
-            { label: '信息', content: status.message || '--' },
+            {
+              key: 'status',
+              label: '状态',
+              children: <Tag color={statusTagColor(status.status)}>{status.status}</Tag>,
+            },
+            { key: 'repo', label: '仓库', children: status.repoName || '--' },
+            { key: 'files', label: '文件数', children: status.totalFiles || '--' },
+            { key: 'nodes', label: '节点数', children: status.totalNodes || '--' },
+            { key: 'edges', label: '边数', children: status.totalEdges || '--' },
+            { key: 'lastBuild', label: '最近构建', children: status.lastBuildTime || '--' },
+            { key: 'phase', label: '阶段', children: status.phase || '--' },
+            { key: 'message', label: '信息', children: status.message || '--' },
           ]}
         />
-      </ElCard>
+      </Card>
 
       <div className="actions">
-        <ElButton type="primary" onClick={triggerBuild} loading={building}>
+        <Button type="primary" onClick={triggerBuild} loading={building}>
           全量构建
-        </ElButton>
-        <ElButton onClick={triggerRebuild} loading={building}>
+        </Button>
+        <Button onClick={triggerRebuild} loading={building}>
           增量重建
-        </ElButton>
+        </Button>
       </div>
 
       {building && (
-        <ElCard className="progress-card" header="构建进度">
-          <ElProgress percentage={progress} status={progress === 100 ? 'success' : undefined} />
+        <Card className="progress-card" title="构建进度">
+          <Progress percent={progress} status={progress === 100 ? 'success' : 'active'} />
           <p className="progress-text">{status.message || '处理中...'}</p>
-        </ElCard>
+        </Card>
       )}
     </div>
   );

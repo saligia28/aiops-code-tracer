@@ -118,7 +118,7 @@ flowchart LR
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | React 19 + Vite + AntV G6（Element Plus 皮肤：内联 theme-chalk 子集 + 同构 React 组件） |
+| 前端 | React 19 + Vite + Ant Design 6 + AntV G6（antd 令牌由 quiet-grid.css 的 --qg-* 在运行时注入） |
 | 后端 | Fastify 5（Node.js，纯 ESM） |
 | AST 解析 | TypeScript Compiler API · `@vue/compiler-sfc` · tree-sitter（Java，wasm 运行时） |
 | 存储 | SQLite（对话 / 记忆） + JSON 索引产物 |

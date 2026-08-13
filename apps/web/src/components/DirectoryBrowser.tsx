@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ElDialog, ElMessage } from '@/components/el';
+import { Modal } from 'antd';
+import { message } from '@/components/antd/feedback';
 import http from '@/lib/http';
 
 interface BrowserInfo {
@@ -60,7 +61,7 @@ export function DirectoryBrowser({
         hasPackageJson: res.data.hasPackageJson,
       });
     } catch {
-      ElMessage.error('读取目录失败');
+      message.error('读取目录失败');
     } finally {
       setBrowserLoading(false);
     }
@@ -83,14 +84,15 @@ export function DirectoryBrowser({
   }, [modelValue]);
 
   return (
-    <ElDialog
-      modelValue={modelValue}
-      onUpdateModelValue={onUpdateModelValue}
-      width="520px"
-      closeOnClickModal={false}
-      showClose={false}
-      customClass="glass-dialog"
-      header={
+    <Modal
+      open={modelValue}
+      onCancel={() => onUpdateModelValue(false)}
+      width={520}
+      mask={{ closable: false }}
+      closable={false}
+      className="glass-dialog"
+      destroyOnHidden
+      title={
         <div className="glass-dialog-header">
           <span className="glass-dialog-title">选择仓库目录</span>
           <button
@@ -175,6 +177,6 @@ export function DirectoryBrowser({
           </>
         )}
       </div>
-    </ElDialog>
+    </Modal>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ElDialog, ElMessage } from '@/components/el';
+import { Modal } from 'antd';
+import { message } from '@/components/antd/feedback';
 import { useProject, FRAMEWORK_OPTIONS } from '@/hooks/useProject';
 import type { ProjectFramework } from '@/hooks/useProject';
 import { DirectoryBrowser } from './DirectoryBrowser';
@@ -66,11 +67,11 @@ export function ProjectCreateDialog({
 
   async function handleCreate() {
     if (!name.trim()) {
-      ElMessage.warning('请输入项目名称');
+      message.warning('请输入项目名称');
       return;
     }
     if (!repoPath.trim()) {
-      ElMessage.warning('请选择本地仓库路径');
+      message.warning('请选择本地仓库路径');
       return;
     }
 
@@ -89,7 +90,7 @@ export function ProjectCreateDialog({
         scanPaths,
       });
 
-      ElMessage.success(`项目 "${record.name}" 创建成功`);
+      message.success(`项目 "${record.name}" 创建成功`);
       onUpdateModelValue(false);
       resetForm();
 
@@ -99,7 +100,7 @@ export function ProjectCreateDialog({
       const msg =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
         '创建失败';
-      ElMessage.error(msg);
+      message.error(msg);
     } finally {
       setCreating(false);
     }
@@ -107,14 +108,15 @@ export function ProjectCreateDialog({
 
   return (
     <>
-      <ElDialog
-        modelValue={modelValue}
-        onUpdateModelValue={onUpdateModelValue}
-        width="460px"
-        closeOnClickModal={false}
-        showClose={false}
-        customClass="glass-dialog"
-        header={
+      <Modal
+        open={modelValue}
+        onCancel={() => onUpdateModelValue(false)}
+        width={460}
+        mask={{ closable: false }}
+        closable={false}
+        className="glass-dialog"
+        destroyOnHidden
+        title={
           <div className="glass-dialog-header">
             <span className="glass-dialog-title">新建项目</span>
             <button
@@ -215,7 +217,7 @@ export function ProjectCreateDialog({
             />
           </label>
         </div>
-      </ElDialog>
+      </Modal>
 
       {/* 目录浏览弹窗 */}
       <DirectoryBrowser

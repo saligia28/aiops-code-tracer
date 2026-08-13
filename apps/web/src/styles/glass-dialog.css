@@ -1,10 +1,13 @@
 /* 对话框 / 表单 / 目录浏览器 共享样式（Quiet Grid 皮肤）。
-   从 TopProjectSelector.vue 的全局 <style> 块原样抽出（非 scoped=全局，行为不变）。
    被 ProjectCreateDialog / ProjectDeleteDialog / DirectoryBrowser 复用。
    注意：类名（尤其 .glass-dialog）为承载类，TopProjectSelector 的点击外部关闭
-   依赖 target.closest('.glass-dialog')，只换皮不改名。 */
+   依赖 target.closest('.glass-dialog')，只换皮不改名。
+
+   组件库换成 antd 后，承载类挂在 .ant-modal 上，但视觉盒子是 .ant-modal-content，
+   因此皮肤打在 content 上；antd 自带的内边距在这里清零，改由本文件按 28px 版心排。 */
 /* ====== Glass Dialog 主题 ====== */
-.glass-dialog.el-dialog {
+.glass-dialog .ant-modal-content {
+  padding: 0;
   border-radius: 2px;
   border: 1px solid var(--qg-line);
   background: var(--qg-elevated);
@@ -12,22 +15,30 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
-.glass-dialog.glass-dialog-danger.el-dialog {
+.glass-dialog.glass-dialog-danger .ant-modal-content {
   border-color: var(--qg-danger);
 }
 
-.glass-dialog .el-dialog__header {
+.glass-dialog .ant-modal-header {
   padding: 0;
   margin: 0;
+  background: transparent;
 }
 
-.glass-dialog .el-dialog__body {
+/* 自定义头部整体塞在 title 槽里，去掉 antd 的字号/行高预设，交给 .glass-dialog-title */
+.glass-dialog .ant-modal-title {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.glass-dialog .ant-modal-body {
   padding: 0 28px 20px;
   color: var(--qg-fg);
 }
 
-.glass-dialog .el-dialog__footer {
+.glass-dialog .ant-modal-footer {
   padding: 4px 28px 24px;
+  margin: 0;
 }
 
 /* ---- header ---- */
@@ -432,33 +443,19 @@
 }
 
 /* ---- 遮罩层 ---- */
-.el-overlay {
-  background: rgba(0, 0, 0, 0.45) !important;
+.ant-modal-mask {
+  background: rgba(0, 0, 0, 0.45);
 }
 
 /* ---- 窄屏（≤420px）让对话框贴合视口 ---- */
-/* Element Plus 用内联 CSS 变量设定 .el-dialog 宽度；此处提权 + !important 覆盖。 */
+/* antd 用内联 width 设定 .ant-modal 宽度；此处提权 + !important 覆盖。 */
 @media (max-width: 420px) {
-  .glass-dialog.el-dialog {
+  .glass-dialog.ant-modal {
     width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px);
   }
 }
 
-/* ---- Element Plus 传送到 <body> 的浮层（下拉/气泡/消息）主题安全兜底 ---- */
-/* data-theme 挂在 <html>、--el-* 走 :root 全局，天然继承；这里再显式钉一遍双主题令牌面。 */
-.el-popper.is-light,
-.el-popper.is-light .el-popper__arrow::before {
-  background: var(--qg-elevated);
-  border-color: var(--qg-line);
-}
-
-/* 消息 toast：底色钉成暗色可读的令牌面（覆盖 EP 各类型的 *-light-9 近白底），
-   但不再统一压掉文字色——保留 EP 按类型的 success/error/warning 文字强调（已走 --el-color-* → 令牌）。 */
-.el-message,
-.el-message--success,
-.el-message--warning,
-.el-message--error,
-.el-message--info {
-  --el-message-bg-color: var(--qg-elevated);
-  --el-message-border-color: var(--qg-line);
-}
+/* 传送到 <body> 的浮层（下拉/气泡/消息）不需要在这里兜底主题：
+   antd 的 colorBgElevated / colorBorder 已由 AntdProvider 从 --qg-* 读取，
+   明暗两套自动跟随。 */

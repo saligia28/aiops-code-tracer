@@ -4,7 +4,10 @@ import { Marked } from 'marked';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import { ProjectIcon } from '@/components/ProjectIcon';
-import { ElMessage, ElMessageBox, ElPopconfirm, ElScrollbar } from '@/components/el';
+import { Popconfirm } from 'antd';
+import { message } from '@/components/antd/feedback';
+import { prompt } from '@/components/antd/prompt';
+import { Scrollbar } from '@/components/Scrollbar';
 import { TokenUsagePanel } from '@/components/TokenUsagePanel';
 import { useCurrentRepo } from '@/hooks/useCurrentRepo';
 import { useProject } from '@/hooks/useProject';
@@ -247,7 +250,7 @@ export default function AnswerView() {
       if (window.innerWidth <= 768) setSidebarCollapsed(true);
       await scrollToBottom();
     } catch {
-      ElMessage.error('加载会话失败');
+      message.error('加载会话失败');
     }
   }
 
@@ -255,13 +258,16 @@ export default function AnswerView() {
   async function renameConversationPrompt(c: Conversation) {
     let title: string;
     try {
-      const res = await ElMessageBox.prompt('请输入新的会话名称', '重命名会话', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        inputValue: c.title ?? '',
-        inputPlaceholder: '会话名称',
-      });
-      title = (res.value ?? '').trim();
+      title = (
+        await prompt({
+          title: '重命名会话',
+          message: '请输入新的会话名称',
+          okText: '确定',
+          cancelText: '取消',
+          defaultValue: c.title ?? '',
+          placeholder: '会话名称',
+        })
+      ).trim();
     } catch {
       return; // 取消
     }
@@ -279,7 +285,7 @@ export default function AnswerView() {
         return next;
       });
     } catch {
-      ElMessage.error('重命名失败');
+      message.error('重命名失败');
     }
   }
 
@@ -294,7 +300,7 @@ export default function AnswerView() {
       }
       await refreshConversations();
     } catch {
-      ElMessage.error('删除会话失败');
+      message.error('删除会话失败');
     }
   }
 
@@ -303,7 +309,7 @@ export default function AnswerView() {
       await deleteMemory(m.id);
       setMemories((prev) => prev.filter((x) => x.id !== m.id));
     } catch {
-      ElMessage.error('删除记忆失败');
+      message.error('删除记忆失败');
     }
   }
 
@@ -741,7 +747,7 @@ export default function AnswerView() {
               <span>新建会话</span>
             </button>
 
-            <ElScrollbar className="conversations-scroll">
+            <Scrollbar className="conversations-scroll">
               {conversationsLoading ? (
                 <div className="sidebar-status">加载中...</div>
               ) : conversations.length === 0 ? (
@@ -772,27 +778,31 @@ export default function AnswerView() {
                             <path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
                           </svg>
                         </button>
-                        <ElPopconfirm
+                        <Popconfirm
                           title="确定删除该会话？"
-                          confirmButtonText="删除"
-                          cancelButtonText="取消"
-                          confirmButtonType="danger"
-                          width={200}
+                          okText="删除"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true }}
+                          placement="bottom"
                           onConfirm={() => void removeConversation(c)}
                         >
-                          <button className="conv-action-btn conv-delete" title="删除">
+                          <button
+                            className="conv-action-btn conv-delete"
+                            title="删除"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
                               <line x1="18" y1="6" x2="6" y2="18" />
                               <line x1="6" y1="6" x2="18" y2="18" />
                             </svg>
                           </button>
-                        </ElPopconfirm>
+                        </Popconfirm>
                       </div>
                     </li>
                   ))}
                 </ul>
               )}
-            </ElScrollbar>
+            </Scrollbar>
           </div>
 
           {/* 记忆面板（下半部，可折叠） */}
@@ -812,7 +822,7 @@ export default function AnswerView() {
               <span className="memory-title">项目记忆</span>
               {memories.length > 0 && <span className="memory-count">{memories.length}</span>}
             </div>
-            <ElScrollbar
+            <Scrollbar
               className="memory-scroll"
               style={{ display: memoryFolded ? 'none' : undefined }}
             >
@@ -827,27 +837,31 @@ export default function AnswerView() {
                       <div className="memory-content">{m.content}</div>
                       <div className="memory-meta">
                         <span className="memory-time">{relativeTime(m.createdAt)}</span>
-                        <ElPopconfirm
+                        <Popconfirm
                           title="删除这条记忆？"
-                          confirmButtonText="删除"
-                          cancelButtonText="取消"
-                          confirmButtonType="danger"
-                          width={180}
+                          okText="删除"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true }}
+                          placement="bottom"
                           onConfirm={() => void removeMemory(m)}
                         >
-                          <button className="memory-delete" title="删除">
+                          <button
+                            className="memory-delete"
+                            title="删除"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
                               <line x1="18" y1="6" x2="6" y2="18" />
                               <line x1="6" y1="6" x2="18" y2="18" />
                             </svg>
                           </button>
-                        </ElPopconfirm>
+                        </Popconfirm>
                       </div>
                     </li>
                   ))}
                 </ul>
               )}
-            </ElScrollbar>
+            </Scrollbar>
           </div>
         </aside>
 

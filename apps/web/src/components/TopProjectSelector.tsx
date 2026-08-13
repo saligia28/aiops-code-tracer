@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ElMessage } from '@/components/el';
+import { message } from '@/components/antd/feedback';
 import http from '@/lib/http';
 import { useProject, frameworkLabel } from '@/hooks/useProject';
 import { ProjectCreateDialog } from './ProjectCreateDialog';
@@ -68,9 +68,9 @@ export function TopProjectSelector() {
             // 仅在用户主动触发构建时才弹提示，避免服务初始化/重连时误弹
             if (buildingIdRef.current) {
               if (data.status === 'ready') {
-                ElMessage.success('图谱构建完成');
+                message.success('图谱构建完成');
               } else {
-                ElMessage.error('图谱构建失败');
+                message.error('图谱构建失败');
               }
             }
             setBuildingId(null);
@@ -114,10 +114,10 @@ export function TopProjectSelector() {
     try {
       await switchProject(id);
       const name = projects.find((p) => p.id === id)?.name ?? id;
-      ElMessage.success(`已切换到 ${name}`);
+      message.success(`已切换到 ${name}`);
       setExpanded(false);
     } catch {
-      ElMessage.error('切换项目失败');
+      message.error('切换项目失败');
     }
   }
 
@@ -125,12 +125,12 @@ export function TopProjectSelector() {
     setBuildingId(id);
     try {
       await buildProject(id);
-      ElMessage.info(`"${name}" 构建任务已提交，完成后自动刷新`);
+      message.info(`"${name}" 构建任务已提交，完成后自动刷新`);
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
         '构建失败';
-      ElMessage.error(msg);
+      message.error(msg);
       setBuildingId(null);
     }
   }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ElDialog, ElMessage } from '@/components/el';
+import { Modal } from 'antd';
+import { message } from '@/components/antd/feedback';
 import { useProject } from '@/hooks/useProject';
 
 export interface DeleteTarget {
@@ -35,25 +36,26 @@ export function ProjectDeleteDialog({
     setDeleting(true);
     try {
       await deleteProject(target.id, deleteData);
-      ElMessage.success(`项目「${target.name}」已删除`);
+      message.success(`项目「${target.name}」已删除`);
       onUpdateModelValue(false);
       onDeleted?.();
     } catch {
-      ElMessage.error('删除失败');
+      message.error('删除失败');
     } finally {
       setDeleting(false);
     }
   }
 
   return (
-    <ElDialog
-      modelValue={modelValue}
-      onUpdateModelValue={onUpdateModelValue}
-      width="420px"
-      closeOnClickModal={false}
-      showClose={false}
-      customClass="glass-dialog glass-dialog-danger"
-      header={
+    <Modal
+      open={modelValue}
+      onCancel={() => onUpdateModelValue(false)}
+      width={420}
+      mask={{ closable: false }}
+      closable={false}
+      className="glass-dialog glass-dialog-danger"
+      destroyOnHidden
+      title={
         <div className="glass-dialog-header">
           <span className="glass-dialog-title">删除项目</span>
           <button
@@ -106,6 +108,6 @@ export function ProjectDeleteDialog({
         />
         <span>同时删除图谱数据（不可恢复）</span>
       </label>
-    </ElDialog>
+    </Modal>
   );
 }

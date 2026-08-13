@@ -1,21 +1,13 @@
-import { useState } from 'react';
-import { nextTheme, applyTheme, type Theme } from '@/lib/theme';
+import { nextTheme } from '@/lib/theme';
+import { setThemeMode, useThemeMode } from '@/hooks/useThemeMode';
 import './ThemeToggle.css';
 
 export function ThemeToggle({ className = '' }: { className?: string }) {
-  const [current, setCurrent] = useState<Theme>(
-    (document.documentElement.dataset.theme as Theme) || 'light',
-  );
+  // 主题是全局状态：antd 的 ConfigProvider 也要跟着切换算法与令牌。
+  const current = useThemeMode();
 
   function toggle() {
-    const t = nextTheme(current);
-    applyTheme(t);
-    try {
-      localStorage.setItem('theme', t);
-    } catch {
-      /* localStorage 不可用时静默降级 */
-    }
-    setCurrent(t);
+    setThemeMode(nextTheme(current));
   }
 
   return (

@@ -1,5 +1,6 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { AntdProvider } from './components/antd/AntdProvider';
 import { TopProjectSelector } from './components/TopProjectSelector';
 import { TopModelSelector } from './components/TopModelSelector';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -88,17 +89,19 @@ function Shell() {
 
 export default function App() {
   return (
-    <Routes>
-      <Route element={<Shell />}>
-        <Route path="/login" element={<Login />} />
-        <Route element={<RequireAuth />}>
-          <Route path="/" element={<Home />} />
-          <Route path="/answer" element={<AnswerView />} />
-          <Route path="/graph" element={<GraphExplorer />} />
-          <Route path="/index-manager" element={<IndexManager />} />
-          <Route path="/propose-patch" element={<ProposePatch />} />
+    <AntdProvider>
+      <Routes>
+        <Route element={<Shell />}>
+          <Route path="/login" element={<Login />} />
+          <Route element={<RequireAuth />}>
+            <Route path="/" element={<Home />} />
+            <Route path="/answer" element={<AnswerView />} />
+            <Route path="/graph" element={<GraphExplorer />} />
+            <Route path="/index-manager" element={<IndexManager />} />
+            <Route path="/propose-patch" element={<ProposePatch />} />
+          </Route>
         </Route>
-      </Route>
-    </Routes>
+      </Routes>
+    </AntdProvider>
   );
 }

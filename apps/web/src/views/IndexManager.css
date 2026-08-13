@@ -9,6 +9,9 @@
 }
 
 .index-manager .actions {
+  display: flex;
+  /* antd 的按钮之间不自带间距（官方建议用 Space），这里按迁移前 el-button 的 12px 补回来 */
+  gap: 12px;
   margin-bottom: 20px;
 }
 

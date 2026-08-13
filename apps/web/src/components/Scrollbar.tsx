@@ -1,12 +1,8 @@
 /**
- * el-scrollbar 的 React 对等件。
+ * 自绘滚动条：隐藏原生滚动条，悬停时显示细滑块，可拖拽。
  *
- * 原生滚动条被 EP 的 `el-scrollbar__wrap--hidden-default` 藏掉，改画自绘滑块；
- * 少了滑块就等于"看不见能滚"，所以这里把 EP 的尺寸/拖拽逻辑一并实现，
- * DOM 结构（wrap / view / bar.is-vertical > thumb）保持一致。
- *
- * wrap/view 的类名与标签可覆写：select 下拉复用同一套骨架，但它的 view 是
- * `<ul class="el-scrollbar__view el-select-dropdown__list">`。
+ * antd 没有对应组件，而问答页侧栏（会话列表 / 项目记忆）依赖这种观感 ——
+ * 直接用原生滚动条会在窄侧栏里压掉一条可见宽度，也和 Quiet Grid 的克制风格不符。
  */
 import {
   useCallback,
@@ -17,32 +13,18 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
+import './Scrollbar.css';
 
 /** 滑块最小长度：太短就没法拖了。 */
 const MIN_THUMB_SIZE = 20;
 
-export interface ElScrollbarProps {
+export interface ScrollbarProps {
   className?: string;
   style?: CSSProperties;
-  wrapClassName?: string;
-  viewClassName?: string;
-  viewStyle?: CSSProperties;
-  /** view 的标签名，select 下拉需要 ul。 */
-  viewTag?: 'div' | 'ul';
-  viewProps?: Record<string, unknown>;
   children?: ReactNode;
 }
 
-export function ElScrollbar({
-  className = '',
-  style,
-  wrapClassName = '',
-  viewClassName = '',
-  viewStyle,
-  viewTag = 'div',
-  viewProps,
-  children,
-}: ElScrollbarProps) {
+export function Scrollbar({ className = '', style, children }: ScrollbarProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [thumb, setThumb] = useState({ size: 0, move: 0 });
   const [visible, setVisible] = useState(false);
@@ -99,33 +81,22 @@ export function ElScrollbar({
     };
   }, [thumb.size]);
 
-  const View = viewTag;
-
   return (
     <div
-      className={`el-scrollbar ${className}`.trim()}
+      className={`qg-scrollbar ${className}`.trim()}
       style={style}
       onMouseEnter={() => setVisible(true)}
       onMouseLeave={() => setVisible(false)}
     >
-      <div
-        ref={wrapRef}
-        className={`${wrapClassName} el-scrollbar__wrap el-scrollbar__wrap--hidden-default`.trim()}
-        onScroll={update}
-      >
-        <View className={`el-scrollbar__view ${viewClassName}`.trim()} style={viewStyle} {...viewProps}>
-          {children}
-        </View>
-      </div>
-      <div className="el-scrollbar__bar is-horizontal" style={{ display: 'none' }}>
-        <div className="el-scrollbar__thumb" style={{ transform: 'translateX(0%)' }} />
+      <div ref={wrapRef} className="qg-scrollbar__wrap" onScroll={update}>
+        {children}
       </div>
       <div
-        className="el-scrollbar__bar is-vertical"
+        className="qg-scrollbar__bar"
         style={{ display: thumb.size > 0 && visible ? undefined : 'none' }}
       >
         <div
-          className="el-scrollbar__thumb"
+          className="qg-scrollbar__thumb"
           style={{ height: thumb.size, transform: `translateY(${thumb.move}px)` }}
           onMouseDown={(e) => {
             e.preventDefault();
