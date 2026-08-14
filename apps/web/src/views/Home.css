@@ -118,6 +118,28 @@
   to { transform: rotate(360deg); }
 }
 
+.home .no-project-hint {
+  margin-top: var(--qg-space-4);
+  text-align: center;
+  color: var(--qg-muted);
+  font-size: 13px;
+}
+
+.home .hint-link {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--qg-fg);
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.home .hint-link:hover {
+  opacity: 0.75;
+}
+
 .home .suggestions {
   display: flex;
   flex-wrap: wrap;

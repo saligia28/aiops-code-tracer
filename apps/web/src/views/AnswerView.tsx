@@ -18,6 +18,7 @@ import {
   type Memory,
 } from '@/hooks/useConversation';
 import { consumePendingQuestion } from '@/hooks/usePendingQuestion';
+import { useStreamSession, getStreamSession } from '@/hooks/useStreamSession';
 import { useTokenUsageState, type TokenUsageEvent, type TurnUsageSummary } from '@/hooks/useTokenUsage';
 import { nextTick } from '@/lib/dom';
 import './AnswerView.css';
@@ -117,12 +118,29 @@ export default function AnswerView() {
   const [, bump] = useReducer((n: number) => n + 1, 0);
   const history = historyRef.current;
 
-  const isAnyLoading = history.some((t) => t.loading);
-  const currentAbortController = useRef<AbortController | null>(null);
+  const { session: streamSession, nextTempKey, beginStream, attachConversationId, endStream } =
+    useStreamSession();
+
+  // 当前视图 key：查看已落库会话=会话 id；新会话（未落库）=null，首问时铸临时 key。
+  // ref 与 state 并行：SSE 回调是长活闭包，只能通过 ref 读到最新值。
+  const [currentViewKey, setCurrentViewKeyState] = useState<string | null>(activeConversationId);
+  const currentViewKeyRef = useRef<string | null>(currentViewKey);
+  function setCurrentViewKey(key: string | null) {
+    currentViewKeyRef.current = key;
+    setCurrentViewKeyState(key);
+  }
+
+  // 全局是否有流在跑（单流门控：输入框停用）/ 当前视图是否就是那条流（停止按钮、自动滚动）
+  const streamRunning = streamSession !== null;
+  const viewOwnsStream = streamSession !== null && streamSession.key === currentViewKey;
+  /** 流循环里判归属只能实时读，不能用渲染期算好的 viewOwnsStream（闭包会过期）。 */
+  function ownsStreamNow(): boolean {
+    const s = getStreamSession();
+    return s !== null && s.key === currentViewKeyRef.current;
+  }
 
   function handleAbort() {
-    currentAbortController.current?.abort();
-    currentAbortController.current = null;
+    getStreamSession()?.ctrl.abort();
   }
 
   // ---- 左侧栏：会话列表 + 记忆面板 ----
@@ -161,6 +179,7 @@ export default function AnswerView() {
     loading: usageLoading,
     fetchDetail,
     startPolling,
+    stopPolling,
   } = useTokenUsageState();
 
   const scrollToBottom = useCallback(async () => {
@@ -207,13 +226,15 @@ export default function AnswerView() {
     for (const turn of historyRef.current) {
       const s = turn.tokenUsageSummary;
       if (!s || s.settled) continue;
+      // 旧回调可能还绑在已被替换的 turn 对象上——先停再起，让新视图的 turn 接住结算更新
+      stopPolling(s.turnId);
       startPolling(s.turnId, (fresh) => {
         turn.tokenUsageSummary = fresh;
         turn.tokenUsageEvents = getUsageState().events[fresh.turnId];
         bump();
       });
     }
-  }, [startPolling, getUsageState]);
+  }, [startPolling, stopPolling, getUsageState]);
 
   /** 展开时才拉明细：一轮 agent 可能几十条 event，没必要每次问答都传 */
   async function loadUsageDetail(turn: ConversationTurn): Promise<void> {
@@ -225,27 +246,38 @@ export default function AnswerView() {
     bump();
   }
 
-  // 新建会话：复用切项目时的清空逻辑（活动会话 id 置空 + 清空 history），起一条干净新会话。
+  // 新建会话：清空视图起一条干净会话。后台流（如有）继续跑完并由后端落库，完成后可从侧栏切回
   function startNewConversation() {
-    if (isAnyLoading) handleAbort();
     clearActiveConversation();
     historyRef.current = [];
+    setCurrentViewKey(null);
     bump();
     if (window.innerWidth <= 768) setSidebarCollapsed(true);
   }
 
-  // 切换会话：GET 该会话消息 → messagesToTurns 还原 → 填进 history 并设为活动会话。
+  // 切换会话：活流会话直接还原内存 turns；其余 GET 该会话消息 → messagesToTurns 还原
   async function switchConversation(id: string) {
-    if (id === activeConversationId) {
+    if (id === currentViewKey) {
       if (window.innerWidth <= 768) setSidebarCollapsed(true);
       return;
     }
-    if (isAnyLoading) handleAbort();
+    // 切到正在 streaming 的会话：还原内存 turns（assistant 还没落库，GET 会缺最后一轮），不打请求
+    const live = getStreamSession();
+    if (live && live.key === id) {
+      historyRef.current = live.turns;
+      setCurrentViewKey(id);
+      setActiveConversation(id);
+      bump();
+      if (window.innerWidth <= 768) setSidebarCollapsed(true);
+      await scrollToBottom();
+      return;
+    }
     try {
       const { turns } = await loadConversation(id, renderMarkdown);
       historyRef.current = turns;
       bump();
       resumeUsagePolling();
+      setCurrentViewKey(id);
       setActiveConversation(id);
       if (window.innerWidth <= 768) setSidebarCollapsed(true);
       await scrollToBottom();
@@ -289,13 +321,18 @@ export default function AnswerView() {
     }
   }
 
-  // 删除：DELETE → 若删的是当前活动会话则清空 history + 活动 id → 刷新列表。
+  // 删除：DELETE → 若删的是当前视图/活动会话则清空 history + 活动 id → 刷新列表。
   async function removeConversation(c: Conversation) {
     try {
+      // 删除正在 streaming 的会话：先中止流（继续为已删除的会话生成没有意义；
+      // 服务端中止落库会因会话已删而失败，只留 error 日志，可接受）
+      const live = getStreamSession();
+      if (live?.key === c.id) live.ctrl.abort();
       await deleteConversation(c.id);
-      if (c.id === activeConversationId) {
+      if (c.id === activeConversationId || c.id === currentViewKey) {
         clearActiveConversation();
         historyRef.current = [];
+        setCurrentViewKey(null);
         bump();
       }
       await refreshConversations();
@@ -320,6 +357,25 @@ export default function AnswerView() {
     void refreshConversations();
   }
 
+  // 后端回带会话 id：重挂流会话 key；仅当用户仍停留在这条流的视图时才落活动会话——
+  // 无条件 setActiveConversation 会在用户已切走时把侧栏高亮/localStorage 强行拉回（A 之前的隐性 bug）
+  function onStreamConversationId(id: string): void {
+    const prevKey = attachConversationId(id);
+    if (prevKey !== null && prevKey === currentViewKeyRef.current) {
+      setCurrentViewKey(id);
+      setActiveConversation(id);
+    } else if (currentViewKeyRef.current === id) {
+      // 视图已停在这条会话上（切走期间经 GET 加载过快照）：活流刚认领同一 id，
+      // 快照缺流式轮，直接重绑活 turns
+      const live = getStreamSession();
+      if (live) {
+        historyRef.current = live.turns;
+        bump();
+      }
+    }
+    syncConversationList(id);
+  }
+
   // ---- RAG 模式 ----
   const fetchAnswer = useCallback(
     async (q: string) => {
@@ -334,7 +390,8 @@ export default function AnswerView() {
         error: '',
         elapsed: 0,
       };
-      historyRef.current = [...historyRef.current, turn];
+      // 就地 push 而非重建数组：流会话按引用持有这个数组，换新数组会让它写到孤儿副本里
+      historyRef.current.push(turn);
       bump();
       await scrollToBottom();
 
@@ -343,7 +400,14 @@ export default function AnswerView() {
         bump();
       }, 1000);
       const ctrl = new AbortController();
-      currentAbortController.current = ctrl;
+      // 流会话登记：视图无会话 id（新会话首问）时铸临时 key，后端回带 id 后重挂
+      if (!currentViewKeyRef.current) setCurrentViewKey(nextTempKey());
+      beginStream({
+        key: currentViewKeyRef.current!,
+        conversationId: getActiveConversationId(),
+        turns: historyRef.current,
+        ctrl,
+      });
 
       try {
         // 流式（P1-D）：stream:true 走 SSE，answer_delta 逐 token 打字机渲染，
@@ -406,8 +470,7 @@ export default function AnswerView() {
                   turn.followUp = (event.data.followUp as string[]) || [];
                   captureUsage(turn, event.data);
                   if (event.data.conversationId) {
-                    setActiveConversation(event.data.conversationId as string);
-                    syncConversationList(event.data.conversationId as string);
+                    onStreamConversationId(event.data.conversationId as string);
                   }
                   break;
 
@@ -417,7 +480,7 @@ export default function AnswerView() {
               }
 
               bump();
-              await scrollToBottom();
+              if (ownsStreamNow()) await scrollToBottom();
             } catch {
               // 忽略单帧 JSON 解析错误
             }
@@ -432,9 +495,11 @@ export default function AnswerView() {
       } finally {
         clearInterval(elapsedTimer);
         turn.loading = false;
-        currentAbortController.current = null;
+        // 只清理本流自己的登记——挂载路径可能已有新流顶替，不能误清
+        const owned = ownsStreamNow() && getStreamSession()?.ctrl === ctrl;
+        if (getStreamSession()?.ctrl === ctrl) endStream();
         bump();
-        await scrollToBottom();
+        if (owned) await scrollToBottom();
         // 一轮结束后同步会话列表（标题/排序）与记忆（问答可能沉淀新记忆）。
         void refreshConversations();
         void refreshMemories();
@@ -460,7 +525,8 @@ export default function AnswerView() {
         steps: [],
         stepsCollapsed: false,
       };
-      historyRef.current = [...historyRef.current, turn];
+      // 就地 push 而非重建数组：流会话按引用持有这个数组，换新数组会让它写到孤儿副本里
+      historyRef.current.push(turn);
       bump();
       await scrollToBottom();
 
@@ -469,7 +535,14 @@ export default function AnswerView() {
         bump();
       }, 1000);
       const ctrl = new AbortController();
-      currentAbortController.current = ctrl;
+      // 流会话登记：视图无会话 id（新会话首问）时铸临时 key，后端回带 id 后重挂
+      if (!currentViewKeyRef.current) setCurrentViewKey(nextTempKey());
+      beginStream({
+        key: currentViewKeyRef.current!,
+        conversationId: getActiveConversationId(),
+        turns: historyRef.current,
+        ctrl,
+      });
 
       try {
         const resp = await fetch('/api/agent/ask', {
@@ -522,8 +595,7 @@ export default function AnswerView() {
               switch (event.type) {
                 case 'conversation':
                   if (event.data.conversationId) {
-                    setActiveConversation(event.data.conversationId as string);
-                    syncConversationList(event.data.conversationId as string);
+                    onStreamConversationId(event.data.conversationId as string);
                   }
                   break;
 
@@ -572,7 +644,7 @@ export default function AnswerView() {
               }
 
               bump();
-              await scrollToBottom();
+              if (ownsStreamNow()) await scrollToBottom();
             } catch {
               // 忽略 JSON 解析错误
             }
@@ -587,9 +659,11 @@ export default function AnswerView() {
       } finally {
         clearInterval(elapsedTimer);
         turn.loading = false;
-        currentAbortController.current = null;
+        // 只清理本流自己的登记——挂载路径可能已有新流顶替，不能误清
+        const owned = ownsStreamNow() && getStreamSession()?.ctrl === ctrl;
+        if (getStreamSession()?.ctrl === ctrl) endStream();
         bump();
-        await scrollToBottom();
+        if (owned) await scrollToBottom();
         // 一轮结束后同步会话列表（标题/排序）与记忆（问答可能沉淀新记忆）。
         void refreshConversations();
         void refreshMemories();
@@ -601,7 +675,7 @@ export default function AnswerView() {
 
   function handleAsk() {
     const q = newQuestion.trim();
-    if (!q || isAnyLoading) return;
+    if (!q || streamRunning) return;
     setNewQuestion('');
 
     if (mode === 'agent') {
@@ -619,8 +693,11 @@ export default function AnswerView() {
     previousRepo.current = currentRepo;
     if (oldRepo === null) return; // 首帧只记录，不当作切换
     if (oldRepo && currentRepo && currentRepo !== oldRepo) {
+      // 旧项目的流没有归宿：显式中止（服务端会落库部分答案），避免它继续往旧项目会话里写
+      getStreamSession()?.ctrl.abort();
       clearActiveConversation();
       historyRef.current = [];
+      setCurrentViewKey(null);
       bump();
       void refreshConversations();
       void refreshMemories();
@@ -648,20 +725,34 @@ export default function AnswerView() {
       // 无则是刷新 / 直接重进问答页，才恢复上次活动会话（保持刷新态）。
       const pendingQuestion = consumePendingQuestion();
       if (pendingQuestion) {
+        // 从首页发起新问题 = 新意图：旧的后台流（若有）显式中止（服务端会落库部分答案）
+        getStreamSession()?.ctrl.abort();
         // 从首页进入 = 新会话：清掉活动会话 id 与历史，提问时 conversationId 为空 → 后端新建会话。
         clearActiveConversation();
         historyRef.current = [];
+        setCurrentViewKey(null);
         bump();
       } else {
-        // 刷新 / 重进：恢复活动会话，若会话归属项目与当前项目不一致则视为无效、起空会话。
-        const { conversation, turns } = await restoreConversation(renderMarkdown);
-        if (cancelled) return;
-        if (conversation && conversation.projectId === currentProjectId) {
-          historyRef.current = turns;
+        // 路由离开再回来且流还在跑：优先还原内存活流（库里还没有 assistant 消息）
+        const live = getStreamSession();
+        if (live && live.key === getActiveConversationId()) {
+          historyRef.current = live.turns;
+          setCurrentViewKey(live.key);
           bump();
+          // 离开路由时停掉了所有成本轮询，回来后本会话更早的未结算轮要接着轮
           resumeUsagePolling();
-        } else if (conversation) {
-          clearActiveConversation();
+        } else {
+          // 刷新 / 重进：恢复活动会话，若会话归属项目与当前项目不一致则视为无效、起空会话。
+          const { conversation, turns } = await restoreConversation(renderMarkdown);
+          if (cancelled) return;
+          if (conversation && conversation.projectId === currentProjectId) {
+            historyRef.current = turns;
+            bump();
+            resumeUsagePolling();
+          } else if (conversation) {
+            clearActiveConversation();
+          }
+          setCurrentViewKey(getActiveConversationId());
         }
       }
 
@@ -757,11 +848,14 @@ export default function AnswerView() {
                   {conversations.map((c) => (
                     <li
                       key={c.id}
-                      className={`conversation-item${c.id === activeConversationId ? ' active' : ''}`}
+                      className={`conversation-item${c.id === currentViewKey ? ' active' : ''}`}
                       onClick={() => switchConversation(c.id)}
                     >
                       <div className="conv-main">
                         <span className="conv-title">{conversationLabel(c)}</span>
+                        {streamSession?.key === c.id && (
+                          <span className="conv-streaming-dot" title="生成中" />
+                        )}
                         <span className="conv-time">{relativeTime(c.updatedAt)}</span>
                       </div>
                       <div className="conv-actions">
@@ -984,15 +1078,6 @@ export default function AnswerView() {
                             </span>
                             {turn.elapsed > 0 && <span className="loading-elapsed">{turn.elapsed}s</span>}
                           </div>
-                        ) : turn.aborted ? (
-                          /* 中止状态 */
-                          <div className="aborted-msg">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
-                              <circle cx="12" cy="12" r="10" />
-                              <line x1="8" y1="12" x2="16" y2="12" />
-                            </svg>
-                            <span>已中止</span>
-                          </div>
                         ) : turn.error ? (
                           /* 错误状态 */
                           <div className="error-msg">
@@ -1004,11 +1089,25 @@ export default function AnswerView() {
                             {turn.error}
                           </div>
                         ) : (
-                          /* 正常回答（Markdown 渲染） */
-                          <div
-                            className="answer-content markdown-body"
-                            dangerouslySetInnerHTML={{ __html: turn.renderedAnswer }}
-                          />
+                          /* 正常/中止：有部分答案照常渲染，中止轮追加徽标
+                             （部分答案不再被"已中止"吞掉） */
+                          <>
+                            {turn.renderedAnswer && (
+                              <div
+                                className="answer-content markdown-body"
+                                dangerouslySetInnerHTML={{ __html: turn.renderedAnswer }}
+                              />
+                            )}
+                            {turn.aborted && (
+                              <div className="aborted-msg">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <circle cx="12" cy="12" r="10" />
+                                  <line x1="8" y1="12" x2="16" y2="12" />
+                                </svg>
+                                <span>{turn.answer ? '已中止——以上为中止前的部分回答' : '已中止'}</span>
+                              </div>
+                            )}
+                          </>
                         )}
 
                         {/* 耗时标签 */}
@@ -1048,20 +1147,28 @@ export default function AnswerView() {
                 ref={inputRef}
                 value={newQuestion}
                 onChange={(e) => setNewQuestion(e.target.value)}
-                placeholder="继续提问..."
+                placeholder={
+                  streamRunning && !viewOwnsStream
+                    ? '另一会话正在生成中，完成后可继续提问'
+                    : '继续提问...'
+                }
                 onKeyUp={(e) => {
                   if (e.key === 'Enter') handleAsk();
                 }}
-                disabled={isAnyLoading}
+                disabled={streamRunning}
               />
-              {isAnyLoading ? (
+              {viewOwnsStream ? (
                 <button className="stop-btn" onClick={handleAbort} title="中止">
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                     <rect x="5" y="5" width="14" height="14" rx="2" />
                   </svg>
                 </button>
               ) : (
-                <button className="send-btn" onClick={handleAsk} disabled={!newQuestion.trim()}>
+                <button
+                  className="send-btn"
+                  onClick={handleAsk}
+                  disabled={!newQuestion.trim() || streamRunning}
+                >
                   <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
                   </svg>

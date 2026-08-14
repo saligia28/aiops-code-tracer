@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import http from '@/lib/http';
 import { ProjectIcon } from '@/components/ProjectIcon';
 import { useCurrentRepo } from '@/hooks/useCurrentRepo';
+import { useProject } from '@/hooks/useProject';
 import { setPendingQuestion } from '@/hooks/usePendingQuestion';
 import './Home.css';
 
@@ -21,6 +22,7 @@ interface IndexStatus {
 
 export default function Home() {
   const { currentRepo } = useCurrentRepo();
+  const { projects, initialized: projectsInitialized } = useProject();
   const navigate = useNavigate();
 
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -30,6 +32,19 @@ export default function Home() {
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
 
   const hasHistory = recentQuestions.length > 0;
+
+  // 项目列表已加载且为空 → 禁用提问并引导先建项目；未加载完前不判定，避免闪现提示
+  const noProjects = projectsInitialized && projects.length === 0;
+
+  const placeholder = noProjects
+    ? '暂无项目，构建后才能提问'
+    : hasHistory
+      ? '继续提问...'
+      : '描述你想了解的代码逻辑';
+
+  function openProjectPanel() {
+    window.dispatchEvent(new CustomEvent('open-project-panel'));
+  }
 
   async function fetchIndexStatus() {
     try {
@@ -42,7 +57,7 @@ export default function Home() {
 
   function ask(q: string) {
     const trimmed = q.trim();
-    if (!trimmed || loading) return;
+    if (!trimmed || loading || noProjects) return;
     setRecentQuestions((prev) => [trimmed, ...prev]);
     setQuestion('');
     setPendingQuestion(trimmed);
@@ -76,13 +91,17 @@ export default function Home() {
             ref={inputRef}
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            placeholder={hasHistory ? '继续提问...' : '描述你想了解的代码逻辑'}
+            placeholder={placeholder}
             onKeyUp={(e) => {
               if (e.key === 'Enter') ask(question);
             }}
-            disabled={loading}
+            disabled={loading || noProjects}
           />
-          <button className="ask-btn" onClick={() => ask(question)} disabled={loading || !question.trim()}>
+          <button
+            className="ask-btn"
+            onClick={() => ask(question)}
+            disabled={loading || noProjects || !question.trim()}
+          >
             {loading ? (
               <span className="spinner" />
             ) : (
@@ -92,7 +111,16 @@ export default function Home() {
             )}
           </button>
         </div>
-        {!hasHistory && (
+        {noProjects && (
+          <div className="no-project-hint">
+            暂无项目，请先
+            <button className="hint-link" onClick={openProjectPanel}>
+              新建并构建项目
+            </button>
+            后再提问
+          </div>
+        )}
+        {!hasHistory && !noProjects && (
           <div className="suggestions">
             {suggestions.map((s) => (
               <button key={s} className="suggestion-chip" onClick={() => ask(s)}>
@@ -101,7 +129,7 @@ export default function Home() {
             ))}
           </div>
         )}
-        {!hasHistory && (
+        {!hasHistory && !noProjects && (
           <div className="tool-links">
             <button className="tool-link" onClick={() => navigate('/propose-patch')}>
               ✎ 生成修改提案

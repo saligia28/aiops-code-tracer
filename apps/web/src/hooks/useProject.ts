@@ -59,6 +59,19 @@ const STORAGE_KEY = 'aiops-current-project';
 const currentProjectIdStore = createStore<string>(localStorage.getItem(STORAGE_KEY) ?? '');
 const projectsStore = createStore<ProjectInfo[]>([]);
 const loadingStore = createStore(false);
+// 首次 fetchProjects 成功后置真：消费方（Home）借此区分「列表还没加载」与「确实没有项目」，
+// 避免刷新瞬间误闪「暂无项目」提示。
+const initializedStore = createStore(false);
+
+/** 非组件上下文（单测、事件回调）读当前状态。 */
+export function getProjectState() {
+  return {
+    currentProjectId: currentProjectIdStore.get(),
+    projects: projectsStore.get(),
+    loading: loadingStore.get(),
+    initialized: initializedStore.get(),
+  };
+}
 
 function persist(id: string) {
   currentProjectIdStore.set(id);
@@ -69,7 +82,7 @@ function persist(id: string) {
   }
 }
 
-async function fetchProjects() {
+export async function fetchProjects() {
   loadingStore.set(true);
   try {
     const res = await http.get<{ currentProjectId: string | null; projects: ProjectInfo[] }>(
@@ -88,15 +101,21 @@ async function fetchProjects() {
       persist(saved);
     } else if (apiCurrent && ids.includes(apiCurrent)) {
       persist(apiCurrent);
+    } else if (ids.length > 0) {
+      // 本地无记忆、后端也无当前项目时，默认选中第一个项目
+      // （switch 对未构建图谱的项目同样返回 200，只是 graphLoaded=false）。
+      await http.post(`/api/projects/${ids[0]}/switch`, {});
+      persist(ids[0]);
     } else {
       persist('');
     }
+    initializedStore.set(true);
   } finally {
     loadingStore.set(false);
   }
 }
 
-async function switchProject(id: string) {
+export async function switchProject(id: string) {
   loadingStore.set(true);
   try {
     await http.post(`/api/projects/${id}/switch`, {});
@@ -106,7 +125,7 @@ async function switchProject(id: string) {
   }
 }
 
-async function createProject(data: {
+export async function createProject(data: {
   name: string;
   framework: ProjectFramework;
   repoPath: string;
@@ -118,7 +137,7 @@ async function createProject(data: {
   return res.data;
 }
 
-async function deleteProject(id: string, deleteData = false) {
+export async function deleteProject(id: string, deleteData = false) {
   await http.delete(`/api/projects/${id}`, { params: deleteData ? { deleteData: 'true' } : {} });
   if (currentProjectIdStore.get() === id) {
     persist('');
@@ -126,7 +145,7 @@ async function deleteProject(id: string, deleteData = false) {
   await fetchProjects();
 }
 
-async function buildProject(id: string) {
+export async function buildProject(id: string) {
   return http.post(`/api/projects/${id}/build`, {});
 }
 
@@ -134,6 +153,7 @@ export function useProject() {
   const currentProjectId = useStore(currentProjectIdStore);
   const projects = useStore(projectsStore);
   const loading = useStore(loadingStore);
+  const initialized = useStore(initializedStore);
 
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? null;
 
@@ -143,6 +163,7 @@ export function useProject() {
     currentProject,
     projects,
     loading,
+    initialized,
     fetchProjects,
     switchProject,
     createProject,

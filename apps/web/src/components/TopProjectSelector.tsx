@@ -39,6 +39,12 @@ export function TopProjectSelector() {
       }
     }
 
+    // 供页面内提示（如 Home 的「暂无项目」）远程展开本面板
+    function handleOpenRequest() {
+      setExpanded(true);
+      window.dispatchEvent(new CustomEvent('floating-panel-open', { detail: 'project' }));
+    }
+
     function handleClickOutside(event: Event) {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -48,6 +54,7 @@ export function TopProjectSelector() {
     }
 
     window.addEventListener('floating-panel-open', handlePanelOpen as EventListener);
+    window.addEventListener('open-project-panel', handleOpenRequest);
     document.addEventListener('pointerdown', handleClickOutside);
     void fetchProjects();
 
@@ -95,6 +102,7 @@ export function TopProjectSelector() {
     return () => {
       disposed = true;
       window.removeEventListener('floating-panel-open', handlePanelOpen as EventListener);
+      window.removeEventListener('open-project-panel', handleOpenRequest);
       document.removeEventListener('pointerdown', handleClickOutside);
       if (progressWs) {
         const ws = progressWs;

@@ -991,3 +991,21 @@
     display: none;
   }
 }
+
+/* 侧栏：正在 streaming 的会话指示点（切会话中断修复 A）。
+   原实现取 --el-color-primary，组件库换掉后该令牌已不存在（会回落到 EP 的蓝）；
+   按 Quiet Grid 的中性强调改用前景色。 */
+.answer-page .conv-streaming-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--qg-fg);
+  display: inline-block;
+  margin-left: 6px;
+  flex-shrink: 0;
+  animation: conv-streaming-pulse 1.2s ease-in-out infinite;
+}
+@keyframes conv-streaming-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}

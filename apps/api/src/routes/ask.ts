@@ -277,6 +277,29 @@ export function registerAsk(app: FastifyInstance): void {
         return resp
       }
 
+      // 中止落库(切会话中断修复·方案 B):SSE 客户端断开/点停止时,把已流出的部分答案
+      // 连同 aborted 标记写库——否则会话里只剩孤儿 user 消息,切回/刷新是一片空白。
+      // 与 finalizeResponse 互斥:三个中止出口落库后 return undefined,不会再走 finalizeResponse。
+      const persistAbortedTurn = (partial: string): void => {
+        if (!convId) return
+        try {
+          const msg = appendMessage(convId, {
+            role: 'assistant',
+            content: partial,
+            mode: 'rag',
+            meta: { aborted: true },
+          })
+          if (usageTracker) {
+            // finish 幂等:这里首个调用生效,handler finally 里的再调是 no-op
+            const summary = usageTracker.finish('aborted')
+            setAssistantMessageId(usageTracker.turnId, msg.id)
+            updateMessageMeta(msg.id, { tokenUsageSummary: summary })
+          }
+        } catch (err) {
+          app.log.error(`对话持久化(中止部分答案)失败: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
       // ====== Step 1: 理解问题 — LLM 驱动意图+实体提取 ======
       const [analysis, plan] = await Promise.all([
         analyzeQuestion(
@@ -480,6 +503,9 @@ export function registerAsk(app: FastifyInstance): void {
       if (abortCtl.signal.aborted) {
         app.log.info('[ask] 客户端已断开，中止管线（答案生成前）')
         trace?.error(new Error('client_cancelled'))
+        // SSE 且已建会话:落一条空内容的中止标记,避免空白孤儿轮
+        // (非 SSE 走到这里同样直接 return,不落库——维持现状,MCP 端有自己的超时语义)
+        if (sse) persistAbortedTurn('')
         return undefined
       }
       const tAnswer = Date.now()
@@ -601,8 +627,9 @@ ${trimmedGraphContext}${docBlock}`
             usageCtx('ask.answer_complex'),
           )
           if (streamed?.aborted) {
-            // 用户中断：不落库、不继续管线，记观测后直接收尾
+            // 用户中断:落库部分答案后收尾,不继续管线
             trace?.error(new Error('client_cancelled'))
+            persistAbortedTurn(streamed.text)
             reply.raw.end()
             return undefined
           }
@@ -697,8 +724,9 @@ ${trimmedGraphContext}${docBlock}`
           } : { signal: abortCtl.signal, usage: usageCtx('ask.answer_simple') }, // 非 SSE 也传 abort：断连即中止（review 修复）
         )
         if (sse && abortCtl.signal.aborted) {
-          // 用户中断：不落库、不发 done，记观测后直接收尾
+          // 用户中断:落库部分答案后收尾(composeAnswerWithLlm 中止时返回已累积文本)
           trace?.error(new Error('client_cancelled'))
+          persistAbortedTurn(answer)
           reply.raw.end()
           return undefined
         }

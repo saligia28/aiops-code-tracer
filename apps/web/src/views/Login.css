@@ -94,6 +94,13 @@
   margin: -4px 0;
 }
 
+.login-page .ime-hint {
+  color: var(--qg-muted);
+  font-size: 13px;
+  text-align: center;
+  margin: -4px 0;
+}
+
 .login-page .login-btn {
   width: 100%;
   padding: 12px;
