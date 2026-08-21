@@ -1,9 +1,27 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { message } from '@/components/antd/feedback';
 import http from '@/lib/http';
 import { useProject, frameworkLabel } from '@/hooks/useProject';
-import { ProjectCreateDialog } from './ProjectCreateDialog';
-import { ProjectDeleteDialog, type DeleteTarget } from './ProjectDeleteDialog';
+import { prefetchWhenIdle } from '@/lib/prefetch';
+import type { DeleteTarget } from './ProjectDeleteDialog';
+
+// 两个弹窗都吃 antd Modal（首屏包里最贵的一块），而它们只在用户点新建/删除时才出现，
+// 所以用动态 import 移出首屏包，首帧画完后空闲取回、存进 state 直接渲染。
+//
+// 不用 React.lazy + Suspense：React 19 对"回退→内容"有约 300ms 节流，
+// 模块早已就位，点"新建项目"却要等三百多毫秒弹窗才出现（实测 339ms）。
+const importCreateDialog = () => import('./ProjectCreateDialog');
+const importDeleteDialog = () => import('./ProjectDeleteDialog');
+
+type CreateDialogComponent = ComponentType<{
+  modelValue: boolean;
+  onUpdateModelValue: (value: boolean) => void;
+}>;
+type DeleteDialogComponent = ComponentType<{
+  modelValue: boolean;
+  onUpdateModelValue: (value: boolean) => void;
+  target: DeleteTarget;
+}>;
 import '@/styles/glass-dialog.css';
 import './TopProjectSelector.css';
 
@@ -13,6 +31,8 @@ export function TopProjectSelector() {
 
   const [expanded, setExpanded] = useState(false);
   const [dialogVisible, setDialogVisible] = useState(false);
+  const [CreateDialog, setCreateDialog] = useState<CreateDialogComponent | null>(null);
+  const [DeleteDialog, setDeleteDialog] = useState<DeleteDialogComponent | null>(null);
   const [buildingId, setBuildingId] = useState<string | null>(null);
   const floatingRef = useRef<HTMLDivElement | null>(null);
   // WebSocket 回调里要读最新的 buildingId，用 ref 兜住闭包。
@@ -57,6 +77,16 @@ export function TopProjectSelector() {
     window.addEventListener('open-project-panel', handleOpenRequest);
     document.addEventListener('pointerdown', handleClickOutside);
     void fetchProjects();
+    const cancelPrefetch = prefetchWhenIdle(
+      async () => {
+        const mod = await importCreateDialog();
+        setCreateDialog(() => mod.ProjectCreateDialog);
+      },
+      async () => {
+        const mod = await importDeleteDialog();
+        setDeleteDialog(() => mod.ProjectDeleteDialog);
+      },
+    );
 
     // ---- WebSocket 监听构建进度 ----
     let progressWs: WebSocket | null = null;
@@ -104,6 +134,7 @@ export function TopProjectSelector() {
       window.removeEventListener('floating-panel-open', handlePanelOpen as EventListener);
       window.removeEventListener('open-project-panel', handleOpenRequest);
       document.removeEventListener('pointerdown', handleClickOutside);
+      cancelPrefetch();
       if (progressWs) {
         const ws = progressWs;
         progressWs = null;
@@ -236,19 +267,29 @@ export function TopProjectSelector() {
             </div>
           )}
 
-          <button className="new-project-btn" type="button" onClick={() => setDialogVisible(true)}>
+          <button
+            className="new-project-btn"
+            type="button"
+            onClick={() => setDialogVisible(true)}
+          >
             + 新建项目
           </button>
         </div>
       )}
 
-      {/* 新建 / 删除项目弹窗（目录浏览器嵌在新建弹窗内） */}
-      <ProjectCreateDialog modelValue={dialogVisible} onUpdateModelValue={setDialogVisible} />
-      <ProjectDeleteDialog
-        modelValue={deleteDialogVisible}
-        onUpdateModelValue={setDeleteDialogVisible}
-        target={deleteTarget}
-      />
+      {/* 新建 / 删除项目弹窗（目录浏览器嵌在新建弹窗内）。
+          openedOnce 门控：没点开过就完全不渲染，也就不会去下载这两个 chunk；
+          点开过之后保持挂载，关闭动画与表单状态才不会被打断。 */}
+      {CreateDialog && (
+        <CreateDialog modelValue={dialogVisible} onUpdateModelValue={setDialogVisible} />
+      )}
+      {DeleteDialog && (
+        <DeleteDialog
+          modelValue={deleteDialogVisible}
+          onUpdateModelValue={setDeleteDialogVisible}
+          target={deleteTarget}
+        />
+      )}
     </div>
   );
 }

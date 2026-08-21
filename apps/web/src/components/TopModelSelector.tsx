@@ -1,8 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ComponentType } from 'react';
+import type { ModelSelectRowProps } from './ModelSelectRow';
 import http from '@/lib/http';
-import { Select } from 'antd';
 import { message } from '@/components/antd/feedback';
+import { prefetchWhenIdle } from '@/lib/prefetch';
 import './TopModelSelector.css';
+
+// 两个下拉吃 antd Select（连带 rc-select / virtual-list）约 138 KB，但面板默认收起 ——
+// 用动态 import 把它移出首屏包，首帧画完立刻在后台取回来。
+//
+// 刻意不用 React.lazy + Suspense：React 19 对"回退→内容"的切换有约 300ms 的节流，
+// 即便模块早已就位，面板张开时也会先空一行再补上（实测 308ms，肉眼可见）。
+// 自己拿组件塞进 state 就没有回退态，展开即是最终形态。
+const importModelSelectRow = () => import('./ModelSelectRow');
 
 interface LlmOption {
   value: string;
@@ -38,6 +47,10 @@ export function TopModelSelector() {
   const [errorMessage, setErrorMessage] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
+  // 下拉行按需取回后存进 state；取回前面板用等高占位，不会塌行
+  const [ModelSelectRow, setModelSelectRow] = useState<ComponentType<ModelSelectRowProps> | null>(
+    null,
+  );
   const floatingRef = useRef<HTMLDivElement | null>(null);
 
   const availableModes: LlmOption[] = config?.availableModes ?? [{ value: 'api', label: 'API / 默认' }];
@@ -171,10 +184,15 @@ export function TopModelSelector() {
     window.addEventListener('floating-panel-open', handlePanelOpen as EventListener);
     document.addEventListener('pointerdown', handleClickOutside);
     void fetchConfig();
+    const cancelPrefetch = prefetchWhenIdle(async () => {
+      const mod = await importModelSelectRow();
+      setModelSelectRow(() => mod.default);
+    });
 
     return () => {
       window.removeEventListener('floating-panel-open', handlePanelOpen as EventListener);
       document.removeEventListener('pointerdown', handleClickOutside);
+      cancelPrefetch();
     };
     // 只在挂载/卸载时接线，与迁移前的 onMounted/onUnmounted 一致。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -213,33 +231,22 @@ export function TopModelSelector() {
             </button>
           </div>
 
-          <div className="toolbar-row">
-            <Select
-              value={mode}
-              options={availableModes}
-              size="small"
-              className="toolbar-select"
-              classNames={{ popup: { root: LLM_POPUP_CLASS } }}
+          {ModelSelectRow ? (
+            <ModelSelectRow
+              mode={mode}
+              model={model}
+              availableModes={availableModes}
+              modelOptions={modelOptions}
+              modelSearch={modelSearch}
+              onModelSearch={setModelSearch}
               disabled={saving || loading || !config}
-              onChange={handleModeChange}
+              onModeChange={handleModeChange}
+              onModelChange={handleModelChange}
+              popupClass={LLM_POPUP_CLASS}
             />
-            <Select
-              value={model}
-              options={modelOptions}
-              size="small"
-              className="toolbar-select toolbar-model"
-              // 允许填写候选之外的模型名：输入时临时插一条同名选项供选中。
-              showSearch
-              searchValue={modelSearch}
-              onSearch={setModelSearch}
-              filterOption={(input, option) =>
-                String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-              }
-              classNames={{ popup: { root: LLM_POPUP_CLASS } }}
-              disabled={saving || loading || !config}
-              onChange={handleModelChange}
-            />
-          </div>
+          ) : (
+            <div className="toolbar-row toolbar-row-placeholder" />
+          )}
 
           <div className="toolbar-meta">
             <span>{providerLabel}</span>

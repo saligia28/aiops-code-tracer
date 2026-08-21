@@ -175,6 +175,12 @@
   gap: 8px;
 }
 
+/* 下拉是懒加载的，占位必须和 size="small" 的 Select 等高，
+   否则 chunk 到达前面板会矮一行、到达后又弹回去。 */
+.llm-floating .toolbar-row-placeholder {
+  min-height: 24px;
+}
+
 .llm-floating .toolbar-select {
   width: 120px;
 }

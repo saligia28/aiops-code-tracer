@@ -20,6 +20,27 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    build: {
+      rollupOptions: {
+        output: {
+          // 只固定"每屏都要、且极少变"的两块，让它们独立缓存：
+          //   react 全家桶（版本不动就永远命中缓存）
+          //   antd 的样式引擎（cssinjs + 主题算法，ConfigProvider 一挂载就需要）
+          // 刻意**不**把 antd 组件整包归到一个 chunk —— 那会让首屏被迫下载
+          //   Modal/Select/Card/Descriptions 等只有懒加载路由才用的组件，
+          //   反而把首屏做大。组件级拆分交给 rollup 按引用图自然切。
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return;
+            if (/[\\/]node_modules[\\/](\.pnpm[\\/])?(react|react-dom|scheduler|react-router|react-router-dom)([\\/@]|$)/.test(id)) {
+              return 'vendor-react';
+            }
+            if (id.includes('@ant-design/cssinjs') || id.includes('@ant-design/fast-color') || id.includes('/stylis/')) {
+              return 'vendor-antd-style';
+            }
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src'),

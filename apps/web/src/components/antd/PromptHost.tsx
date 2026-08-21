@@ -1,48 +1,20 @@
 /**
- * 输入型确认框（会话重命名在用），替代迁移前的 ElMessageBox.prompt。
+ * 输入型确认框的渲染侧。被 AntdProvider 懒加载：只有真的发起 prompt() 时才下载。
  *
- * antd 的 Modal.confirm 没有输入框，这里用 Modal + Input 自己拼一个，并保持
- * 同样的命令式 Promise 契约：确定 resolve({ value })，取消/关闭 reject ——
- * 调用方那句 `catch { return }` 才还是"取消即什么都不做"。
- *
- * 宿主 <PromptHost /> 挂在 AntdProvider 内部，所以弹窗能继承主题；
- * 请求本身走模块级 store，非组件代码也能直接 await prompt(...)。
+ * 挂在 AntdProvider 内部，所以能继承主题；关闭动画播完才兑现 Promise，
+ * 避免弹窗还在淡出就被卸载。
  */
 import { Input, Modal } from 'antd';
 import type { InputRef } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import { createStore, useStore } from '@/lib/store';
+import { useStore } from '@/lib/store';
+import { requestStore } from './prompt';
 
-export interface PromptOptions {
-  title: string;
-  message: string;
-  okText?: string;
-  cancelText?: string;
-  defaultValue?: string;
-  placeholder?: string;
-}
-
-interface PromptRequest extends PromptOptions {
-  id: number;
-  resolve: (value: string) => void;
-  reject: () => void;
-}
-
-const requestStore = createStore<PromptRequest | null>(null);
-let seed = 0;
-
-export function prompt(options: PromptOptions): Promise<string> {
-  return new Promise((resolve, reject) => {
-    requestStore.set({ ...options, id: ++seed, resolve, reject: () => reject(new Error('cancel')) });
-  });
-}
-
-export function PromptHost() {
+export default function PromptHost() {
   const request = useStore(requestStore);
   const [value, setValue] = useState('');
   const [open, setOpen] = useState(false);
   const inputRef = useRef<InputRef>(null);
-  // 关闭动画播完才兑现 Promise，避免弹窗还在淡出就被卸载。
   const settled = useRef<{ ok: boolean; value: string } | null>(null);
 
   useEffect(() => {

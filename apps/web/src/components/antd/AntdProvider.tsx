@@ -5,15 +5,22 @@
  * ConfigProvider，而不是在 TS 里再抄一份色值：换肤只改 CSS，antd 自动跟随。
  * 主题切换时 useThemeMode 会触发重算（暗色再叠加 darkAlgorithm 推导中间色阶）。
  *
- * 另外把 App.useApp() 的 message/modal 实例登记到模块级出口（feedback.ts），
+ * 另外把 message 实例登记到模块级出口（feedback.ts），
  * 让非组件代码（事件回调、SSE 处理）也能像迁移前的 ElMessage 那样直接调用。
+ *
+ * 首屏体积：这里刻意不用 antd 的 <App>（它会连 modal + notification 一起打进首屏），
+ * 只取 message.useMessage()；输入框弹窗 PromptHost 用动态 import 移出首屏包，
+ * 首帧画完后空闲取回，存进 state 直接渲染。
+ *
+ * 不用 React.lazy + Suspense：React 19 对"回退→内容"有约 300ms 节流，模块明明已就位，
+ * 点开却要等三百多毫秒才出现（实测 371ms）。存 state 就没有回退态。
  */
-import { App, ConfigProvider, theme as antdTheme } from 'antd';
+import { ConfigProvider, message as antdMessage, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { useEffect, useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
 import { useThemeMode } from '@/hooks/useThemeMode';
+import { prefetchWhenIdle } from '@/lib/prefetch';
 import { registerFeedback } from './feedback';
-import { PromptHost } from './prompt';
 
 /** 读一个 CSS 变量的当前计算值。 */
 function cssVar(name: string): string {
@@ -85,15 +92,34 @@ function useAntdThemeConfig() {
   }, [mode]);
 }
 
-/** 把 App.useApp() 的实例交给模块级出口。 */
+/**
+ * 提示实例桥接：useMessage 必须在 ConfigProvider 内部调用才能拿到主题化实例，
+ * 它返回的 holder 要挂进树里，toast 才有渲染位置。
+ */
 function FeedbackBridge() {
-  const { message, modal } = App.useApp();
+  const [message, holder] = antdMessage.useMessage();
 
   useEffect(() => {
-    registerFeedback({ message, modal });
-  }, [message, modal]);
+    registerFeedback({ message });
+  }, [message]);
 
-  return null;
+  return holder;
+}
+
+/** 输入框弹窗宿主：首帧之后取回，取回前不渲染（此时也不可能有 prompt 请求）。 */
+function PromptHostSlot() {
+  const [Host, setHost] = useState<ComponentType | null>(null);
+
+  useEffect(
+    () =>
+      prefetchWhenIdle(async () => {
+        const mod = await import('./PromptHost');
+        setHost(() => mod.default);
+      }),
+    [],
+  );
+
+  return Host ? <Host /> : null;
 }
 
 export function AntdProvider({ children }: { children: ReactNode }) {
@@ -101,12 +127,9 @@ export function AntdProvider({ children }: { children: ReactNode }) {
 
   return (
     <ConfigProvider theme={themeConfig} locale={zhCN}>
-      {/* component={false}：不要多包一层 div，app-shell 的高度契约靠的是 #app 直系子元素 */}
-      <App component={false}>
-        <FeedbackBridge />
-        <PromptHost />
-        {children}
-      </App>
+      <FeedbackBridge />
+      <PromptHostSlot />
+      {children}
     </ConfigProvider>
   );
 }
