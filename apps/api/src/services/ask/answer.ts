@@ -461,7 +461,7 @@ export function assembleCodeContext(
 }
 
 
-export function extractEvidenceFromAnswer(answer: string, codeContext: string): Evidence[] {
+export function extractEvidenceFromAnswer(answer: string, codeContext: string, repoPath: string = currentRepoPath): Evidence[] {
   // 路径用白名单字符类：markdown 加粗 / 全角括号会与路径黏连（中文不打空格），
   // 排除类会把 `**`/`另见（` 吃进文件名导致 fileExists=false 误判（与 agent 侧
   // collectAgentEvidence 同款约定，两边需同步改）
@@ -469,10 +469,39 @@ export function extractEvidenceFromAnswer(answer: string, codeContext: string): 
   const evidence: Evidence[] = [];
   const seen = new Set<string>();
 
+  // 模型看过的文件 = codeContext 里 `--- file ---` 块头的集合，供裸文件名短引用解析
+  const contextFiles = new Set<string>();
+  for (const m of codeContext.matchAll(/---\s+(\S+)\s+---/g)) contextFiles.add(m[1]);
+
+  // 裸文件名短引用的解析（第三族误报，与 agent 侧 resolveShorthand 同款语义）：
+  // 模型首次给全路径、后文简写成裸文件名（detail.vue:950），按字面核对 → 误判编造。
+  // 仅当引用既不是块头、也不在磁盘上（真实全路径可能不在 codeContext 里，不查盘
+  // 会被同名块劫持）时，才在块头集合里做段边界后缀匹配：唯一命中 → 解析为全路径；
+  // 歧义或零命中保持原样。
+  const resolveShorthand = (file: string): string => {
+    if (contextFiles.has(file)) return file;
+    if (repoPath) {
+      try {
+        if (fs.existsSync(path.join(repoPath, file))) return file;
+      } catch {
+        // 路径非法等读盘异常 → 当"磁盘上不存在"处理，继续尝试后缀解析
+      }
+    }
+    const tail = `/${file}`;
+    let hit: string | null = null;
+    for (const known of contextFiles) {
+      if (!known.endsWith(tail)) continue;
+      if (hit) return file;
+      hit = known;
+    }
+    return hit ?? file;
+  };
+
   for (const ref of refs) {
     const rawFile = ref[1];
-    const file = rawFile.replace(/^[`"'(<\[]+|[`"')>\],.;:]+$/g, '');
-    if (!/\.(vue|ts|js|tsx|jsx)$/i.test(file)) continue;
+    const cleaned = rawFile.replace(/^[`"'(<\[]+|[`"')>\],.;:]+$/g, '');
+    if (!/\.(vue|ts|js|tsx|jsx)$/i.test(cleaned)) continue;
+    const file = resolveShorthand(cleaned);
     const line = parseInt(ref[3]);
     const key = `${file}:${line}`;
     if (seen.has(key)) continue;

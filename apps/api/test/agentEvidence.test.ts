@@ -125,12 +125,15 @@ describe('T1 · collectAgentEvidence 从答案里抽引用', () => {
 });
 
 /**
- * L1 误报回归——「未确认行号」大面积出现的两个根因：
+ * L1 误报回归——「未确认行号」大面积出现的三个根因：
  *   ① 中文答案里 markdown 加粗 / 全角括号会与路径黏连（中文不打空格），
  *      排除式字符类把 `**` / `另见（` 一并吃进文件名 → fileExists=false → 误判编造；
  *   ② `(见 file:line)` 占位含路径段（src/api/…），被 extractIdentifiers 当成
  *      "声称的标识符"拿去 ±2 行窗口比对 → 正确引用也近乎随机地判失败。
- * 两者都会把 citationAccuracy 拉到阈值以下，触发反思重答；重答阶段无工具、
+ *   ③ 裸文件名短引用：模型首次给仓库根相对全路径，后文简写成裸文件名
+ *      （`detail.vue:950`，活体见 /tmp/agent-run-{3,4,5}.sse）；按字面拿去
+ *      repoPath 根下找 → fileExists=false → 误判编造。
+ * 三者都会把 citationAccuracy 拉到阈值以下，触发反思重答；重答阶段无工具、
  * 上下文已折叠，模型只能按纪律降级成「文件名（未确认行号）」。
  */
 describe('L1 误报回归 · 引用提取与降级占位', () => {
@@ -146,6 +149,83 @@ describe('L1 误报回归 · 引用提取与降级占位', () => {
     expect(evidence).toHaveLength(1);
     expect(evidence[0].file).toBe('src/utils/format.ts');
     expect(evidence[0].line).toBe(5);
+  });
+
+  it('裸文件名短引用 → 行索引唯一后缀命中 → 解析为全路径并与首次全路径引用去重', () => {
+    const index = indexToolObservations([{
+      toolName: 'search_code',
+      args: {},
+      result: 'src/views/order/detail.vue:950:const canShowSubmit = perms.has(SUBMIT)',
+    }]);
+    // 活体引用风格（run-4）：首次给全路径，后文简写成裸文件名
+    const answer = '提交由 src/views/order/detail.vue:950 控制；前述 detail.vue:950 即此处。';
+    const evidence = collectAgentEvidence(answer, index);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0].file).toBe('src/views/order/detail.vue');
+    expect(evidence[0].line).toBe(950);
+    expect(evidence[0].code).toBe('const canShowSubmit = perms.has(SUBMIT)');
+  });
+
+  it('目录级简写（processCost/detail.vue）同样按段边界后缀唯一解析', () => {
+    const index = indexToolObservations([{
+      toolName: 'search_code',
+      args: {},
+      result: 'src/views/costManagement/processCost/detail.vue:7:priceSum = num * singlePrice',
+    }]);
+    const evidence = collectAgentEvidence('见 processCost/detail.vue:7 的合计。', index);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0].file).toBe('src/views/costManagement/processCost/detail.vue');
+    expect(evidence[0].code).toBe('priceSum = num * singlePrice');
+  });
+
+  it('裸文件名歧义（本轮读过两个同名文件）→ 保持原样不猜', () => {
+    const index = indexToolObservations([{
+      toolName: 'search_code',
+      args: {},
+      result: 'src/a/detail.vue:3:aaa\nsrc/b/detail.vue:3:bbb',
+    }]);
+    const evidence = collectAgentEvidence('见 detail.vue:3。', index);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0].file).toBe('detail.vue');
+  });
+
+  it('磁盘上真实存在的全路径 → 不被行索引里的同名文件劫持', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-evidence-'));
+    try {
+      fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'src/detail.vue'), '<template />\n');
+      // 索引里只有 legacy 包的同名文件——它是 src/detail.vue 的段边界后缀超集
+      const index = indexToolObservations([{
+        toolName: 'search_code',
+        args: {},
+        result: 'pkg/legacy/src/detail.vue:1:legacy',
+      }]);
+      const evidence = collectAgentEvidence('见 src/detail.vue:1。', index, repo);
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0].file).toBe('src/detail.vue');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('裸文件名解析后过 citationAccuracy → matched（端到端锁死第三族误报）', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-evidence-'));
+    try {
+      fs.mkdirSync(path.join(repo, 'src/views/order'), { recursive: true });
+      const line1 = 'const canShowSubmit = perms.has(SUBMIT)';
+      fs.writeFileSync(path.join(repo, 'src/views/order/detail.vue'), `${line1}\nexport {}\n`);
+      const index = indexToolObservations([{
+        toolName: 'search_code',
+        args: {},
+        result: `src/views/order/detail.vue:1:${line1}`,
+      }]);
+      const evidence = collectAgentEvidence('提交判断见 detail.vue:1。', index, repo);
+      const r = citationAccuracy(evidence, repo);
+      expect(r.checks[0]).toMatchObject({ fileExists: true, lineExists: true, matched: true });
+      expect(r.accuracy).toBe(1);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('没被行索引覆盖的真实引用 → citationAccuracy 走宽松核对，不再误判', () => {

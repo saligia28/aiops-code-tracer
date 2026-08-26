@@ -280,7 +280,7 @@ async function finalizeAnswer(opts: {
 
   // 证据 = 答案里的 file:line 引用 × 模型在工具结果里实际看到的那一行（见 evidenceCollector 头注）
   const lineIndex = indexToolObservations(observations)
-  const evidence = collectAgentEvidence(answer, lineIndex)
+  const evidence = collectAgentEvidence(answer, lineIndex, repoPath)
   // pipeline:'agent' —— 重答时禁用工具，反馈必须给"降级行号"的路子而不是"删掉引用"（T20）
   const reflection = await reflectOnAnswer({ question, answer, evidence, repoPath, pipeline: 'agent', usage: opts.reflectionUsage })
 
@@ -319,7 +319,7 @@ async function finalizeAnswer(opts: {
 
   if (signal?.aborted) return
   // 重答后引用会变，证据必须按**最终**那份答案重算——沿用旧的会让下发的证据与答案对不上
-  const finalEvidence = finalText === answer ? evidence : collectAgentEvidence(finalText, lineIndex)
+  const finalEvidence = finalText === answer ? evidence : collectAgentEvidence(finalText, lineIndex, repoPath)
   onEvent({ type: 'answer_delta', data: { delta: finalText } })
   onEvent({
     type: 'done',

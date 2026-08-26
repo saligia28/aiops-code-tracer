@@ -15,6 +15,8 @@
  * agent 侧尤其需要它：`compressMessages` 会折叠早期工具结果，模型很容易凭记忆
  * 报出漂移的行号——这正是 L1 能抓到的典型错误。
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Evidence } from '@aiops/shared-types';
 
 /** 一次工具调用的观察记录（agentLoop 在执行工具后累积）。 */
@@ -102,11 +104,40 @@ const MAX_EVIDENCE = 12;
 const CODE_PLACEHOLDER = '（未捕获正文）';
 
 /**
+ * 裸文件名短引用的解析（第三族误报）：模型引用风格常是「首次给仓库根相对全路径，
+ * 后文简写成裸文件名」（如 `detail.vue:950`）。简写按字面拿去 repoPath 根下核对
+ * → fileExists=false → 正确引用被判编造。
+ * 仅当引用既不是行索引里的键、也不在磁盘上（repoPath 给了才查——真实全路径可能
+ * 来自 find_symbol 等不进索引的工具，不查盘会被同名索引文件劫持）时，才在
+ * 「模型本轮实际读过的文件」里做段边界后缀匹配：唯一命中 → 解析为全路径；
+ * 歧义或零命中保持原样——宁可让 L1 如实报文件不存在，也不能猜错文件假装核对通过。
+ */
+function resolveShorthand(file: string, index: ToolLineIndex, repoPath?: string): string {
+  if (index.has(file)) return file;
+  if (repoPath) {
+    try {
+      if (fs.existsSync(path.join(repoPath, file))) return file;
+    } catch {
+      // 路径非法等读盘异常 → 当"磁盘上不存在"处理，继续尝试后缀解析
+    }
+  }
+  const tail = `/${file}`;
+  let hit: string | null = null;
+  for (const known of index.keys()) {
+    if (!known.endsWith(tail)) continue;
+    if (hit) return file;
+    hit = known;
+  }
+  return hit ?? file;
+}
+
+/**
  * 从最终答案里抽出 `file:line` 引用，组装成 `Evidence[]`。
  * code 取模型在工具结果里看到的那一行；没看到过就记占位（见 CODE_PLACEHOLDER），
  * 与 ask 侧同款降级语义，不会因为"没抓到正文"就把答案判成不实。
+ * @param repoPath 被分析仓库磁盘路径，供裸文件名解析时排除"真实全路径被劫持"（见 resolveShorthand）
  */
-export function collectAgentEvidence(answer: string, index: ToolLineIndex): Evidence[] {
+export function collectAgentEvidence(answer: string, index: ToolLineIndex, repoPath?: string): Evidence[] {
   if (!answer) return [];
   const evidence: Evidence[] = [];
   const seen = new Set<string>();
@@ -115,8 +146,9 @@ export function collectAgentEvidence(answer: string, index: ToolLineIndex): Evid
   // （**path:12**）或全角括号（另见（path:12））包住且与中文黏连（中文不打空格），
   // 排除类会把 `**`/`另见（` 一并吃进文件名 → fileExists=false → 正确引用被判编造
   for (const ref of answer.matchAll(/([\w$@./-]+\.[A-Za-z]+):(\d+)/g)) {
-    const file = normalizePath(ref[1]);
-    if (!SOURCE_EXT.test(file)) continue;
+    const raw = normalizePath(ref[1]);
+    if (!SOURCE_EXT.test(raw)) continue;
+    const file = resolveShorthand(raw, index, repoPath);
     const line = Number(ref[2]);
     const key = `${file}:${line}`;
     if (seen.has(key)) continue;
