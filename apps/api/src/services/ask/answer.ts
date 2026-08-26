@@ -462,7 +462,10 @@ export function assembleCodeContext(
 
 
 export function extractEvidenceFromAnswer(answer: string, codeContext: string): Evidence[] {
-  const refs = answer.matchAll(/([^\s:：]+\.(vue|ts|js|tsx|jsx)):(\d+)/g);
+  // 路径用白名单字符类：markdown 加粗 / 全角括号会与路径黏连（中文不打空格），
+  // 排除类会把 `**`/`另见（` 吃进文件名导致 fileExists=false 误判（与 agent 侧
+  // collectAgentEvidence 同款约定，两边需同步改）
+  const refs = answer.matchAll(/([\w$@./-]+\.(vue|ts|js|tsx|jsx)):(\d+)/g);
   const evidence: Evidence[] = [];
   const seen = new Set<string>();
 
@@ -489,7 +492,9 @@ export function extractEvidenceFromAnswer(answer: string, codeContext: string): 
     evidence.push({
       file,
       line,
-      code: code || `(见 ${file}:${line})`,
+      // 占位必须不含 ASCII 标识符：citationCheck 会把路径段当"声称的标识符"
+      // 误核（见 agent 侧 CODE_PLACEHOLDER 注释）；file/line 字段本身已带指向
+      code: code || '（未捕获正文）',
       label: '关键代码',
     });
   }

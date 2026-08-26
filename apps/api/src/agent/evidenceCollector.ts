@@ -50,7 +50,7 @@ function addLine(index: ToolLineIndex, file: string, line: number, text: string)
  * 从工具结果里建「模型看过哪些行」的索引。
  *
  * 支持三种带行号的输出格式（其余工具如 find_symbol 只给位置不给正文，
- * 不进索引——引用到那些位置时 code 记为 `(见 file:line)`，仍会核对文件/行号是否存在）：
+ * 不进索引——引用到那些位置时 code 记为无标识符占位，仍会核对文件/行号是否存在）：
  *   - read_file：      `[path] 共 N 行，显示 a-b:` + `12: text`
  *   - search_in_file： `[path] 共 N 行，匹配 M 处：` + `> 12: text` / `  12: text`
  *   - search_code：    `path:12:text`（rg/grep 原样输出，可能带 ./ 前缀）
@@ -93,9 +93,17 @@ export function indexToolObservations(observations: ToolObservation[]): ToolLine
 const MAX_EVIDENCE = 12;
 
 /**
+ * 没被行索引覆盖的引用的 code 占位。
+ * 必须不含任何 ASCII 标识符（路径段也不行）：citationCheck.extractIdentifiers
+ * 会把占位里的 latin token 当"声称的标识符"去 ±2 行窗口比对，正确引用会被
+ * 近乎随机地判失败（曾致大面积误报→反思重答→行号被降级成「未确认行号」）。
+ * 纯中文占位让核对落到宽松分支：只校验文件与行号是否存在。
+ */
+const CODE_PLACEHOLDER = '（未捕获正文）';
+
+/**
  * 从最终答案里抽出 `file:line` 引用，组装成 `Evidence[]`。
- * code 取模型在工具结果里看到的那一行；没看到过就记 `(见 file:line)`
- * ——此时 citationAccuracy 只校验文件与行号是否存在（无标识符可比对），
+ * code 取模型在工具结果里看到的那一行；没看到过就记占位（见 CODE_PLACEHOLDER），
  * 与 ask 侧同款降级语义，不会因为"没抓到正文"就把答案判成不实。
  */
 export function collectAgentEvidence(answer: string, index: ToolLineIndex): Evidence[] {
@@ -103,7 +111,10 @@ export function collectAgentEvidence(answer: string, index: ToolLineIndex): Evid
   const evidence: Evidence[] = [];
   const seen = new Set<string>();
 
-  for (const ref of answer.matchAll(/([^\s:：]+\.[A-Za-z]+):(\d+)/g)) {
+  // 路径用白名单字符类而非「非空白」排除类：中文答案里引用常被 markdown 加粗
+  // （**path:12**）或全角括号（另见（path:12））包住且与中文黏连（中文不打空格），
+  // 排除类会把 `**`/`另见（` 一并吃进文件名 → fileExists=false → 正确引用被判编造
+  for (const ref of answer.matchAll(/([\w$@./-]+\.[A-Za-z]+):(\d+)/g)) {
     const file = normalizePath(ref[1]);
     if (!SOURCE_EXT.test(file)) continue;
     const line = Number(ref[2]);
@@ -115,7 +126,7 @@ export function collectAgentEvidence(answer: string, index: ToolLineIndex): Evid
     evidence.push({
       file,
       line,
-      code: code || `(见 ${file}:${line})`,
+      code: code || CODE_PLACEHOLDER,
       label: '关键代码',
     });
     if (evidence.length >= MAX_EVIDENCE) break;
