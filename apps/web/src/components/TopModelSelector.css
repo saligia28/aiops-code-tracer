@@ -123,6 +123,13 @@
   color: var(--qg-danger);
 }
 
+/* ---- Select 下拉浮层 ---- */
+/* 浮层传送到 body 渲染（不在 .llm-floating 内），antd 默认 z-index 1050
+   低于面板所在的 1210，会被面板盖住选项；叠上 .ant-select-dropdown 提高优先级。 */
+.ant-select-dropdown.llm-floating-owned-popper {
+  z-index: 1300;
+}
+
 /* ---- 展开面板 ---- */
 .llm-floating .llm-panel {
   position: absolute;
